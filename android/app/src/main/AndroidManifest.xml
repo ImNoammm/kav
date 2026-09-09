@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Both, and FINE is not optional: from Android 12 a coarse-only app is handed a
+         deliberately fuzzed fix, randomised within a grid cell of roughly a kilometre
+         or two. For a transit app that is not a rounding error — it puts you in the
+         next town, so the planner boards you at stops you cannot walk to and the place
+         search ranks the wrong city first. Read once per session, never stored. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Routing goes through Moovit while there is a connection, and falls back to
+         the bundled timetable when there is not. That is a fact about the network,
+         not a setting — see docs/STRIPPED.md. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Updates come from GitHub releases and are handed to the system installer;
+         Android asks you once, per app, before it will take an APK from one. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Deliberately NOT declared, and the reason each one is refused is in
+         docs/STRIPPED.md:
+           ADVERTISING_ID            - there is no advertising
+           ACCESS_BACKGROUND_LOCATION- nothing tracks you between sessions
+           GET_ACCOUNTS / CONTACTS   - there are no accounts -->
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.Kav"
+        android:supportsRtl="true"
+        android:allowBackup="false"
+        android:largeHeap="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- the downloaded update, readable by the installer and nobody else -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
+    </application>
+</manifest>

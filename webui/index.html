@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#000000">
+<title>Kav</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="device"><div class="app">
+
+  <!-- the map, always behind -->
+  <div class="map-layer">
+    <canvas id="map"></canvas>
+    <div class="map-ctl">
+      <button class="btn btn-md" id="locate" aria-label="Find stops near me">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle class="ic-p1" cx="12" cy="12" r="3.2"/><circle class="ic-p2" cx="12" cy="12" r="8"/>
+          <path class="ic-p2" d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+      </button>
+      <button class="btn btn-md" id="zin" aria-label="Zoom in">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <path class="ic-p1" d="M12 6v12"/><path class="ic-p2" d="M6 12h12"/></svg>
+      </button>
+      <button class="btn btn-md" id="zout" aria-label="Zoom out">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <path class="ic-p2" d="M6 12h12"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- search card, floating over the map -->
+  <header class="topbar">
+    <span class="wordmark">kav</span>
+    <div class="searchcard">
+      <div class="srows">
+        <button class="srow" id="pick-from">
+          <span class="dot dot-from" aria-hidden="true"></span>
+          <span class="srow-t is-empty" id="lbl-from">from…</span>
+        </button>
+        <button class="srow" id="pick-to">
+          <span class="dot dot-to" aria-hidden="true"></span>
+          <span class="srow-t is-empty" id="lbl-to">to…</span>
+        </button>
+      </div>
+      <button class="btn btn-md" id="open-settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle class="ic-p1" cx="12" cy="12" r="3.2"/>
+          <path class="ic-p2" d="M19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-1.8-.3 1.6 1.6 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.6 1.6 0 008 19.4a1.6 1.6 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.6 1.6 0 00.3-1.8 1.6 1.6 0 00-1.5-1H2a2 2 0 110-4h.1A1.6 1.6 0 004.6 8a1.6 1.6 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.6 1.6 0 001.8.3H9a1.6 1.6 0 001-1.5V2a2 2 0 114 0v.1a1.6 1.6 0 001 1.5 1.6 1.6 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.6 1.6 0 00-.3 1.8V9a1.6 1.6 0 001.5 1H22a2 2 0 110 4h-.1a1.6 1.6 0 00-1.5 1z"/></svg>
+      </button>
+      <button class="btn btn-md swapbtn" id="swap" aria-label="Swap origin and destination">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path class="ic-p1" d="M7 4v13"/><path class="ic-p1" d="M4 14l3 3 3-3"/>
+          <path class="ic-p2" d="M17 20V7"/><path class="ic-p2" d="M14 10l3-3 3 3"/></svg>
+      </button>
+    </div>
+    <div class="whenrow" id="whenrow">
+      <button class="chip chip-lit" id="when-now">Now</button>
+      <input class="inp inp-time" id="time" type="time" aria-label="Departure time">
+    </div>
+  </header>
+
+  <!-- bottom sheet -->
+  <section class="sheet" id="sheet" data-state="peek">
+    <button class="grab" id="grab" aria-label="Expand panel"></button>
+    <div class="sheet-head">
+      <button class="btn btn-md sheet-back" id="sheet-back" hidden aria-label="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path class="ic-p1" d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <h1 class="sig" id="sheet-title">Nearby <em>stops</em></h1>
+    </div>
+    <div class="sheet-body" id="sheet-body"></div>
+  </section>
+
+  <!-- full-screen search -->
+  <div class="overlay" id="overlay" hidden>
+    <header class="ov-head">
+      <button class="btn btn-md" id="ov-back" aria-label="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path class="ic-p1" d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <div class="ov-field">
+        <span class="dot" id="ov-dot" aria-hidden="true"></span>
+        <input class="inp" id="ov-input" type="text" autocomplete="off" spellcheck="false"
+               placeholder="search stops…" dir="auto">
+        <button class="btn btn-sm btn-ghost" id="ov-clear" hidden aria-label="Clear">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <path class="ic-p1" d="M7 7l10 10"/><path class="ic-p2" d="M17 7L7 17"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="ov-list" id="ov-list"></div>
+  </div>
+
+  <!-- settings -->
+  <div class="overlay" id="settings" hidden>
+    <header class="ov-head">
+      <button class="btn btn-md" id="set-back" aria-label="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path class="ic-p1" d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <h1 class="sig">Your <em>settings</em></h1>
+    </header>
+    <div class="ov-list" id="set-list"></div>
+  </div>
+
+  <!-- boot -->
+  <div class="boot" id="boot">
+    <p class="boot-t">Loading the <em>timetable</em></p>
+    <div class="boot-bar"><i id="boot-fill"></i></div>
+    <p class="boot-s" id="boot-s">connecting…</p>
+  </div>
+
+  <div class="proof" id="proof" aria-live="polite"></div>
+</div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

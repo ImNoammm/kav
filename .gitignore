@@ -1,0 +1,26 @@
+# MOT feed and everything built from it: no licence attached, so not redistributed
+.cache/
+webui/data/
+android/app/src/main/assets/*.kav
+
+# Build output
+build/
+.gradle/
+android/local.properties
+android/.kotlin/
+dist/
+
+# Notes and local dev tools
+docs/
+__pycache__/
+tools/android_emulator.sh
+tools/emulator_trust_ca.sh
+tools/check_monochrome.py
+tools/measure_bundle.py
+tools/measure_sqlite.py
+tools/moovit_capture.py
+tools/moovit_client.py
+tools/moovit_probe.py
+tools/recover_thrift.sh
+tools/serve.py
+tools/thrift_from_jadx.py

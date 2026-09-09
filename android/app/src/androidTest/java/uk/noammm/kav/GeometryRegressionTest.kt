@@ -1,0 +1,150 @@
+package uk.noammm.kav
+
+import org.junit.Test
+import org.junit.Assert.*
+import org.junit.runner.RunWith
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.json.JSONObject
+import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.TReader
+import uk.noammm.kav.data.TWriter
+
+/** Pure geometry over recorded fixtures; no network. */
+@RunWith(AndroidJUnit4::class)
+class GeometryRegressionTest {
+    private val encoded = "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+
+    @Test
+    fun testHttpFailureCannotMasqueradeAsEmptyLiveArrivals() {
+        try {
+            Moovit.parseStopArrivals(503, byteArrayOf())
+            fail("A failed live request must reach refreshLive's retention path")
+        } catch (expected: java.io.IOException) {
+            assertTrue(expected.message!!.contains("503"))
+        }
+        val validEmpty = TWriter().i32Field(1, 42).i32Field(5, 30).stop().bytes()
+        val (arrivals, poll) = Moovit.parseStopArrivals(200, validEmpty)
+        assertTrue(arrivals.isEmpty())
+        assertEquals(30, poll)
+    }
+
+    @Test
+    fun testArrivalConfigurationRequestsTripShapeIds() {
+        // StopsArrivals uses the default configuration. Field 5 must be true or
+        // the server sends vehicle GPS without the route's tripShapeId.
+        val conf = TReader(Moovit.arrivalsConf().stop().bytes()).readStruct()
+        assertEquals(true, conf[5])
+        assertEquals(true, conf[4])
+        val overview = TReader(Moovit.arrivalsConf(includeShapes = false).stop().bytes()).readStruct()
+        assertEquals(false, overview[5])
+    }
+
+    @Test
+    fun testStopMetadataCoordinatesUseMicrodegrees() {
+        val fixture = TWriter().structField(5, TWriter()
+            .i32Field(1, 42).strField(2, "Boarding stop").strField(4, "12345")
+            .structField(3, TWriter().i32Field(1, 32_075_500).i32Field(2, 34_775_500)))
+            .stop().bytes()
+        val stop = Moovit.stopInfoOf(42, TReader(fixture).readStruct())!!
+        assertEquals("Boarding stop", stop.name)
+        assertEquals("12345", stop.code)
+        assertEquals(32.0755, stop.point!!.first, 1e-9)
+        assertEquals(34.7755, stop.point!!.second, 1e-9)
+    }
+
+    @Test
+    fun testMissingOrInvalidStopCoordinatesStayUnknown() {
+        val fixture = TWriter().structField(5, TWriter().i32Field(1, 42).strField(2, "Stop"))
+            .stop().bytes()
+        val stop = Moovit.stopInfoOf(42, TReader(fixture).readStruct())!!
+        assertTrue(stop.lat.isNaN())
+        assertTrue(stop.lon.isNaN())
+        assertNull(stop.point)
+        assertNull(Moovit.StopInfo(42, "Stop", "", Double.POSITIVE_INFINITY, 35.0).point)
+        assertNull(Moovit.StopInfo(42, "Stop", "", 91.0, 35.0).point)
+        assertNull(Moovit.StopInfo(42, "Stop", "", 32.0, -181.0).point)
+        assertEquals(0.0 to 35.0, Moovit.StopInfo(42, "Stop", "", 0.0, 35.0).point)
+    }
+
+    @Test
+    fun testFullRouteUsesTripShapeUnionAndEncodedShapeField() {
+        val fixture = TWriter().structField(11, TWriter().i32Field(1, 77).strField(2, encoded))
+            .stop().bytes()
+        val entity = TReader(fixture).readStruct()
+        val route = Moovit.tripShapeOf(77, entity)
+        assertEquals(3, route.size)
+        assertEquals(38.5, route.first().first, 1e-9)
+        assertEquals(-120.2, route.first().second, 1e-9)
+        assertEquals(43.252, route.last().first, 1e-9)
+        assertEquals(-126.453, route.last().second, 1e-9)
+        assertTrue(Moovit.tripShapeOf(78, entity).isEmpty())
+
+        // A different entity's field 2 must never be mistaken for route geometry.
+        val wrongUnion = TWriter().structField(5, TWriter().i32Field(1, 77).strField(2, encoded))
+            .stop().bytes()
+        assertTrue(Moovit.tripShapeOf(77, TReader(wrongUnion).readStruct()).isEmpty())
+    }
+
+    @Test
+    fun testTaxiUsesItsJourneyEndpointsAndShape() {
+        val taxi = Moovit.parseLeg(JSONObject("""
+            {"5":{"rec":{
+                "1":{"rec":{"1":{"i64":100000},"2":{"i64":400000}}},
+                "2":{"rec":{
+                    "1":{"rec":{"3":{"rec":{"1":{"i32":38500000},"2":{"i32":-120200000}}}}},
+                    "2":{"rec":{"3":{"rec":{"1":{"i32":43252000},"2":{"i32":-126453000}}}}}
+                }},
+                "3":{"rec":{"1":{"dbl":1234.5},"2":{"str":"$encoded"}}}
+            }}}
+        """))
+        assertEquals(Moovit.LegKind.TAXI, taxi.kind)
+        assertEquals(100L, taxi.dep)
+        assertEquals(400L, taxi.arr)
+        assertEquals(1234, taxi.meters)
+        assertEquals(38.5 to -120.2, taxi.taxiPickup)
+        assertEquals(43.252 to -126.453, taxi.taxiDropoff)
+        assertEquals(3, taxi.shape.size)
+    }
+
+    @Test
+    fun testTaxiDoesNotInventAbsentEndpointCoordinates() {
+        val taxi = Moovit.parseLeg(JSONObject("""
+            {"5":{"rec":{"2":{"rec":{
+                "1":{"rec":{"3":{"rec":{"1":{"i32":91000000},"2":{"i32":35000000}}}}},
+                "2":{"rec":{"3":{"rec":{"1":{"i32":32000000}}}}}
+            }}}}}
+        """))
+        assertNull(taxi.taxiPickup)
+        assertNull(taxi.taxiDropoff)
+        assertTrue(taxi.shape.isEmpty())
+    }
+
+    @Test
+    fun testOnlyTrackedItineraryRidesRequestWholeRoutes() {
+        fun arrival(trip: Long, shape: Int, tracked: Boolean = true) = Moovit.Arrival(
+            stopId = 10, lineId = 20, tripId = trip,
+            staticUtc = 0, rtUtc = 0, statisticalUtc = 0, status = 0, certainty = 0, traffic = 0,
+            frequency = false, rtDropped = false,
+            tracked = tracked, lat = 32.0, lon = 35.0, tripShapeId = shape,
+        )
+        val itinerary = Moovit.Itinerary(
+            "test", 1,
+            listOf(
+                Moovit.Leg(Moovit.LegKind.RIDE, tripId = 11, fromStop = 10),
+                Moovit.Leg(Moovit.LegKind.RIDE, tripId = 12, fromStop = 10),
+                Moovit.Leg(Moovit.LegKind.RIDE, tripId = 13, fromStop = 10),
+                Moovit.Leg(Moovit.LegKind.WAIT, tripId = 15),
+            ),
+            0, 0,
+        )
+        val live = mapOf(
+            Moovit.ArrivalKey(10, 11L) to arrival(11, 100),
+            Moovit.ArrivalKey(10, 12L) to arrival(12, 100),
+            Moovit.ArrivalKey(10, 13L) to arrival(13, 300, tracked = false),
+            Moovit.ArrivalKey(10, 14L) to arrival(14, 200),
+            Moovit.ArrivalKey(10, 15L) to arrival(15, 500),
+        )
+        assertEquals(listOf(100), Moovit.trackedShapeIds(listOf(itinerary), live))
+    }
+}

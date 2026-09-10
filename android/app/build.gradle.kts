@@ -12,9 +12,12 @@ android {
         applicationId = "uk.noammm.kav"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "1.1"
+        versionCode = 14
+        versionName = "1.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // MapLibre's renderer is native code. Every phone Kav can reach is arm64;
+        // x86_64 stays so the release APK still installs on the emulator.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     buildTypes {
@@ -52,6 +55,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("dev.chrisbanes.haze:haze:1.1.1")
+    implementation("org.maplibre.gl:android-sdk:12.3.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

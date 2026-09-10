@@ -1,5 +1,6 @@
 package uk.noammm.kav.ui
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,6 +17,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,9 +39,16 @@ internal fun HomeScreen(
     model: KavModel,
     recentTrips: List<RecentTrip>,
     onSearch: () -> Unit,
+    onFavourite: (Moovit.Place) -> Unit,
+    onSetFavourite: (Favourite) -> Unit,
     onTrip: (RecentTrip) -> Unit,
     onResume: () -> Unit,
 ) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val favourites = model.favourites
+    var editing by remember { mutableStateOf<Favourite?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    fun save(list: List<Favourite>) = model.saveFavourites(ctx, list)
     Column(Modifier.fillMaxSize()) {
         ScreenHeader("Home", "", onSettings = { model.settingsOpen = true }, badge = model.update != null)
         LazyColumn(
@@ -62,6 +72,17 @@ internal fun HomeScreen(
                     }
                     Text("Where to?", fontSize = 19.sp, color = K.muted, modifier = Modifier.weight(1f))
                 }
+            }
+            item {
+                // The rider's own places, one tap from the front door. A place already
+                // set goes straight to its route; one not set yet opens the search.
+                FavouriteStrip(
+                    favourites,
+                    onPick = { f -> f.place?.let { onFavourite(it) } ?: onSetFavourite(f) },
+                    onAdd = { creating = true },
+                    onEdit = { editing = it },
+                    horizontalPadding = 0.dp,
+                )
             }
             item {
                 val journey = model.activeJourney
@@ -117,6 +138,30 @@ internal fun HomeScreen(
             }
         }
     }
+
+    if (creating) FavouriteEditor(
+        existing = null,
+        onSave = { name, icon ->
+            val fresh = Favourite("f${System.currentTimeMillis()}", name, icon, null)
+            save(favourites + fresh)
+            creating = false
+            // named here, placed next, the same two steps the search strip takes
+            onSetFavourite(fresh)
+        },
+        onRemove = null,
+        onDismiss = { creating = false },
+    )
+    editing?.let { f ->
+        FavouriteEditor(
+            existing = f,
+            onSave = { name, icon ->
+                save(favourites.map { if (it.id == f.id) it.copy(name = name, icon = icon) else it })
+                editing = null
+            },
+            onRemove = if (f.id == Favourite.HOME) null else { { save(favourites.filter { it.id != f.id }); editing = null } },
+            onDismiss = { editing = null },
+        )
+    }
 }
 
 /** When a trip was taken: the clock today, the day once it is older than that. */
@@ -168,14 +213,20 @@ private fun JourneyCard(model: KavModel, journey: ActiveJourney, onResume: () ->
                     .padding(horizontal = K.gap3, vertical = K.gap2),
             )
         }
+        // Each card is as tall as its own step, not as tall as the tallest one, and a
+        // change of height, the pager moving on, a stop list filling in, slides
+        // rather than cuts.
+        val ceiling = with(LocalDensity.current) { 230.dp.roundToPx() }
+        val pageHeights = remember(steps) { mutableStateMapOf<Int, Int>() }
         HorizontalPager(
             state = pager,
+            modifier = Modifier.pageSized(pager, pageHeights, ceiling, bottom = false),
             contentPadding = PaddingValues(horizontal = K.gap4),
             pageSpacing = K.gap2,
             verticalAlignment = Alignment.Top,
             beyondViewportPageCount = 1,
         ) { page ->
-            Box(Modifier.fillMaxWidth().heightIn(max = 230.dp)) {
+            Box(Modifier.fillMaxWidth().onSizeChanged { pageHeights[page] = it.height }.animateContentSize()) {
                 StepCard(steps[page], journey.resolved, active = page == current, now = now, chosen = journey.chosen,
                     fix = model.fix)
             }

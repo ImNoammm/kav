@@ -36,8 +36,6 @@ class GeometryRegressionTest {
         val conf = TReader(Moovit.arrivalsConf().stop().bytes()).readStruct()
         assertEquals(true, conf[5])
         assertEquals(true, conf[4])
-        val overview = TReader(Moovit.arrivalsConf(includeShapes = false).stop().bytes()).readStruct()
-        assertEquals(false, overview[5])
     }
 
     @Test
@@ -146,5 +144,31 @@ class GeometryRegressionTest {
             Moovit.ArrivalKey(10, 15L) to arrival(15, 500),
         )
         assertEquals(listOf(100), Moovit.trackedShapeIds(listOf(itinerary), live))
+    }
+
+    @Test
+    fun testMapCameraFocalPaddingCentresTheAnchor() {
+        // MapLibre centres the target inside the padded viewport. The overlay rotates
+        // about the anchor, so the padded centre must be the anchor exactly, on
+        // either side of the middle, and clamped at zero rather than negative.
+        for ((ax, ay) in listOf(540f to 1584f, 200f to 300f, 1000f to 2000f, 540f to 1100f)) {
+            val p = uk.noammm.kav.ui.focalPadding(androidx.compose.ui.geometry.Offset(ax, ay), 1080f, 2200f)
+            p.forEach { assertTrue("padding must not be negative", it >= 0.0) }
+            assertEquals(ax.toDouble(), p[0] + (1080.0 - p[0] - p[2]) / 2, 1e-3)
+            assertEquals(ay.toDouble(), p[1] + (2200.0 - p[1] - p[3]) / 2, 1e-3)
+        }
+    }
+
+    @Test
+    fun testMercatorRoundTripAndZoomUnits() {
+        // The overlay projection and MapLibre agree only if Geo is a true web
+        // mercator (round-trips) and the 256px zoom is MapLibre's 512px zoom + 1.
+        for ((lat, lon) in listOf(32.0955 to 34.9567, 29.55 to 34.95, 33.3 to 35.57)) {
+            assertEquals(lat, uk.noammm.kav.ui.Geo.lat(uk.noammm.kav.ui.Geo.y(lat)), 1e-9)
+            assertEquals(lon, uk.noammm.kav.ui.Geo.lon(uk.noammm.kav.ui.Geo.x(lon)), 1e-9)
+        }
+        // driveTo subtracts exactly 1 from the zoom; that is only right while the
+        // app's zoom unit stays the 256px tile against MapLibre's 512px one.
+        assertEquals(256, uk.noammm.kav.ui.Geo.SIZE)
     }
 }

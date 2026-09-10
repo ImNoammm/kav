@@ -19,10 +19,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import uk.noammm.kav.Prefs
+import uk.noammm.kav.data.MapFile
 
 /**
- * The first launch: pick the colour, then say what a plan may contain. Both are the
- * same controls Settings has, so nothing learned here has to be learned again.
+ * The first launch: pick the colour, say what a plan may contain, then fetch the
+ * map. The first two are the same controls Settings has, so nothing learned here
+ * has to be learned again; the third is the same offer the map itself makes.
  */
 @Composable
 fun OnboardingScreen(onDone: () -> Unit) {
@@ -53,11 +55,11 @@ fun OnboardingScreen(onDone: () -> Unit) {
                 AccentPicker { Prefs.setAccent(ctx, it.toArgb()) }
                 Spacer(Modifier.height(K.gap8))
                 OnboardingButton("Next") { page = 1 }
-            } else {
+            } else if (p == 1) {
                 Text("What should a plan show?", style = Display, fontSize = 26.sp)
                 Text(
                     "Everything is on. Switch off what you never take and the planner " +
-                        "leaves it out, this is the same list Settings keeps.",
+                        "leaves it out. This is the same list Settings keeps.",
                     fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
                 )
                 Spacer(Modifier.height(K.gap5))
@@ -68,7 +70,46 @@ fun OnboardingScreen(onDone: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(K.gap8))
-                OnboardingButton("Done", onDone)
+                OnboardingButton("Next") { page = 2 }
+            } else {
+                val state = MapFile.state
+                Text("Download the map", style = Display, fontSize = 26.sp)
+                Text(
+                    "Kav keeps its map on your phone instead of loading tiles from a server as " +
+                        "you go, so nothing tracks where you look. It's about ${MapFile.BYTES shr 20} MB for all " +
+                        "of Israel, once. After that the map works with no signal. Get it now or " +
+                        "later from the map itself.",
+                    fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
+                )
+                Spacer(Modifier.height(K.gap5))
+                when (state) {
+                    is MapFile.State.Downloading -> Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
+                        Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)).background(K.surface4)) {
+                            Box(Modifier.fillMaxWidth(state.progress.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
+                        }
+                        Text("Downloading… ${(state.progress * 100).toInt()}%", fontSize = 12.sp, color = K.dim)
+                    }
+                    is MapFile.State.Failed ->
+                        Text("Couldn't download it. ${state.why}", fontSize = 12.sp, color = K.critical, lineHeight = 17.sp)
+                    is MapFile.State.Ready ->
+                        Text("Got it. The map stays on your phone from now on.", fontSize = 13.sp, color = K.muted)
+                    else -> {}
+                }
+                Spacer(Modifier.height(K.gap8))
+                when (state) {
+                    is MapFile.State.Ready -> OnboardingButton("Done", onDone)
+                    is MapFile.State.Downloading -> OnboardingButton("Continue while it downloads", onDone)
+                    is MapFile.State.Failed -> OnboardingButton("Try again") { MapFile.startDownload(ctx) }
+                    else -> OnboardingButton("Download") { MapFile.startDownload(ctx) }
+                }
+                if (state !is MapFile.State.Ready && state !is MapFile.State.Downloading) {
+                    Spacer(Modifier.height(K.gap3))
+                    Box(
+                        Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(K.rPill))
+                            .clickable(role = Role.Button, onClick = onDone),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("Later", fontSize = 15.sp, color = K.muted) }
+                }
             }
             Spacer(Modifier.height(K.gap6))
         }

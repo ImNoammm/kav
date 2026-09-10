@@ -11,11 +11,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -189,67 +186,52 @@ private fun VehicleMap(
     val pulse = rememberLivePulse()
     val points = leg.shape + approach +
         listOfNotNull(a?.takeIf { it.hasLocation }?.let { it.lat to it.lon })
+    // The line's whole route goes down first, not your trip, so it is grey, and
+    // your own leg sits on top of it, all drawn by MapLibre in the ground's frame.
+    val geometry = remember(approach, leg) {
+        MapGeometry(
+            lines = listOf(
+                MapLine(approach, K.routeIdle, 3f, casing = 7f),
+                // The journey leg shares the trip map's subdued route accent.
+                MapLine(leg.shape, K.route, 4f, casing = 8f),
+            ),
+            dots = listOf(
+                MapDot(leg.shape.first().first, leg.shape.first().second, K.bg, 6f),
+                MapDot(leg.shape.first().first, leg.shape.first().second, Color.Transparent, 5f, K.text, 2f),
+                MapDot(leg.shape.last().first, leg.shape.last().second, K.bg, 7f),
+                MapDot(leg.shape.last().first, leg.shape.last().second, K.text, 5f),
+            ),
+        )
+    }
     TileMap(
         points,
         modifier.fillMaxWidth().height(260.dp).clip(RoundedCornerShape(K.rCard)).background(K.surface1),
+        geometry = geometry,
         animatedOverlay = { proj ->
             if (a != null && a.hasLocation) {
                 val p = proj.point(a.lat, a.lon)
+                // OUT_OF_SHAPE means the vehicle has left its planned route; show the gap
+                // rather than snapping it onto the line and pretending otherwise.
+                if (a.vehicleStatus == 2) {
+                    var nearest = proj.point(leg.shape[0].first, leg.shape[0].second)
+                    var best = Float.MAX_VALUE
+                    for ((lat, lon) in leg.shape) {
+                        val q = proj.point(lat, lon)
+                        val d = (q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y)
+                        if (d < best) { best = d; nearest = q }
+                    }
+                    drawLine(
+                        K.problem, nearest, p, 1.5.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx())),
+                    )
+                }
                 val tint = if (a.vehicleStatus == 2) K.problem else K.live
                 drawCircle(tint.copy(alpha = 0.20f), 18.dp.toPx() * pulse.value, p)
                 drawCircle(K.bg, 9.dp.toPx(), p)
                 drawCircle(tint, 6.dp.toPx(), p)
             }
         },
-    ) { proj ->
-        // the line's whole route, not your trip, so it is grey, and it goes down
-        // first so your own leg sits on top of it
-        if (approach.size >= 2) {
-            val ap = Path()
-            approach.forEachIndexed { i, (lat, lon) ->
-                val p = proj.point(lat, lon)
-                if (i == 0) ap.moveTo(p.x, p.y) else ap.lineTo(p.x, p.y)
-            }
-            drawPath(ap, K.bg, style = Stroke(7.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawPath(ap, K.routeIdle, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-        }
-
-        val path = Path()
-        leg.shape.forEachIndexed { i, (lat, lon) ->
-            val p = proj.point(lat, lon)
-            if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
-        }
-        // The journey leg shares the trip map's subdued route accent.
-        drawPath(path, K.bg, style = Stroke(8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-        drawPath(path, K.route, style = Stroke(4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-
-        leg.shape.first().let { (lat, lon) ->
-            val p = proj.point(lat, lon); drawCircle(K.bg, 6.dp.toPx(), p)
-            drawCircle(K.text, 6.dp.toPx(), p, style = Stroke(2.dp.toPx()))
-        }
-        leg.shape.last().let { (lat, lon) ->
-            val p = proj.point(lat, lon); drawCircle(K.bg, 7.dp.toPx(), p); drawCircle(K.text, 5.dp.toPx(), p)
-        }
-
-        if (a != null && a.hasLocation) {
-            val p = proj.point(a.lat, a.lon)
-            // OUT_OF_SHAPE means the vehicle has left its planned route; show the gap
-            // rather than snapping it onto the line and pretending otherwise.
-            if (a.vehicleStatus == 2) {
-                var nearest = proj.point(leg.shape[0].first, leg.shape[0].second)
-                var best = Float.MAX_VALUE
-                for ((lat, lon) in leg.shape) {
-                    val q = proj.point(lat, lon)
-                    val d = (q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y)
-                    if (d < best) { best = d; nearest = q }
-                }
-                drawLine(
-                    K.problem, nearest, p, 1.5.dp.toPx(),
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx())),
-                )
-            }
-        }
-    }
+    )
 }
 
 @Composable

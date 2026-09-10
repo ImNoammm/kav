@@ -27,9 +27,11 @@ import kotlin.math.abs
  * A vehicle running along a short line of stops, lighting each one as it passes.
  * The same mark stands in wherever the app is waiting on something, routes, the
  * timetable, a search, so a wait looks like the app rather than like a spinner.
+ * Sized to be seen from across the screen: it stands in the middle of whatever is
+ * waiting, and a small mark in a corner read as a caption rather than a state.
  */
 @Composable
-fun LoadingPulse(label: String, modifier: Modifier = Modifier, wide: Boolean = false) {
+fun LoadingPulse(label: String, modifier: Modifier = Modifier, wide: Boolean = true) {
     val t = rememberInfiniteTransition(label = "loading")
     val travel by t.animateFloat(
         0f, 1f, infiniteRepeatable(tween(1500, easing = FastOutSlowInEasing), RepeatMode.Restart), label = "travel",
@@ -41,27 +43,36 @@ fun LoadingPulse(label: String, modifier: Modifier = Modifier, wide: Boolean = f
         modifier.semantics { contentDescription = label },
         horizontalAlignment = if (wide) Alignment.CenterHorizontally else Alignment.Start,
     ) {
-        Canvas(Modifier.width(if (wide) 120.dp else 88.dp).height(20.dp)) {
+        Canvas(Modifier.width(if (wide) 200.dp else 150.dp).height(32.dp)) {
             val w = size.width; val h = size.height; val y = h / 2
-            val inset = 6.dp.toPx()
+            val inset = 10.dp.toPx()
             val stops = listOf(0f, .5f, 1f).map { inset + it * (w - inset * 2) }
-            drawLine(K.surface4, Offset(stops.first(), y), Offset(stops.last(), y), 2.dp.toPx(), StrokeCap.Round)
+            drawLine(K.surface4, Offset(stops.first(), y), Offset(stops.last(), y), 3.dp.toPx(), StrokeCap.Round)
             val x = stops.first() + travel * (stops.last() - stops.first())
-            drawLine(K.accent, Offset(stops.first(), y), Offset(x, y), 2.dp.toPx(), StrokeCap.Round)
+            drawLine(K.accent, Offset(stops.first(), y), Offset(x, y), 3.dp.toPx(), StrokeCap.Round)
             stops.forEachIndexed { i, sx ->
                 val passed = x >= sx - 1f
                 val near = (1f - abs(x - sx) / (w * .22f)).coerceIn(0f, 1f)
-                drawCircle(K.bg, 4.5.dp.toPx(), Offset(sx, y))
-                if (passed) drawCircle(K.accent.copy(alpha = .55f + .45f * near), 3.5.dp.toPx(), Offset(sx, y))
-                else drawCircle(K.surface4, 3.dp.toPx(), Offset(sx, y), style = Stroke(1.5.dp.toPx()))
-                if (i == stops.lastIndex && passed) drawCircle(K.accent.copy(alpha = .25f * (1f - glow)), 7.dp.toPx() * (1f + glow), Offset(sx, y))
+                drawCircle(K.bg, 7.dp.toPx(), Offset(sx, y))
+                if (passed) drawCircle(K.accent.copy(alpha = .55f + .45f * near), 5.5.dp.toPx(), Offset(sx, y))
+                else drawCircle(K.surface4, 4.5.dp.toPx(), Offset(sx, y), style = Stroke(2.dp.toPx()))
+                if (i == stops.lastIndex && passed) drawCircle(K.accent.copy(alpha = .25f * (1f - glow)), 11.dp.toPx() * (1f + glow), Offset(sx, y))
             }
-            drawCircle(K.bg, 6.dp.toPx(), Offset(x, y))
-            drawCircle(K.accent, 4.dp.toPx(), Offset(x, y))
+            drawCircle(K.bg, 9.dp.toPx(), Offset(x, y))
+            drawCircle(K.accent, 6.dp.toPx(), Offset(x, y))
         }
-        Spacer(Modifier.height(K.gap2))
-        Text(label, fontSize = 14.sp, color = K.dim)
+        Spacer(Modifier.height(K.gap3))
+        Text(label, fontSize = 15.sp, color = K.dim)
     }
+}
+
+/** The rest of a page, waiting: the mark in the middle of whatever space is left. */
+@Composable
+fun LoadingBlock(label: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier.fillMaxSize().padding(bottom = LocalBottomBarInset.current),
+        contentAlignment = Alignment.Center,
+    ) { LoadingPulse(label) }
 }
 
 /** The whole screen, waiting: for a route that will open on its own. */
@@ -70,8 +81,6 @@ fun LoadingScreen(label: String, onBack: (() -> Unit)? = null) {
     androidx.activity.compose.BackHandler(enabled = onBack != null) { onBack?.invoke() }
     Column(Modifier.fillMaxSize()) {
         if (onBack != null) Row(Modifier.padding(K.gap3)) { BackButton(onBack) }
-        Box(Modifier.fillMaxSize().padding(bottom = LocalBottomBarInset.current), contentAlignment = Alignment.Center) {
-            LoadingPulse(label, wide = true)
-        }
+        LoadingBlock(label)
     }
 }

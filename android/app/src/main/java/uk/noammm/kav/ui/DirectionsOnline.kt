@@ -106,7 +106,14 @@ fun DirectionsOnline(model: KavModel) {
         model.pendingTo?.let { toPlace = it; model.pendingTo = null }
     }
 
-    val fromLL = fromPlace?.let { it.lat to it.lon } ?: here
+    // "Current location" is where you were when you searched, not an origin that
+    // follows you around: the fix moves every few seconds, and a plan keyed to it
+    // re-plans on every tick, searched mid-ride, the list never stops loading.
+    var hereOrigin by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    LaunchedEffect(showResults, fromPlace == null, here == null) {
+        hereOrigin = if (showResults && fromPlace == null) hereOrigin ?: here else null
+    }
+    val fromLL = fromPlace?.let { it.lat to it.lon } ?: hereOrigin ?: here
     val toLL = toPlace?.let { it.lat to it.lon }
     val fromIsHere = fromPlace == null && here != null
 
@@ -285,6 +292,12 @@ fun DirectionsOnline(model: KavModel) {
             onSearch = {
                 fromPlace = null; departAt = 0L; timeType = Moovit.TIME_DEPARTURE; picking = "to"
             },
+            onFavourite = { p ->
+                fromPlace = null; toPlace = p
+                departAt = 0L; timeType = Moovit.TIME_DEPARTURE
+                showResults = true
+            },
+            onSetFavourite = { f -> model.settingFavourite = f },
             onTrip = { t ->
                 fromPlace = t.from; toPlace = t.to
                 departAt = 0L; timeType = Moovit.TIME_DEPARTURE
@@ -359,7 +372,7 @@ fun DirectionsOnline(model: KavModel) {
                 Modifier.padding(K.gap4),
             )
             fromLL == null -> Note("Choose a start to find routes.", Modifier.padding(K.gap4))
-            planning -> LoadingPulse("Finding routes", Modifier.padding(K.gap4))
+            planning -> LoadingBlock("Finding routes")
             shown.isEmpty() -> Note(
                 if (raw.isEmpty()) "No routes found for this trip."
                 else "Every route found is switched off in your filters.",
@@ -435,6 +448,11 @@ fun DirectionsOnline(model: KavModel) {
 
     }
 
+    // The home strip asked to place a favourite: open the picker straight into
+    // setting it, planning nothing. "fav" keeps it apart from a from/to pick.
+    val settingFav = model.settingFavourite
+    LaunchedEffect(settingFav) { if (settingFav != null) picking = "fav" }
+
     androidx.compose.animation.AnimatedContent(
         targetState = picking,
         modifier = Modifier.fillMaxSize(),
@@ -448,7 +466,8 @@ fun DirectionsOnline(model: KavModel) {
             // A destination can be "where I am" too, planning back to here from a
             // start you picked is an ordinary thing to want, and the origin picker
             // offered it while this one silently did not.
-            allowMyLocation = here != null,
+            allowMyLocation = here != null && which != "fav",
+            initialSetting = if (which == "fav") settingFav else null,
             onMyLocation = {
                 if (which == "from") fromPlace = null
                 else toPlace = here?.let { Place("Current location", "", it.first, it.second) }
@@ -460,7 +479,9 @@ fun DirectionsOnline(model: KavModel) {
                 picking = null
                 showResults = true
             },
-            onDismiss = { picking = null },
+            onDismiss = { picking = null; model.settingFavourite = null },
+            favourites = model.favourites,
+            onSaveFavourites = { model.saveFavourites(ctx, it) },
         )
         }
     }

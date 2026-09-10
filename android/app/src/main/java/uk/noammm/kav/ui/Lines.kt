@@ -168,7 +168,7 @@ private fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Unit
             LineDirection(net, stops?.takeIf { it.isNotEmpty() }?.let { it.first() to it.last() }, Modifier.weight(1f))
         }
         val list = stops
-        if (list == null) LoadingPulse("Loading stops", Modifier.padding(horizontal = K.gap4, vertical = K.gap2))
+        if (list == null) LoadingBlock("Loading stops")
         else Text(
             if (list.isEmpty()) "no trips on this line in the loaded timetable"
             else "${list.size} stops · full route",

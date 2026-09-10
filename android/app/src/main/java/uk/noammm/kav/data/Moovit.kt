@@ -30,17 +30,6 @@ class MoovitSession(
     val accessExpiresUtc: Long,
 )
 
-class LiveVehicle(
-    val lineId: Int,
-    val tripId: Long,
-    val vehicleId: String,
-    val lat: Double,
-    val lon: Double,
-    val sampleUtc: Long,
-    val etaUtc: Long,
-    val status: Int,
-)
-
 object Moovit {
     const val APP_ID = "moovit_2751703405"
     const val CLIENT_VERSION = "5.199.1.1804"
@@ -92,7 +81,7 @@ object Moovit {
                 val bytes = s.readBytes()
                 if (c.contentEncoding == "gzip") GZIPInputStream(bytes.inputStream()).readBytes() else bytes
             } ?: ByteArray(0)
-            if (attempt == 0 && adoptRevision(c, code)) return@repeat   // retry with the new one
+            if (attempt == 0 && (adoptRevision(c, code) || code == 412)) return@repeat   // a 412 another request already adopted the revision for is retried too
             return code to raw
         }
         return 412 to ByteArray(0)
@@ -351,50 +340,9 @@ object Moovit {
 
     // live vehicles
     /** includeShapeSegments also gates MVArrival.tripShapeId: without it, GPS can
-     *  arrive with no route id at all. Only the vehicle-only overview opts out. */
-    internal fun arrivalsConf(includeShapes: Boolean = true) = TWriter()
-        .boolField(2, false).boolField(3, false).boolField(4, true).boolField(5, includeShapes).boolField(6, false)
-
-    /**
-     * Real-time vehicle positions for the given Moovit stop ids (poll no faster than
-     * the returned interval, ~20 s). Returns positions and nextPollingIntervalSecs.
-     */
-    fun liveVehicles(s: MoovitSession, stopIds: List<Int>): Pair<List<LiveVehicle>, Int> {
-        val body = TWriter().apply {
-            i32ListField(1, stopIds)
-            structField(2, arrivalsConf(includeShapes = false))
-            stop()
-        }.bytes()
-        val (code, raw) = post(APP5, "V4/StopsArrivals", body, authHeaders(s))
-        if (code != 200) throw RuntimeException("StopsArrivals HTTP $code")
-        val resp = TReader(raw).readStruct()
-        val out = ArrayList<LiveVehicle>()
-        @Suppress("UNCHECKED_CAST")
-        val lineArrivals = resp[3] as? List<Map<Int, Any?>> ?: emptyList()
-        for (la in lineArrivals) {
-            val lineId = (la[1] as? Int) ?: -1
-            @Suppress("UNCHECKED_CAST")
-            val arrivals = la[2] as? List<Map<Int, Any?>> ?: continue
-            for (arr in arrivals) {
-                @Suppress("UNCHECKED_CAST")
-                val vloc = arr[11] as? Map<Int, Any?> ?: continue
-                @Suppress("UNCHECKED_CAST")
-                val ll = vloc[1] as? Map<Int, Any?> ?: continue
-                out.add(LiveVehicle(
-                    lineId = lineId,
-                    tripId = (arr[2] as? Long) ?: 0L,
-                    vehicleId = (vloc[3] as? String) ?: "",
-                    lat = ((ll[1] as? Int) ?: 0) / 1e6,
-                    lon = ((ll[2] as? Int) ?: 0) / 1e6,
-                    sampleUtc = ((vloc[4] as? Long) ?: 0L) / 1000,
-                    etaUtc = (((arr[4] as? Long) ?: (arr[3] as? Long) ?: 0L)) / 1000,
-                    status = (vloc[5] as? Int) ?: 0,
-                ))
-            }
-        }
-        val poll = (resp[5] as? Int) ?: (resp[6] as? Int) ?: 20
-        return out to poll
-    }
+     *  arrive with no route id at all. */
+    internal fun arrivalsConf() = TWriter()
+        .boolField(2, false).boolField(3, false).boolField(4, true).boolField(5, true).boolField(6, false)
 
     // stop database (V5/Entities/EntitiesPage, entity_type=3)
     // Moovit ships this as offline data; we page it and cache. Each entity is a
@@ -413,7 +361,7 @@ object Moovit {
             val raw = (if (code in 200..299) c.inputStream else c.errorStream)?.use { st ->
                 val b = st.readBytes(); if (c.contentEncoding == "gzip") GZIPInputStream(b.inputStream()).readBytes() else b
             } ?: ByteArray(0)
-            if (attempt == 0 && adoptRevision(c, code)) return@repeat
+            if (attempt == 0 && (adoptRevision(c, code) || code == 412)) return@repeat   // a 412 another request already adopted the revision for is retried too
             return code to raw
         }
         return 412 to ByteArray(0)
@@ -439,22 +387,32 @@ object Moovit {
         }
     }
 
-    /** Page the metro stop DB from [seedId]. Returns unique stops; cache the result. */
-    fun stopDatabase(s: MoovitSession, seedId: Int = 1500, maxPages: Int = 40): List<Stop> {
+    /**
+     * [pages] consecutive pages of the metro stop DB from [fromId], which must be a
+     * multiple of 100: the service pages by id in fixed hundreds, answers any other
+     * cursor with HTTP 400, and refuses any other page size. A page holds whichever of
+     * its hundred ids are stops, about two thirds, in the metro's populated range,
+     * and an empty page is a gap, not the end (checked on 2026-09-09: stops run from
+     * id 100 to about 25,000, with a straggler near 55,000). Throws on any failure, so
+     * the caller retries the whole block and its cursor stays honest.
+     */
+    fun stopPages(s: MoovitSession, fromId: Int, pages: Int): List<Stop> {
         val h = authHeaders(s)
-        val out = ArrayList<Stop>(); val seen = HashSet<Int>(); var frm = seedId
-        repeat(maxPages) {
+        val out = ArrayList<Stop>()
+        var frm = fromId - fromId % 100
+        repeat(pages) {
             val qs = "V5/Entities/EntitiesPage?entities_count=100&entity_type=3&from_entity_id=$frm" +
                 "&metro_area_id=${s.metroId}&metro_revision=$metroRev&protocol_version=1&resolve_references=false"
-            val (code, raw) = try { get(APP4CDN, qs, h) } catch (e: Exception) { return out }
-            if (code != 200) return out
-            val page = ArrayList<Stop>(); extractStops(TReader(raw).readStruct(), page)
-            val fresh = page.filter { seen.add(it.id) }
-            if (fresh.isEmpty()) return out
-            out.addAll(fresh); frm = fresh.maxOf { it.id } + 1
+            val (code, raw) = get(APP4CDN, qs, h)
+            if (code != 200) throw java.io.IOException("EntitiesPage HTTP $code")
+            extractStops(TReader(raw).readStruct(), out)
+            frm += 100
         }
-        return out
+        return out.distinctBy { it.id }
     }
+
+    /** No stop id above this has been seen; the page walk stops here. */
+    const val STOP_ID_CEILING = 60_000
 
     fun nearbyStops(stops: List<Stop>, lat: Double, lon: Double, k: Int = 15): List<Stop> {
         fun d(s: Stop) = Math.hypot((s.lat - lat) * 111, (s.lon - lon) * 93)

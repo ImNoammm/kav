@@ -223,7 +223,7 @@ fun WithTimetable(model: uk.noammm.kav.KavModel, content: @Composable (Net) -> U
                 model.netLoadAttempt++
             }
         }
-        else -> LoadingPulse("Opening the timetable", Modifier.padding(K.gap4))
+        else -> LoadingBlock("Opening the timetable")
     }
 }
 
@@ -411,7 +411,7 @@ fun ServiceAlertSheet(groupId: Int, fallbackLabel: String, onDismiss: () -> Unit
             val list = alerts
             when {
                 list == null && !failed ->
-                    LoadingPulse("Fetching the notice", Modifier.padding(top = K.gap3))
+                    LoadingPulse("Fetching the notice", Modifier.fillMaxWidth().padding(top = K.gap4, bottom = K.gap2))
                 failed || list.isNullOrEmpty() ->
                     Text(
                         "The operator published no further detail for this alert.",

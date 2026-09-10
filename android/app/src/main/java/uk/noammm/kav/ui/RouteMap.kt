@@ -7,13 +7,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import uk.noammm.kav.data.Moovit
@@ -38,9 +35,32 @@ fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), hei
     val pulse = rememberLivePulse()
     val vehicleAlpha = animateFloatAsState(if (vehicles.isEmpty()) 0f else 1f, tween(350), label = "vehicleReveal")
 
+    // the ride is yours, so it takes the accent; walking is context, and it is all
+    // MapLibre's to draw, in the same frame as the streets it lies on
+    val geometry = remember(legs) {
+        MapGeometry(
+            lines = legs.filter { it.kind == Moovit.LegKind.WALK }
+                .map { MapLine(it.shape, K.muted, 2f, dashed = true) } +
+                legs.filter { it.kind != Moovit.LegKind.WALK }
+                    .map { MapLine(it.shape, K.route, 4f, casing = 7f) },
+            dots = listOfNotNull(
+                legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 6f) },
+                legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, Color.Transparent, 5f, K.text, 2f) },
+                legs.last().shape.lastOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 7f) },
+                legs.last().shape.lastOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.text, 5f) },
+            ) + legs.filter { it.kind != Moovit.LegKind.WALK }.flatMap { l ->
+                // where you change vehicle
+                l.shape.firstOrNull()?.let { (lat, lon) ->
+                    listOf(MapDot(lat, lon, K.bg, 5f), MapDot(lat, lon, K.text, 3f))
+                }.orEmpty()
+            },
+        )
+    }
+
     TileMap(
         points,
         modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(12.dp)).background(K.surface1),
+        geometry = geometry,
         animatedOverlay = { proj ->
             for (v in vehicles) {
                 val p = proj.point(v.lat, v.lon)
@@ -50,51 +70,5 @@ fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), hei
                 drawCircle(tint.copy(alpha = vehicleAlpha.value), 5.dp.toPx(), p)
             }
         },
-    ) { proj ->
-        fun draw(l: Moovit.Leg) {
-            val path = Path()
-            l.shape.forEachIndexed { i, (lat, lon) ->
-                val p = proj.point(lat, lon)
-                if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
-            }
-            val walking = l.kind == Moovit.LegKind.WALK
-            // a dark casing under the ride, so the route stays legible over streets
-            if (!walking) drawPath(
-                path, K.bg,
-                style = Stroke(7.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
-            )
-            drawPath(
-                // the ride is yours, so it takes the accent; walking is context
-                path, if (walking) K.muted else K.route,
-                style = Stroke(
-                    width = if (walking) 2.dp.toPx() else 4.dp.toPx(),
-                    cap = StrokeCap.Round, join = StrokeJoin.Round,
-                    pathEffect = if (walking)
-                        PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 5.dp.toPx())) else null,
-                ),
-            )
-        }
-
-        legs.filter { it.kind == Moovit.LegKind.WALK }.forEach(::draw)
-        legs.filter { it.kind != Moovit.LegKind.WALK }.forEach(::draw)
-
-        legs.first().shape.firstOrNull()?.let { (lat, lon) ->
-            val p = proj.point(lat, lon)
-            drawCircle(K.bg, 6.dp.toPx(), p)
-            drawCircle(K.text, 6.dp.toPx(), p, style = Stroke(2.dp.toPx()))
-        }
-        legs.last().shape.lastOrNull()?.let { (lat, lon) ->
-            val p = proj.point(lat, lon)
-            drawCircle(K.bg, 7.dp.toPx(), p)
-            drawCircle(K.text, 5.dp.toPx(), p)
-        }
-        // where you change vehicle
-        for (l in legs) if (l.kind != Moovit.LegKind.WALK) {
-            l.shape.firstOrNull()?.let { (lat, lon) ->
-                val p = proj.point(lat, lon)
-                drawCircle(K.bg, 5.dp.toPx(), p)
-                drawCircle(K.text, 3.dp.toPx(), p)
-            }
-        }
-    }
+    )
 }

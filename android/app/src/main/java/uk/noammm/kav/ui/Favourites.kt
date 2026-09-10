@@ -117,9 +117,10 @@ fun FavouriteStrip(
     onPick: (Favourite) -> Unit,
     onAdd: () -> Unit,
     onEdit: (Favourite) -> Unit,
+    horizontalPadding: androidx.compose.ui.unit.Dp = K.gap3,
 ) {
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = K.gap3, vertical = K.gap2),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = horizontalPadding, vertical = K.gap2),
         horizontalArrangement = Arrangement.spacedBy(K.gap2),
     ) {
         favourites.forEach { f ->

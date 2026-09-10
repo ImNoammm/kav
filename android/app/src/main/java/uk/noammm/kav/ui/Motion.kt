@@ -6,10 +6,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** Shared screen transitions and tracked-vehicle pulse. */
 
@@ -36,6 +41,32 @@ fun rememberLivePulse(): State<Float> {
         label = "pulseScale",
     )
 }
+
+/**
+ * A pager as tall as the page on screen, not as tall as its tallest page.
+ *
+ * A pager measures every composed page against the same constraints and takes the
+ * tallest, which left a dead strip beside a short card, drawn, hit-testable, and on
+ * Home simply empty. Pages are still measured against the full [ceiling], so a short
+ * page does not squash the ones either side of it, but the pager lays out, draws and
+ * hit-tests only as tall as the page actually showing. The height follows the swipe
+ * itself rather than switching when the page index flips, so a card sliding in slides
+ * the height with it, which is also what an automatic step change animates through.
+ * [heights] is fed by each page's own onSizeChanged; an unmeasured page holds the
+ * pager's measured height, so a first visit is calm. The clip is outside the layout on
+ * purpose: inside it, the pager clips to the full ceiling and the strip stays.
+ */
+fun Modifier.pageSized(pager: PagerState, heights: Map<Int, Int>, ceiling: Int, bottom: Boolean): Modifier =
+    clipToBounds().layout { measurable, constraints ->
+        val page = measurable.measure(constraints.copy(minHeight = 0, maxHeight = ceiling))
+        val from = pager.currentPage
+        val slide = pager.currentPageOffsetFraction
+        val to = if (slide > 0f) from + 1 else from - 1
+        val here = heights[from] ?: page.height
+        val next = heights[to] ?: here
+        val h = (here + (next - here) * abs(slide)).roundToInt().coerceIn(0, page.height)
+        layout(page.width, h) { page.place(0, if (bottom) h - page.height else 0) }
+    }
 
 /**
  * A card arriving: it rises a little and fades in, each one a beat after the last, so

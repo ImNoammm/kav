@@ -2,6 +2,7 @@
 
 package uk.noammm.kav.ui
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -19,16 +20,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -39,8 +35,6 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.abs
-import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.data.Moovit
@@ -261,51 +255,18 @@ fun NavigateScreen(
                     }
                     Spacer(Modifier.height(K.gap2))
                 }
-                // Sizing the pager to its tallest composed page left a dead strip
-                // above a short card that was still inside the pager, so a swipe or a
-                // tap there changed step. Pages are still measured against the full
-                // ceiling, otherwise a short page would squash the ones either side
-                // of it, but the pager lays out, draws and hit-tests only as tall as
-                // the page actually on screen.
                 val ceiling = with(LocalDensity.current) { cardHeight.roundToPx() }
                 val pageHeights = remember(steps) { mutableStateMapOf<Int, Int>() }
-                // Follow the swipe itself rather than switching height when the page
-                // index flips: a height change halfway through a drag is what made a
-                // short card jump up off the bar. An unmeasured neighbour holds the
-                // current height instead of the ceiling, so a first visit is calm too.
-                val shown by remember(ceiling) {
-                    derivedStateOf {
-                        val from = pager.currentPage
-                        val slide = pager.currentPageOffsetFraction
-                        val to = if (slide > 0f) from + 1 else from - 1
-                        val here = pageHeights[from] ?: ceiling
-                        val next = pageHeights[to] ?: here
-                        (here + (next - here) * abs(slide)).roundToInt()
-                    }
-                }
                 HorizontalPager(
                     state = pager,
-                    // The clip is OUTSIDE the layout on purpose. Inside it, it measures
-                    // the pager at the full ceiling and clips to that, so the empty
-                    // strip above a short card stayed both drawn and hit-testable, and
-                    // a swipe well above the card still turned the page. Outside, it
-                    // takes the height the layout reports and the pager ends where it
-                    // looks like it ends.
-                    modifier = if (compact) Modifier.weight(1f) else Modifier
-                        .clipToBounds()
-                        .layout { measurable, constraints ->
-                            val page = measurable.measure(
-                                constraints.copy(minHeight = 0, maxHeight = ceiling),
-                            )
-                            val h = shown.coerceIn(0, page.height)
-                            layout(page.width, h) { page.place(0, h - page.height) }
-                        },
+                    modifier = if (compact) Modifier.weight(1f)
+                        else Modifier.pageSized(pager, pageHeights, ceiling, bottom = true),
                     contentPadding = PaddingValues(horizontal = K.gap3),
                     pageSpacing = K.gap2,
                     verticalAlignment = Alignment.Bottom,
                     beyondViewportPageCount = 1,
                 ) { page ->
-                    Box(Modifier.fillMaxWidth().onSizeChanged { pageHeights[page] = it.height }) {
+                    Box(Modifier.fillMaxWidth().onSizeChanged { pageHeights[page] = it.height }.animateContentSize()) {
                         StepCard(
                             steps[page], r, active = page == currentStep, now = now,
                             chosen = chosen, fix = fix,
@@ -646,26 +607,35 @@ private fun Card(
  * The camera for the card on screen. A walk and a ride are seen from where you are,
  * facing the way you are going, the compass for a walk, the road for a ride. The
  * other cards frame their ground and stay north-up.
+ *
+ * While riding, the vehicle leads when it is reporting where it is: it is on the road
+ * the map is drawing, its fix is the operator's rather than a phone in a pocket on a
+ * bus, and it is the thing the rider is looking for. The phone stands in only for a
+ * vehicle that is not tracked. On a walk the phone is the only thing there is, and a
+ * fix a few minutes old still says where the walk is better than the whole step does,
+ * a trip resumed after a pause used to lose its camera to that.
  */
+private const val CAMERA_FIX_S = 15 * 60L
+
 private fun followFor(
     step: Step?, chosenRide: Moovit.Leg?, r: Moovit.Resolved, fix: Fix?, heading: Float?, now: Long,
 ): Follow? {
-    val live = fix?.takeIf { it.isFresh(now) }
+    val recent = fix?.takeIf { now - it.at <= CAMERA_FIX_S }
     return when (step) {
         is Step.Walk -> {
-            val at = live ?: return null
+            val at = recent ?: return null
             val along = bearingAlong(at.lat, at.lon, step.leg.shape)
-            Follow(at.lat, at.lon, heading ?: along ?: 0f, zoom = 17.2f)
+            Follow(at.lat, at.lon, heading ?: along ?: 0f, zoom = 19.1f)
         }
         is Step.Ride -> {
             val ride = chosenRide ?: return null
-            val vehicle = r.arrival(ride)?.takeIf { it.hasLocation }
+            val vehicle = r.arrival(ride)?.takeIf { it.hasLocation && it.vehicleStatus != 3 }
             val (lat, lon) = when {
-                live != null -> live.lat to live.lon
                 vehicle != null -> vehicle.lat to vehicle.lon
+                recent != null -> recent.lat to recent.lon
                 else -> return null
             }
-            Follow(lat, lon, bearingAlong(lat, lon, ride.shape) ?: heading ?: 0f, zoom = 16.4f)
+            Follow(lat, lon, bearingAlong(lat, lon, ride.shape) ?: heading ?: 0f, zoom = 18.3f)
         }
         else -> null
     }
@@ -721,92 +691,78 @@ private fun NavigateMap(
     val follow = followFor(step, chosenRide, r, fix, heading, now)
     val fresh = fix?.takeIf { it.isFresh(now) }
 
-    // The part of the current ride already behind you goes grey, from wherever you
-    // are, or the vehicle is, along its route.
+    // The part of the current ride already behind you goes grey, from wherever the
+    // vehicle is, or you are, when it is not tracked, along its route.
     val ridingLeg = (step as? Step.Ride)?.let { chosenRide }
     val behind = remember(ridingLeg, fresh?.lat, fresh?.lon, focusedVehicle?.lat, focusedVehicle?.lon, step) {
         val shape = ridingLeg?.shape ?: return@remember emptyList<Pair<Double, Double>>()
         val at = when {
-            fresh != null && distanceToPath(fresh.lat, fresh.lon, shape) < 80 -> fresh.lat to fresh.lon
             focusedVehicle != null && distanceToPath(focusedVehicle.lat, focusedVehicle.lon, shape) < 80 &&
                 focusedVehicle.nextStopIndex > focusedVehicle.stopIndex -> focusedVehicle.lat to focusedVehicle.lon
+            fresh != null && distanceToPath(fresh.lat, fresh.lon, shape) < 80 -> fresh.lat to fresh.lon
             else -> return@remember emptyList<Pair<Double, Double>>()
         }
         splitPath(shape, at.first, at.second).first
     }
 
-    TileMap(framedPoints, modifier, focusKey = step to chosenRide?.tripId,
-        recenterOn = here, contentPadding = contentPadding, follow = follow,
-        animatedOverlay = { proj ->
+    // The route, the stops and the ends go to MapLibre itself: drawn in the same GL
+    // frame as the ground, they cannot slide against it while the camera is easing.
+    val walkLegs = legs.filter { it.kind == Moovit.LegKind.WALK }
+    val rideLegsShapes = legs.filter { it.kind != Moovit.LegKind.WALK }
+    val geometry = remember(lineRoutes, legs, behind, stopPoints) {
+        MapGeometry(
+            lines = lineRoutes.map { MapLine(it, K.routeIdle, 3f, casing = 6f) } +
+                walkLegs.map { MapLine(it.shape, K.muted, 2f, dashed = true) } +
+                rideLegsShapes.map { MapLine(it.shape, K.route, 4f, casing = 8f) } +
+                listOf(MapLine(behind, K.routeIdle, 4f, casing = 8f)),
+            dots = stopPoints.flatMap { (lat, lon) ->
+                listOf(MapDot(lat, lon, K.bg, 6f), MapDot(lat, lon, Color.Transparent, 3.5f, K.route, 2f))
+            } + listOfNotNull(
+                legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 7f) },
+                legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, Color.Transparent, 5f, K.text, 2f) },
+                legs.last().shape.lastOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 8f) },
+                legs.last().shape.lastOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.text, 5f) },
+            ),
+        )
+    }
+
+    // You and the buses are ground-locked, so they render as GL layers with the map,
+    // on the Compose canvas they lag the ground by a frame and slide during gestures.
+    // Only the pulse ring stays on the canvas: its radius animates every frame, and a
+    // diffuse ring can tolerate the one-frame slide the crisp markers cannot.
+    val walkArrow = step is Step.Walk && heading != null
+    val live = MapGeometry(
+        dots = buildList {
             here?.let { (lat, lon) ->
-                val me = proj.point(lat, lon)
-                drawCircle(K.text.copy(alpha = 0.16f * mePulse.value), 15.dp.toPx(), me)
-                if (step is Step.Walk && heading != null) {
-                    // the compass arrow: which way you are facing, on the ground
-                    rotate(heading, me) {
-                        val s = 11.dp.toPx()
-                        val tip = Path().apply {
-                            moveTo(me.x, me.y - s * 1.35f); lineTo(me.x + s * .8f, me.y + s * .75f)
-                            lineTo(me.x, me.y + s * .25f); lineTo(me.x - s * .8f, me.y + s * .75f); close()
-                        }
-                        drawPath(tip, K.bg.copy(alpha = mePulse.value), style = Stroke(4.dp.toPx(), join = StrokeJoin.Round))
-                        drawPath(tip, K.text.copy(alpha = mePulse.value))
-                    }
-                } else {
-                    drawCircle(K.bg.copy(alpha = mePulse.value), 8.dp.toPx(), me)
-                    drawCircle(K.text.copy(alpha = mePulse.value), 5.dp.toPx(), me)
+                add(MapDot(lat, lon, K.text.copy(alpha = 0.16f * mePulse.value), 15f))
+                if (!walkArrow) {
+                    add(MapDot(lat, lon, K.bg.copy(alpha = mePulse.value), 8f))
+                    add(MapDot(lat, lon, K.text.copy(alpha = mePulse.value), 5f))
                 }
             }
+            for (v in vehicles) {
+                val tint = if (v.vehicleStatus == 2) K.problem else K.live
+                add(MapDot(v.lat, v.lon, K.bg.copy(alpha = vehicleAlpha.value), 9f))
+                add(MapDot(v.lat, v.lon, tint.copy(alpha = vehicleAlpha.value), 6f))
+            }
+        },
+        markers = if (walkArrow) here?.let { (lat, lon) ->
+            // the compass arrow: which way you are facing, on the ground
+            listOf(MapMarker(lat, lon, MAP_ARROW_ICON, heading ?: 0f, mePulse.value))
+        }.orEmpty() else emptyList(),
+    )
+
+    TileMap(framedPoints, modifier, focusKey = step to chosenRide?.tripId,
+        recenterOn = here, contentPadding = contentPadding, follow = follow,
+        geometry = geometry, live = live,
+        animatedOverlay = { proj ->
             for (v in vehicles) {
                 val p = proj.point(v.lat, v.lon)
                 val tint = if (v.vehicleStatus == 2) K.problem else K.live
                 drawCircle(tint.copy(alpha = 0.20f * vehicleAlpha.value), 17.dp.toPx() * pulse.value, p)
-                drawCircle(K.bg.copy(alpha = vehicleAlpha.value), 9.dp.toPx(), p)
-                drawCircle(tint.copy(alpha = vehicleAlpha.value), 6.dp.toPx(), p)
             }
         },
-    ) { proj ->
-        fun stroke(pts: List<Pair<Double, Double>>, casing: Float, width: Float, colour: Color, dashed: Boolean) {
-            if (pts.size < 2) return
-            val path = Path()
-            pts.forEachIndexed { i, (lat, lon) ->
-                val p = proj.point(lat, lon)
-                if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
-            }
-            if (casing > 0f) drawPath(path, K.bg, style = Stroke(casing, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawPath(
-                path, colour,
-                style = Stroke(
-                    width, cap = StrokeCap.Round, join = StrokeJoin.Round,
-                    pathEffect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 5.dp.toPx())) else null,
-                ),
-            )
-        }
-
-        lineRoutes.forEach { stroke(it, 6.dp.toPx(), 3.dp.toPx(), K.routeIdle, false) }
-        legs.filter { it.kind == Moovit.LegKind.WALK }
-            .forEach { stroke(it.shape, 0f, 2.dp.toPx(), K.muted, true) }
-        legs.filter { it.kind != Moovit.LegKind.WALK }
-            .forEach { stroke(it.shape, 8.dp.toPx(), 4.dp.toPx(), K.route, false) }
-        stroke(behind, 8.dp.toPx(), 4.dp.toPx(), K.routeIdle, false)
-
-        // stops as circles on the map, boarding and alighting points of every ride
-        for ((lat, lon) in stopPoints) {
-            val p = proj.point(lat, lon)
-            drawCircle(K.bg, 6.dp.toPx(), p)
-            drawCircle(K.route, 4.5.dp.toPx(), p, style = Stroke(2.dp.toPx()))
-        }
-
-        legs.first().shape.firstOrNull()?.let { (lat, lon) ->
-            val p = proj.point(lat, lon)
-            drawCircle(K.bg, 7.dp.toPx(), p)
-            drawCircle(K.text, 6.dp.toPx(), p, style = Stroke(2.dp.toPx()))
-        }
-        legs.last().shape.lastOrNull()?.let { (lat, lon) ->
-            val p = proj.point(lat, lon)
-            drawCircle(K.bg, 8.dp.toPx(), p); drawCircle(K.text, 5.dp.toPx(), p)
-        }
-    }
+    )
 }
 
 /** Stops use their actual coordinates; route endpoints remain usable while names load. */

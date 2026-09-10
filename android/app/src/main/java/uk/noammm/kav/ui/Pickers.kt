@@ -95,6 +95,11 @@ fun StopRow(net: Net, stop: Int, trailing: String? = null, onClick: () -> Unit) 
  * streets and sites the official app offers, in its order, with the straight-line
  * distance it prints beside each one. Laid out like Moovit's list: a type icon with
  * the distance under it, the name, then where it is.
+ *
+ * Above the search, the rider's own places: Home first, then whatever they have added.
+ * A place that is set is one tap; one that is not yet turns the search into "where is
+ * it?", and the next result picked becomes it, saved, nothing more. A long press
+ * renames it, changes its icon or removes it.
  */
 @Composable
 fun PlacePicker(
@@ -104,6 +109,9 @@ fun PlacePicker(
     onMyLocation: () -> Unit,
     onPick: (Moovit.Place) -> Unit,
     onDismiss: () -> Unit,
+    initialSetting: Favourite? = null,
+    favourites: List<Favourite>,
+    onSaveFavourites: (List<Favourite>) -> Unit,
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var q by remember { mutableStateOf("") }
@@ -111,9 +119,26 @@ fun PlacePicker(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var recents by remember { mutableStateOf(uk.noammm.kav.Prefs.recents(ctx)) }
+    /** a favourite whose place is being chosen: the next pick is saved as it */
+    var setting by remember { mutableStateOf(initialSetting) }
+    var editing by remember { mutableStateOf<Favourite?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    fun save(list: List<Favourite>) = onSaveFavourites(list)
     val pick: (Moovit.Place) -> Unit = { p ->
-        uk.noammm.kav.Prefs.remember(ctx, p)
-        onPick(p)
+        val f = setting
+        if (f != null) {
+            // named by the rider, placed by the search: the favourite keeps its own
+            // name and takes the result's coordinates and description. Placing it is
+            // all that happens, no trip is planned to a place just being saved.
+            save(favourites.map { if (it.id == f.id) it.copy(place = p) else it })
+            setting = null
+            q = ""
+            // opened only to place a favourite (from the home strip), that done, leave
+            if (initialSetting != null) onDismiss()
+        } else {
+            uk.noammm.kav.Prefs.remember(ctx, p)
+            onPick(p)
+        }
     }
 
     LaunchedEffect(q) {
@@ -139,15 +164,27 @@ fun PlacePicker(
         }
     }
 
-    androidx.activity.compose.BackHandler(onBack = onDismiss)
+    androidx.activity.compose.BackHandler { if (setting != null) setting = null else onDismiss() }
 
     Column(Modifier.fillMaxSize().background(K.bg)) {
         Row(
             Modifier.fillMaxWidth().padding(K.gap3).heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2),
         ) {
-            BackButton(onDismiss)
-            KavField(q, { q = it }, title, Modifier.weight(1f), autoFocus = true)
+            BackButton { if (setting != null) setting = null else onDismiss() }
+            KavField(q, { q = it }, setting?.let { "where is ${it.name}?" } ?: title, Modifier.weight(1f), autoFocus = true)
+        }
+        if (q.isBlank() && setting == null) FavouriteStrip(
+            favourites,
+            onPick = { f -> f.place?.let(pick) ?: run { setting = f } },
+            onAdd = { creating = true },
+            onEdit = { editing = it },
+        )
+        setting?.let { f ->
+            Note(
+                "Search for where ${f.name} is. The place you pick is kept as ${f.name}.",
+                Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
+            )
         }
         if (allowMyLocation) Row(
             Modifier.fillMaxWidth().padding(horizontal = K.gap3).heightIn(min = 48.dp)
@@ -163,7 +200,13 @@ fun PlacePicker(
             q.isBlank() && recents.isEmpty() ->
                 Note("Search a station, street or place.", Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
             q.isBlank() -> Unit
-            busy && results.isEmpty() -> Note("Searching…", Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
+            // centred in what the keyboard leaves, not in the whole height behind it
+            busy && results.isEmpty() -> Box(
+                Modifier.fillMaxWidth().weight(1f).padding(bottom = bottomCover()),
+                contentAlignment = Alignment.Center,
+            ) {
+                LoadingPulse("Searching")
+            }
             results.isEmpty() -> Note("Nothing found.", Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
         }
         val showRecents = q.isBlank() && recents.isNotEmpty()
@@ -181,11 +224,37 @@ fun PlacePicker(
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
+        // Only when there is a list: a column that fills the page would take the
+        // space the searching mark is centred in.
+        if (results.isNotEmpty() || showRecents) LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
             start = K.gap2, end = K.gap2, bottom = LocalBottomBarInset.current,
         )) {
             items(if (showRecents) recents else results) { p -> PlaceRow(p) { pick(p) } }
         }
+    }
+
+    if (creating) FavouriteEditor(
+        existing = null,
+        onSave = { name, icon ->
+            val fresh = Favourite("f${System.currentTimeMillis()}", name, icon, null)
+            save(favourites + fresh)
+            creating = false
+            setting = fresh
+        },
+        onRemove = null,
+        onDismiss = { creating = false },
+    )
+    editing?.let { f ->
+        FavouriteEditor(
+            existing = f,
+            onSave = { name, icon ->
+                save(favourites.map { if (it.id == f.id) it.copy(name = name, icon = icon) else it })
+                editing = null
+            },
+            // Home stays, so its place can only be moved; the rest can go
+            onRemove = if (f.id == Favourite.HOME) null else { { save(favourites.filter { it.id != f.id }); editing = null } },
+            onDismiss = { editing = null },
+        )
     }
 }
 

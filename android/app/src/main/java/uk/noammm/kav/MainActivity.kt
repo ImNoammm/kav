@@ -61,6 +61,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import uk.noammm.kav.data.MapFile
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.Updates
@@ -96,6 +97,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         K.accent = Color(Prefs.accent(this))
+        MapFile.init(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             addOnPictureInPictureModeChangedListener { Pip.active = it.isInPictureInPictureMode }
         }
@@ -186,6 +188,19 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
      */
     var pendingFrom by mutableStateOf<Moovit.Place?>(null)
     var pendingTo by mutableStateOf<Moovit.Place?>(null)
+    /** A favourite the home strip asked to place: the picker opens straight into setting it. */
+    var settingFavourite by mutableStateOf<uk.noammm.kav.ui.Favourite?>(null)
+
+    /**
+     * The rider's favourite places, one source for every screen that shows them: the
+     * home strip and the search strip both read and write this, so a place set in one
+     * shows up in the other at once rather than after the tab is rebuilt.
+     */
+    var favourites by mutableStateOf(ctx?.let { Prefs.favourites(it) } ?: emptyList())
+    fun saveFavourites(ctx: Context, list: List<uk.noammm.kav.ui.Favourite>) {
+        favourites = list
+        Prefs.saveFavourites(ctx, list)
+    }
 
     // stations / lines
     var stationStop by mutableIntStateOf(-1)
@@ -289,7 +304,11 @@ private fun Root() {
     Box(Modifier.fillMaxSize()) {
         Shell(model)
         if (Pip.active) PipOverlay(model)
-        else UpdatePrompt(model)
+        else {
+            UpdatePrompt(model)
+            // the map's offer waits its turn behind an update's
+            if (model.update == null || model.updateDismissed) MapPrompt()
+        }
     }
 }
 

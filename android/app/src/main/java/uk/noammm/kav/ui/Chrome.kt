@@ -18,6 +18,9 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 /** A shared native sans-serif screen title. */
 @Composable
@@ -54,8 +57,22 @@ fun BackButton(onClick: () -> Unit) = PlateButton(T("Back", "חזרה"), onClick
 fun SettingsButton(badge: Boolean = false, onClick: () -> Unit) = PlateButton(T("Settings", "הגדרות"), onClick) {
     Canvas(Modifier.size(20.dp)) {
         val w = size.width
-        drawCircle(K.muted, w * .18f, Offset(w * .5f, w * .5f), style = Stroke(w * .11f))
-        drawCircle(K.muted, w * .44f, Offset(w * .5f, w * .5f), style = Stroke(w * .09f))
+        val c = Offset(w * .5f, w * .5f)
+        // Two bare rings read as a target, not a gear, and the Live tab already wears
+        // exactly that. The teeth go down first so the rim covers their inner ends and
+        // they read as part of the body rather than spokes laid across it.
+        repeat(8) { i ->
+            val a = i * PI.toFloat() / 4f
+            val dx = cos(a); val dy = sin(a)
+            drawLine(
+                K.muted,
+                Offset(c.x + dx * w * .28f, c.y + dy * w * .28f),
+                Offset(c.x + dx * w * .40f, c.y + dy * w * .40f),
+                w * .095f, StrokeCap.Round,
+            )
+        }
+        drawCircle(K.muted, w * .27f, c, style = Stroke(w * .10f))
+        drawCircle(K.muted, w * .115f, c, style = Stroke(w * .085f))
         if (badge) {
             drawCircle(K.bg, w * .26f, Offset(w * .92f, w * .08f))
             drawCircle(K.accent, w * .17f, Offset(w * .92f, w * .08f))

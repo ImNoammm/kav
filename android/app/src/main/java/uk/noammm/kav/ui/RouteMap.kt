@@ -17,35 +17,40 @@ import androidx.compose.ui.unit.dp
 import uk.noammm.kav.data.Moovit
 
 /**
- * A ride's colour: the chosen accent, stepped down a rung for each change of vehicle,
+ * A ride's colour: the chosen accent, then a different hue for each change of vehicle,
  * so a trip reads as a sequence rather than as one unbroken line.
  *
- * Moovit paints every leg in its line group's own brand colour and lifts it for the
- * dark theme, which is why two buses look like two shades there: they ARE two
- * colours. Kav has one colour on purpose, so it buys the same reading a different
- * way. The leg boarded first takes the accent at full value and each leg after it
- * steps down, hue and saturation untouched, so every rung is plainly the colour that
- * was chosen rather than a second colour arriving from an operator.
+ * This used to step the accent's brightness down a rung per ride and leave the hue
+ * alone, one colour throughout on purpose. On a dark map it did not survive contact:
+ * two rungs of the same hue a few percent of value apart read as the same colour, and
+ * the sequence they were carrying was simply lost. Turning the hue is the reading
+ * Moovit gets for free from operator branding, and it is unmistakable at a glance.
+ * The first ride still takes the chosen accent exactly, so the trip is still in the
+ * rider's colour; only the rides after it walk away from it.
  *
- * Two things the ladder has to respect. It never descends past [ROUTE_SHADE_FLOOR],
- * because below that it arrives at [K.routeIdle], which is what this map already
- * means by "not your ride". And it cycles rather than saturating at the bottom, so a
- * fifth ride repeats the first instead of flattening onto its neighbour.
+ * Saturation and value are floored for the turned hues rather than carried over: an
+ * accent may be pale or muted and still read at its own hue, while its neighbours
+ * have to hold up against the same dark ground without that help.
+ *
+ * It cycles rather than running out, so a sixth ride repeats the first instead of
+ * flattening onto its neighbour.
  *
  * The index is a position in the caller's own ride list, not a hash of the line: the
  * whole point is that consecutive rides differ, and a hash cannot promise that. Every
  * caller must therefore index the same list it passes to [boardingMarkers], or a
- * boarding marker will be painted a different shade from the line it sits on.
+ * boarding marker will be painted a different colour from the line it sits on.
  */
-private const val ROUTE_SHADE_STEP = 0.13f
-private const val ROUTE_SHADE_RUNGS = 4
-private const val ROUTE_SHADE_FLOOR = 0.62f
+private const val ROUTE_HUE_STEP = 68f
+private const val ROUTE_HUE_RUNGS = 5
 
-internal fun routeShade(index: Int): Color {
+internal fun routeTint(index: Int): Color {
+    val rung = index.mod(ROUTE_HUE_RUNGS)
+    if (rung == 0) return K.route
     val hsv = FloatArray(3)
     android.graphics.Color.colorToHSV(K.route.toArgb(), hsv)
-    hsv[2] = (hsv[2] * (1f - ROUTE_SHADE_STEP * index.mod(ROUTE_SHADE_RUNGS)))
-        .coerceIn(ROUTE_SHADE_FLOOR, 1f)
+    hsv[0] = (hsv[0] + ROUTE_HUE_STEP * rung).mod(360f)
+    hsv[1] = hsv[1].coerceAtLeast(0.55f)
+    hsv[2] = hsv[2].coerceAtLeast(0.82f)
     return Color(android.graphics.Color.HSVToColor(hsv))
 }
 
@@ -58,36 +63,76 @@ internal fun routeShade(index: Int): Color {
  * rider has to do something: it should read as an event on the line, not as another
  * stop along it. The core takes the ride's own shade, so which of the trip's vehicles
  * you are getting onto is legible from the marker by itself.
+ *
+ * Ring and core part company at a change: there the ring stays the colour of the line
+ * that brought the rider in and the core takes the colour of the one they leave on, so
+ * a single marker says both halves of the change at once.
  */
-internal fun boardingDots(at: Pair<Double, Double>, tint: Color): List<MapDot> = listOf(
+internal fun boardingDots(at: Pair<Double, Double>, tint: Color, core: Color = tint): List<MapDot> = listOf(
     MapDot(at.first, at.second, K.bg, 9f),
     MapDot(at.first, at.second, Color.Transparent, 7f, tint, 2.5f),
-    MapDot(at.first, at.second, tint, 3.5f),
+    MapDot(at.first, at.second, core, 3.5f),
 )
 
 /**
  * Both ends of every ride, each in that ride's own shade of the accent.
  *
- * Placed at the stop's own coordinates, not at the end of the drawn line. They are
- * not the same point: the stop is Moovit's own position for it, exact to a
- * microdegree, while the line is the plan's encoded polyline, which is coarser and
- * cuts the corner it turns. Marking the polyline's end put the marker a few metres
- * from the circle already drawn for that stop, and a transfer came out as two rings
- * side by side with only one of them in the right place. [stops] must be the same
- * map those circles were placed from, or they will disagree again.
+ * Taken from the stop's own coordinates, then projected onto the ride's drawn line.
+ * The two are not the same point: the stop is Moovit's position for the shelter, at
+ * the kerb, while the line is the plan's encoded polyline, which is coarser and cuts
+ * the corner it turns. Marking the polyline's raw end instead put the marker a few
+ * metres from the circle already drawn for that stop, and a transfer came out as two
+ * rings side by side with only one of them in the right place; marking the stop
+ * honestly left the ring floating off the route it belongs to, which is what a rider
+ * actually sees. [onRoute] keeps where along the ride the stop sits, which is the
+ * part that carries meaning, and gives up only the offset across it. [stops] must be
+ * the same map the plain stop circles were placed from, and those are projected too.
+ *
+ * A change of vehicle at one stop gets one marker rather than two. Moovit gives that
+ * change as a single stop id shared by the ride that ends there and the ride that
+ * starts there, but as two leg shapes that need not quite meet, so drawing each ride's
+ * ends independently put two rings a few metres apart on what the rider knows is one
+ * place to stand. The rings are merged and set between the two lines they cap, and the
+ * marker carries both colours instead of the second simply painting over the first.
  */
 internal fun boardingMarkers(
     rides: List<Moovit.Leg>,
     r: Moovit.Resolved,
     stops: Map<Int, Moovit.StopInfo> = r.stops,
-): List<MapDot> =
-    rides.mapIndexed { i, l ->
-        val tint = routeShade(i)
-        listOfNotNull(
-            stops[l.fromStop]?.point ?: l.stops.firstOrNull()?.let { stops[it] }?.point ?: l.shape.firstOrNull(),
-            stops[l.toStop]?.point ?: l.stops.lastOrNull()?.let { stops[it] }?.point ?: l.shape.lastOrNull(),
-        ).flatMap { boardingDots(it, tint) }
-    }.flatten()
+): List<MapDot> {
+    val board = rides.map { l ->
+        (stops[l.fromStop]?.point ?: l.stops.firstOrNull()?.let { stops[it] }?.point ?: l.shape.firstOrNull())
+            ?.let { onRoute(it, l.shape) }
+    }
+    val alight = rides.map { l ->
+        (stops[l.toStop]?.point ?: l.stops.lastOrNull()?.let { stops[it] }?.point ?: l.shape.lastOrNull())
+            ?.let { onRoute(it, l.shape) }
+    }
+    val changes = rides.indices.map { i ->
+        i < rides.lastIndex && rides[i].toStop > 0 && rides[i].toStop == rides[i + 1].fromStop
+    }
+    return rides.indices.flatMap { i ->
+        val tint = routeTint(i)
+        val getOn = if (i > 0 && changes[i - 1]) emptyList() else board[i]?.let { boardingDots(it, tint) }.orEmpty()
+        val getOff = alight[i]?.let {
+            if (!changes[i]) boardingDots(it, tint)
+            else boardingDots(between(it, board[i + 1] ?: it), tint, routeTint(i + 1))
+        }.orEmpty()
+        getOn + getOff
+    }
+}
+
+/** Halfway between two points, near enough over the few metres this is asked for. */
+private fun between(a: Pair<Double, Double>, b: Pair<Double, Double>) =
+    ((a.first + b.first) / 2) to ((a.second + b.second) / 2)
+
+/**
+ * A point pulled onto the polyline drawn beside it, keeping its position along that
+ * line and dropping only its distance across it. Returns the point untouched when
+ * there is no line to project onto.
+ */
+internal fun onRoute(at: Pair<Double, Double>, path: List<Pair<Double, Double>>): Pair<Double, Double> =
+    if (path.size < 2) at else pointAlong(path, alongPath(at.first, at.second, path)) ?: at
 
 /**
  * The route on a map, with the vehicles that are on their way to it.
@@ -116,7 +161,7 @@ fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), hei
         MapGeometry(
             lines = legs.filter { it.kind == Moovit.LegKind.WALK }
                 .map { MapLine(it.shape, K.muted, 2f, dashed = true) } +
-                rides.mapIndexed { i, l -> MapLine(l.shape, routeShade(i), 4f, casing = 7f) },
+                rides.mapIndexed { i, l -> MapLine(l.shape, routeTint(i), 4f, casing = 7f) },
             // the ends of the trip go on last, so they win the corner a boarding
             // marker shares with them when the trip opens on a ride
             dots = boardingMarkers(rides, r) + listOfNotNull(

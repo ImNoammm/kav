@@ -170,4 +170,47 @@ class GeometryRegressionTest {
         // app's zoom unit stays the 256px tile against MapLibre's 512px one.
         assertEquals(256, uk.noammm.kav.ui.Geo.SIZE)
     }
+
+    @Test
+    fun testAlongPathRoundTripsThroughPointAlong() {
+        // alongPath's answer is handed straight to pointAlong. alongPath counted on a
+        // flat plane and pointAlong walks in metres, and the two scales differ by about
+        // a tenth of a percent, so the round trip drifted with the length of the line:
+        // nothing across a stop, tens of metres along a whole ride.
+        val path = (0..400).map { (32.0 + it * 0.0005) to (34.8 + it * 0.0004) }
+        for (p in listOf(path[3], path[100], path[250], path[400])) {
+            val back = uk.noammm.kav.ui.pointAlong(path, uk.noammm.kav.ui.alongPath(p.first, p.second, path))!!
+            val drift = uk.noammm.kav.ui.metres(p.first, p.second, back.first, back.second)
+            assertTrue("a point on the line came back $drift m away", drift < 1.0)
+        }
+    }
+
+    @Test
+    fun testATransfersTwoMarkersLandOnOneSpot() {
+        // Moovit gives a same-stop transfer as one stop id shared by the ride that ends
+        // there and the ride that starts there, plus two leg shapes that meet at it.
+        // onRoute pulls the stop onto each leg's own line, and boardingMarkers merges
+        // the pair into one ring on the strength of both arriving at the same place, so
+        // that is what this holds: one stop, one point, reached down a 16 km leg and a
+        // 1 km one. It is deliberately not a guard on the drift above — a stop at the
+        // very end of a leg is the one place that drift cannot show, because overshoot
+        // clamps to path.last() and lands on the junction anyway.
+        val junction = 32.122110 to 34.794210
+        val stop = 32.122120 to 34.794165
+        val arriving = (0..420).map { i ->
+            val t = i / 420.0
+            (32.099640 + (junction.first - 32.099640) * t) to (34.964080 + (junction.second - 34.964080) * t)
+        }
+        val leaving = (0..25).map { i ->
+            val t = i / 25.0
+            (junction.first + (32.113880 - junction.first) * t) to (junction.second + (34.801490 - junction.second) * t)
+        }
+        val off = uk.noammm.kav.ui.onRoute(stop, arriving)
+        val on = uk.noammm.kav.ui.onRoute(stop, leaving)
+        val apart = uk.noammm.kav.ui.metres(off.first, off.second, on.first, on.second)
+        assertTrue("one stop was drawn as two rings $apart m apart", apart < 2.0)
+        // and neither may slide along its line away from the stop it names
+        assertTrue(uk.noammm.kav.ui.metres(stop.first, stop.second, off.first, off.second) < 10.0)
+        assertTrue(uk.noammm.kav.ui.metres(stop.first, stop.second, on.first, on.second) < 10.0)
+    }
 }

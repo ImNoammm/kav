@@ -3,6 +3,13 @@ package uk.noammm.kav.ui
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,8 +43,11 @@ import kotlinx.coroutines.withContext
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.MoovitSession
+import uk.noammm.kav.data.Net
+import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.StopStore
 import uk.noammm.kav.hasLocationPermission
+import uk.noammm.kav.loadNet
 import uk.noammm.kav.requestLocationOnce
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -63,6 +73,8 @@ private val hm = SimpleDateFormat("HH:mm", Locale.US)
 private sealed interface LiveFocus {
     data class Vehicle(val tripId: Long, val from: Int? = null) : LiveFocus
     data class Stop(val id: Int) : LiveFocus
+    /** A line at a stop, carried by what Moovit calls it: the bundle is matched on this. */
+    data class Line(val number: String, val destination: String, val from: Int) : LiveFocus
 }
 
 /**
@@ -259,7 +271,11 @@ fun LiveScreen(model: KavModel) {
     }
 
     androidx.activity.compose.BackHandler(focus != null) {
-        focus = (focus as? LiveFocus.Vehicle)?.from?.let { LiveFocus.Stop(it) }
+        focus = when (val f = focus) {
+            is LiveFocus.Vehicle -> f.from?.let { LiveFocus.Stop(it) }
+            is LiveFocus.Line -> LiveFocus.Stop(f.from)
+            else -> null
+        }
     }
     androidx.compose.animation.AnimatedContent(
         targetState = focus,
@@ -268,7 +284,7 @@ fun LiveScreen(model: KavModel) {
             // a vehicle opened from a stop sits one level deeper than it; every other
             // move towards something is deeper, and towards nothing is back out
             val deeper = targetState != null &&
-                (initialState == null || (targetState is LiveFocus.Vehicle && initialState is LiveFocus.Stop))
+                (initialState == null || (targetState !is LiveFocus.Stop && initialState is LiveFocus.Stop))
             if (deeper) forward() else backward()
         },
         label = "live",
@@ -284,8 +300,15 @@ fun LiveScreen(model: KavModel) {
                 LiveStopScreen(
                     stopsById[f.id], f.id, arrivals, lines, modes, now,
                     onVehicle = { focus = LiveFocus.Vehicle(it, from = f.id) },
+                    onLine = { number, destination ->
+                        focus = LiveFocus.Line(number, destination, from = f.id)
+                    },
                     onBack = { focus = null },
                 )
+                return@AnimatedContent
+            }
+            is LiveFocus.Line -> {
+                LiveLineRoute(model, f, stopsById[f.from]) { focus = LiveFocus.Stop(f.from) }
                 return@AnimatedContent
             }
             null -> Unit
@@ -343,15 +366,38 @@ fun LiveScreen(model: KavModel) {
                     stopsError?.let { Text(it, fontSize = 11.sp, color = K.problem, lineHeight = 15.sp) }
                 }
             }
-            if (stopsReady) {
-                if (loading) Box(
-                    Modifier.fillMaxWidth().height(200.dp + LocalBottomBarInset.current)
-                        .padding(bottom = LocalBottomBarInset.current),
-                    contentAlignment = Alignment.Center,
-                ) { LoadingPulse(T("Finding vehicles", "מאתרים כלי רכב")) }
-                else LiveList(vehicles, now, Modifier.fillMaxWidth()
-                    .heightIn(max = 260.dp + LocalBottomBarInset.current).padding(K.gap2)) {
-                    focus = LiveFocus.Vehicle(it.tripId)
+            // What sits under the map: nothing yet, the search, or the vehicles. Each
+            // is a different height, and swapping one for the next used to resize the
+            // map between two frames and drop the new text in fully formed. The size
+            // is tweened and the words are faded through instead, so the map opens out
+            // into the space rather than jumping into it. Keyed on which of the three
+            // is showing, never on the vehicle list itself, or the 20s refresh would
+            // replay the whole transition every time it landed.
+            val below = when {
+                !stopsReady -> 0
+                loading -> 1
+                vehicles.isEmpty() -> 2
+                else -> 3
+            }
+            AnimatedContent(
+                targetState = below,
+                transitionSpec = {
+                    (fadeIn(tween(200, delayMillis = 90)) togetherWith fadeOut(tween(140)))
+                        .using(SizeTransform { _, _ -> tween(300, easing = FastOutSlowInEasing) })
+                },
+                label = "live-below",
+            ) { state ->
+                when (state) {
+                    0 -> Spacer(Modifier.fillMaxWidth())
+                    1 -> Box(
+                        Modifier.fillMaxWidth().height(200.dp + LocalBottomBarInset.current)
+                            .padding(bottom = LocalBottomBarInset.current),
+                        contentAlignment = Alignment.Center,
+                    ) { LoadingPulse(T("Finding vehicles", "מאתרים כלי רכב")) }
+                    else -> LiveList(vehicles, now, Modifier.fillMaxWidth()
+                        .heightIn(max = 260.dp + LocalBottomBarInset.current).padding(K.gap2)) {
+                        focus = LiveFocus.Vehicle(it.tripId)
+                    }
                 }
             }
         }
@@ -359,6 +405,107 @@ fun LiveScreen(model: KavModel) {
 }
 
 private val K.glassPlate get() = androidx.compose.ui.graphics.Color(0xCC000000)
+
+/**
+ * Where a line goes, opened from a stop in the Live tab.
+ *
+ * Live is online and the route drawing is the offline bundle's, and the two share
+ * nothing: Moovit knows a line by the number on the bus and where it says it is
+ * headed, the bundle knows routes by index. So the bundle is opened here, the same
+ * way the map picker opens it, and the line is matched across.
+ */
+@Composable
+private fun LiveLineRoute(model: KavModel, line: LiveFocus.Line, at: Moovit.Stop?, onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    androidx.activity.compose.BackHandler(onBack = onBack)
+    var net by remember { mutableStateOf(model.net) }
+    var netError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        if (net != null) return@LaunchedEffect
+        try {
+            net = loadNet(ctx).also { model.net = it }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            netError = e.message ?: e.javaClass.simpleName
+        }
+    }
+    val open = net
+    // null while the match is still running, -1 once it has come back empty
+    var route by remember(open) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(open) {
+        val n = open ?: return@LaunchedEffect
+        route = withContext(Dispatchers.Default) {
+            matchRoute(n, line.number, line.destination, at?.lat ?: Double.NaN, at?.lon ?: Double.NaN)
+        }
+    }
+    val found = route
+    if (open != null && found != null && found >= 0) {
+        LineDetail(model, open, found, onBack)
+        return
+    }
+    Column(Modifier.fillMaxSize().background(K.bg)) {
+        ScreenHeader(T("Line", "קו"), line.number, back = onBack)
+        when {
+            netError != null -> Note(
+                T("The offline timetable could not be opened: $netError",
+                    "לא ניתן היה לפתוח את לוח הזמנים הלא מקוון: $netError"),
+                Modifier.padding(K.gap4), K.problem,
+            )
+            found != null -> Note(
+                T("Line ${line.number} is not in the offline timetable, so its route cannot be drawn.",
+                    "קו ${line.number} אינו נמצא בלוח הזמנים הלא מקוון, ולכן לא ניתן לשרטט את המסלול שלו."),
+                Modifier.padding(K.gap4),
+            )
+            else -> LoadingBlock(T("Finding the route", "מאתרים את המסלול"))
+        }
+    }
+}
+
+/**
+ * The bundle's route that best answers a Moovit line seen at a stop, or -1.
+ *
+ * The MOT feed emits one GTFS route row per service pattern, so a single line is many
+ * rows and picking the first one with the right number lands on an arbitrary variant.
+ * Three things narrow it: the number has to match, the variant should actually call at
+ * the stop the rider is standing at (found by position, because the stop ids do not
+ * agree between the two sides either), and its far end should read like the
+ * destination Moovit gave. Longest-pattern breaks any remaining tie, which is the same
+ * stand-in for "the line" that the Lines tab already uses.
+ */
+private fun matchRoute(net: Net, number: String, destination: String, lat: Double, lon: Double): Int {
+    val want = number.trim()
+    if (want.isEmpty()) return -1
+    val candidates = (0 until net.nRoutes).filter { net.rShort[it].trim() == want }
+    if (candidates.isEmpty()) return -1
+    val wanted = candidates.toHashSet()
+    // one pass for the longest trip on each candidate, not a full scan per route
+    val longest = HashMap<Int, Int>()
+    for (t in net.tripRoute.indices) {
+        val r = net.tripRoute[t]
+        if (r !in wanted) continue
+        val best = longest[r]
+        if (best == null || net.tripStart[t + 1] - net.tripStart[t] >
+            net.tripStart[best + 1] - net.tripStart[best]
+        ) longest[r] = t
+    }
+    val here = if (lat.isFinite() && lon.isFinite())
+        net.nearestStops(lat, lon, k = 1, radius = 150.0).firstOrNull()?.first else null
+    var bestRoute = -1
+    var bestScore = Int.MIN_VALUE
+    for (r in candidates) {
+        val t = longest[r] ?: continue
+        val stops = (net.tripStart[t] until net.tripStart[t + 1]).map { net.stStop[it] }
+        var score = stops.size
+        if (here != null && here in stops) score += 10_000
+        val end = stops.lastOrNull()?.let { net.name[it] }.orEmpty()
+        val namesDestination = end.isNotBlank() &&
+            (destination.contains(end) || end.contains(destination))
+        if (destination.isNotBlank() && (namesDestination || net.rLong[r].contains(destination))) score += 100_000
+        if (score > bestScore) { bestScore = score; bestRoute = r }
+    }
+    return bestRoute
+}
 
 /**
  * The live map: real tiles, the stops around you as circles, and every tracked vehicle.
@@ -446,7 +593,11 @@ private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onS
                 "Nothing tracked near you right now. Vehicles appear here as soon as one of your stops has a bus reporting its position.",
                 "אין כרגע כלי רכב במעקב בסביבתכם. כלי רכב יופיעו כאן ברגע שאחת התחנות שלכם תקבל דיווח מיקום מאוטובוס.",
             ),
-            Modifier.padding(horizontal = K.gap4, vertical = K.gap3),
+            // The tabs float over the page, so this note has to step over them itself.
+            // Without the inset it was laid out in the strip the bar covers: invisible,
+            // and it pushed the map's bottom edge down under the bar with it.
+            Modifier.padding(horizontal = K.gap4, vertical = K.gap3)
+                .padding(bottom = LocalBottomBarInset.current),
         )
         return
     }
@@ -589,6 +740,7 @@ private fun LiveStopScreen(
     modes: Map<Int, Int>,
     now: Long,
     onVehicle: (Long) -> Unit,
+    onLine: (number: String, destination: String) -> Unit,
     onBack: () -> Unit,
 ) {
     val due = remember(arrivals, stopId) {
@@ -684,7 +836,17 @@ private fun LiveStopScreen(
                 val live = v.arrival.hasLocation
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl))
-                        .clickable(role = Role.Button, enabled = live) { onVehicle(v.tripId) }
+                        // A line with nothing reporting used to be a dead row: the one
+                        // thing you can still be told about it is where it goes, so
+                        // that is what it opens now.
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = if (live) T("Follow this vehicle", "מעקב אחר כלי הרכב")
+                            else T("See where line ${v.number} goes", "המסלול של קו ${v.number}"),
+                        ) {
+                            if (live) onVehicle(v.tripId)
+                            else onLine(v.number, v.line?.destination.orEmpty())
+                        }
                         .padding(horizontal = K.gap3, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(K.gap3),
@@ -701,7 +863,7 @@ private fun LiveStopScreen(
                         whenLabel(v.eta, now), style = Mono, fontSize = 13.sp,
                         color = if (live) K.text else K.scheduled,
                     )
-                    Text(T.onward, fontSize = 22.sp, color = if (live) K.dim else Color.Transparent)
+                    Text(T.onward, fontSize = 22.sp, color = K.dim)
                 }
             }
         }

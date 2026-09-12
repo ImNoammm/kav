@@ -44,7 +44,21 @@ internal fun distanceToPath(lat: Double, lon: Double, path: List<Pair<Double, Do
     return best
 }
 
-/** How far along a polyline, in metres from its start, the point nearest to (lat, lon) sits. */
+/**
+ * How far along a polyline, in metres from its start, the point nearest to (lat, lon) sits.
+ *
+ * Which segment is nearest, and how far along that segment the foot of the perpendicular
+ * falls, are worked out on a flat plane pinned to the query point: over the few metres
+ * that decide between neighbouring segments it is exact enough. The distance returned is
+ * accumulated with [metres] instead of in that plane, because the answer is handed
+ * straight back to [pointAlong], which walks the line in [metres]. The plane's scale is
+ * about a tenth of a percent away from it, which is nothing across a stop and seventeen
+ * metres along a twenty-kilometre ride, and it runs long: the answer can exceed the line
+ * it measures. At a stop mid-ride that slides the circle a bus-length down the road; at
+ * the far end it is swallowed, because [pointAlong] clamps an overshoot to the last point
+ * and lands where it should have anyway. Both halves of the round trip have to count in
+ * the same units or the point that comes back out is not the point that went in.
+ */
 internal fun alongPath(lat: Double, lon: Double, path: List<Pair<Double, Double>>): Double {
     if (path.size < 2) return 0.0
     val f = Flat(lat, lon)
@@ -54,11 +68,12 @@ internal fun alongPath(lat: Double, lon: Double, path: List<Pair<Double, Double>
         val bx = f.x(path[i + 1].second); val by = f.y(path[i + 1].first)
         val dx = bx - ax; val dy = by - ay
         val len = sqrt(dx * dx + dy * dy)
+        val seg = metres(path[i].first, path[i].second, path[i + 1].first, path[i + 1].second)
         val t = if (len == 0.0) 0.0 else (((-ax) * dx + (-ay) * dy) / (len * len)).coerceIn(0.0, 1.0)
         val px = ax + dx * t; val py = ay + dy * t
         val d = sqrt(px * px + py * py)
-        if (d < best) { best = d; bestAlong = walked + len * t }
-        walked += len
+        if (d < best) { best = d; bestAlong = walked + seg * t }
+        walked += seg
     }
     return bestAlong
 }

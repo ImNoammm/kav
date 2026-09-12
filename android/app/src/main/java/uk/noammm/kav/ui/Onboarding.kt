@@ -102,12 +102,12 @@ fun OnboardingScreen(onDone: () -> Unit) {
                     T(
                         "Kav keeps its map on your phone instead of loading tiles from a server as " +
                             "you go, so nothing tracks where you look. It's about ${MapFile.BYTES shr 20} MB for all " +
-                            "of Israel, once. After that the map works with no signal. Get it now or " +
-                            "later from the map itself.",
+                            "of Israel, once. After that the map works with no signal. Kav needs it " +
+                            "before it can show you anything, so it downloads now.",
                         "Kav מחזיקה את המפה בטלפון שלכם במקום לטעון אריחים משרת תוך כדי תנועה, " +
                             "כך שאף אחד לא עוקב אחרי מה שאתם מסתכלים עליו. זה בערך ${MapFile.BYTES shr 20} MB לכל " +
-                            "ישראל, פעם אחת. אחרי זה המפה עובדת גם בלי קליטה. אפשר להוריד עכשיו או " +
-                            "מאוחר יותר מתוך המפה עצמה.",
+                            "ישראל, פעם אחת. אחרי זה המפה עובדת גם בלי קליטה. Kav צריכה אותה כדי " +
+                            "להציג לכם משהו, אז מורידים אותה עכשיו.",
                     ),
                     fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
                 )
@@ -126,19 +126,18 @@ fun OnboardingScreen(onDone: () -> Unit) {
                     else -> {}
                 }
                 Spacer(Modifier.height(K.gap8))
+                // The map is not optional here and there is no way past it: no "continue
+                // while it downloads" and no Later. Both were exits taken mid-fetch, and
+                // the rider who took one landed in an app still offering to download the
+                // map on every screen. The choice is made once, before the download starts:
+                // the only exit is Done, and Done only exists once the file is on disk. A
+                // failed download leaves Try again instead. The spacer stays so the page
+                // does not jump as the button under it changes.
                 when (state) {
                     is MapFile.State.Ready -> OnboardingButton(T("Done", "סיום"), onClick = onDone)
-                    is MapFile.State.Downloading -> OnboardingButton(T("Continue while it downloads", "המשיכו בזמן ההורדה"), onClick = onDone)
+                    is MapFile.State.Downloading -> {}
                     is MapFile.State.Failed -> OnboardingButton(T("Try again", "נסו שוב")) { MapFile.startDownload(ctx) }
                     else -> OnboardingButton(T("Download", "הורדה")) { MapFile.startDownload(ctx) }
-                }
-                if (state !is MapFile.State.Ready && state !is MapFile.State.Downloading) {
-                    Spacer(Modifier.height(K.gap3))
-                    Box(
-                        Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(K.rPill))
-                            .clickable(role = Role.Button, onClick = onDone),
-                        contentAlignment = Alignment.Center,
-                    ) { Text(T("Later", "אחר כך"), fontSize = 15.sp, color = K.muted) }
                 }
             }
             Spacer(Modifier.height(K.gap6))

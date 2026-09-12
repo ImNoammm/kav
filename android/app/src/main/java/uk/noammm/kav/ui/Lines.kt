@@ -156,7 +156,7 @@ private fun LineDirection(net: Net, endpoints: Pair<Int, Int>?, modifier: Modifi
 }
 
 @Composable
-private fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Unit) {
+internal fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Unit) {
     // scanning 123k trips for the longest one is milliseconds, but not on the
     // frame that draws the screen
     var stops by remember(route) { mutableStateOf<List<Int>?>(null) }

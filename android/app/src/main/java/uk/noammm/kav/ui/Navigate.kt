@@ -688,6 +688,7 @@ private fun NavigateMap(
     if (legs.isEmpty()) return
     val pulse = rememberLivePulse()
     val rideLegs = picked.filter { it.kind == Moovit.LegKind.RIDE }
+    val rideLegsShapes = legs.filter { it.kind != Moovit.LegKind.WALK }
     val fetched = rememberLineRoutes(rideLegs.map { r.arrival(it)?.tripShapeId ?: -1 })
     val lineRoutes = rideLegs
         .map { l ->
@@ -705,7 +706,9 @@ private fun NavigateMap(
     }
     // every stop on every ride, so the map shows the same circles the card does
     val stopNames = rememberStopNames(remember(rideLegs) { rideLegs.flatMap { it.stops } })
-    val stopPoints = remember(rideLegs, r.stops, stopNames) { rideStopPoints(rideLegs, r.stops + stopNames) }
+    val stopPoints = remember(rideLegsShapes, r.stops, stopNames) {
+        rideStopPoints(rideLegsShapes, r.stops + stopNames)
+    }
 
     val chosenRide = when (step) {
         is Step.Wait -> boardingChoice(step.ride, step.wait, chosen[step.legIndex] ?: 0).first
@@ -747,18 +750,19 @@ private fun NavigateMap(
     // The route, the stops and the ends go to MapLibre itself: drawn in the same GL
     // frame as the ground, they cannot slide against it while the camera is easing.
     val walkLegs = legs.filter { it.kind == Moovit.LegKind.WALK }
-    val rideLegsShapes = legs.filter { it.kind != Moovit.LegKind.WALK }
     val geometry = remember(lineRoutes, legs, behind, stopPoints, K.accent) {
         MapGeometry(
             lines = lineRoutes.map { MapLine(it, K.routeIdle, 3f, casing = 6f) } +
                 walkLegs.map { MapLine(it.shape, K.muted, 2f, dashed = true) } +
-                rideLegsShapes.mapIndexed { i, l -> MapLine(l.shape, routeShade(i), 4f, casing = 8f) } +
+                rideLegsShapes.mapIndexed { i, l -> MapLine(l.shape, routeTint(i), 4f, casing = 8f) } +
                 listOf(MapLine(behind, K.routeIdle, 4f, casing = 8f)),
-            // The stops the bus only calls at stay plain, the way they are plain in
-            // Moovit: in the line's own colour they compete with the two that matter,
-            // which are the one you board at and the one you get off at.
-            dots = stopPoints.flatMap { (lat, lon) ->
-                listOf(MapDot(lat, lon, K.bg, 6f), MapDot(lat, lon, Color.Transparent, 3.5f, K.routeIdle, 2f))
+            // The stops the bus only calls at wear the colour of the ride that calls at
+            // them, so a leg is one colour from end to end instead of a coloured line
+            // threaded through neutral beads. Size still separates them from the two
+            // that matter: these stay small and hollow, a boarding is filled.
+            dots = stopPoints.flatMap { (ride, at) ->
+                val (lat, lon) = at
+                listOf(MapDot(lat, lon, K.bg, 6f), MapDot(lat, lon, Color.Transparent, 3.5f, routeTint(ride), 2f))
             } + boardingMarkers(rideLegsShapes, r, r.stops + stopNames) + listOfNotNull(
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 7f) },
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, Color.Transparent, 5f, K.text, 2f) },
@@ -815,11 +819,19 @@ private fun NavigateMap(
     )
 }
 
-/** Stops use their actual coordinates; route endpoints remain usable while names load. */
-internal fun rideStopPoints(legs: List<Moovit.Leg>, stops: Map<Int, Moovit.StopInfo>): List<Pair<Double, Double>> =
-    legs.flatMap { leg ->
-        leg.stops.mapNotNull { stops[it]?.point } + listOfNotNull(
+/**
+ * Stops use their actual coordinates; route endpoints remain usable while names load.
+ * Each point comes back tagged with the position of its ride in [legs], because that is
+ * what gives it [routeTint]'s colour, and the index has to be taken from the same list
+ * the lines were drawn from or a stop is painted a different colour from the line it
+ * sits on.
+ */
+internal fun rideStopPoints(legs: List<Moovit.Leg>, stops: Map<Int, Moovit.StopInfo>): List<Pair<Int, Pair<Double, Double>>> =
+    legs.indices.flatMap { i ->
+        val leg = legs[i]
+        // onto the line this leg actually draws, or every circle floats beside it
+        (leg.stops.mapNotNull { stops[it]?.point }.map { onRoute(it, leg.shape) } + listOfNotNull(
             leg.shape.firstOrNull().takeIf { stops[leg.fromStop]?.point == null && stops[leg.stops.firstOrNull()]?.point == null },
             leg.shape.lastOrNull().takeIf { stops[leg.toStop]?.point == null && stops[leg.stops.lastOrNull()]?.point == null },
-        )
+        )).map { i to it }
     }.distinct()

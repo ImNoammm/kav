@@ -49,12 +49,16 @@ fun Net.searchRoutes(q: String, mode: Int = -1): IntArray {
     for (r in rShort.indices) {
         if (mode >= 0 && rType[r] != mode) continue
         if (need.isNotEmpty()) {
+            if (need.size == 1 && need[0].toIntOrNull() != null) {
+                if (!rShort[r].startsWith(need[0]) ) continue
+            }
             val h = (rShort[r] + " " + rLong[r]).lowercase()
             if (!need.all { h.contains(it) }) continue
         }
         if (!seen.add(rShort[r] + "\u0000" + rLong[r])) continue
         out.add(r)
     }
+    out.sortWith { i, i1 -> rShort[i].compareTo(rShort[i1])  }
     return out.toIntArray()
 }
 

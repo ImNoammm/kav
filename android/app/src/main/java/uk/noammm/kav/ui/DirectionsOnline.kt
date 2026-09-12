@@ -23,7 +23,6 @@ import uk.noammm.kav.ActiveJourney
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.Prefs
 import uk.noammm.kav.RecentTrip
-import uk.noammm.kav.data.Fallback
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Moovit.Place
 
@@ -47,20 +46,45 @@ private data class OpenTrip(
  * default is NO_CLIENT_SORTING, the server's ranking, untouched, and each other
  * option replaces it with a single comparator.
  */
-private enum class Sort(val label: String) {
-    RECOMMENDED("Recommended"),
-    FASTEST("Fastest"),
-    EARLIEST_DEPARTURE("Departs first"),
-    EARLIEST_ARRIVAL("Arrives first"),
-    LEAST_TRANSFERS("Fewest transfers"),
-    LEAST_WALKING("Least walking"),
-    CHEAPEST("Cheapest"),
-    LOWEST_CO2("Lowest CO2"),
+private enum class Sort(val labelText: () -> String) {
+    RECOMMENDED({ T("Recommended", "מומלץ") }),
+    FASTEST({ T("Fastest", "המהיר ביותר") }),
+    EARLIEST_DEPARTURE({ T("Departs first", "יציאה מוקדמת") }),
+    EARLIEST_ARRIVAL({ T("Arrives first", "הגעה מוקדמת") }),
+    LEAST_TRANSFERS({ T("Fewest transfers", "פחות החלפות") }),
+    LEAST_WALKING({ T("Least walking", "פחות הליכה") }),
+    CHEAPEST({ T("Cheapest", "הזול ביותר") }),
+    LOWEST_CO2({ T("Lowest CO2", "פליטת CO2 נמוכה") }),
 }
 
 /** Closer than this and there is nothing to plan: the planner answers 424 to it anyway. */
 private const val TOO_CLOSE_M = 120.0
 private const val TOO_CLOSE = "too-close"
+
+/**
+ * Where you are, as somewhere you can be sent.
+ *
+ * The origin says "here" by being null. The destination cannot: null there means
+ * nowhere chosen yet, so swapping the two ends - or asking to travel back to where
+ * you are - has to hand the destination a real place instead. It was built in two
+ * places and recognised in none, which is why a swapped-in "Current location" landed
+ * in the destination slot as an ordinary grey address rather than the lit one it is.
+ *
+ * Recognised by name against both languages, not the one in force: the place keeps
+ * the word it was built with, and switching language mid-trip must not turn it back
+ * into an address.
+ */
+private val HERE = listOf("Current location", "המיקום הנוכחי")
+
+private fun hereName() = T(HERE[0], HERE[1])
+
+private fun herePlace(at: Pair<Double, Double>) = Place(hereName(), "", at.first, at.second)
+
+private fun isHere(p: Place?) = p != null && p.name in HERE
+
+/** The name to print for an endpoint; the here-place re-reads its own, so a language
+ *  change re-labels it instead of leaving the word it happened to be built with. */
+private fun endpointName(p: Place?) = if (isHere(p)) hereName() else p?.name
 
 @Composable
 fun DirectionsOnline(model: KavModel) {
@@ -73,10 +97,6 @@ fun DirectionsOnline(model: KavModel) {
 
     var plan by remember { mutableStateOf(Moovit.Plan()) }
     var raw by remember { mutableStateOf<List<Moovit.Itinerary>>(emptyList()) }
-    var offline by remember { mutableStateOf(false) }
-    /** planned on the device even though the network is up, say which, and why */
-    var degraded by remember { mutableStateOf(false) }
-    var onlineError by remember { mutableStateOf("") }
     var planning by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var resolved by remember { mutableStateOf(Moovit.Resolved()) }
@@ -115,7 +135,7 @@ fun DirectionsOnline(model: KavModel) {
     }
     val fromLL = fromPlace?.let { it.lat to it.lon } ?: hereOrigin ?: here
     val toLL = toPlace?.let { it.lat to it.lon }
-    val fromIsHere = fromPlace == null && here != null
+    val fromIsHere = if (fromPlace == null) here != null else isHere(fromPlace)
 
     LaunchedEffect(showResults, fromLL, toLL, departAt, timeType, filters) {
         if (!showResults) { planning = false; return@LaunchedEffect }
@@ -137,7 +157,6 @@ fun DirectionsOnline(model: KavModel) {
             plan = res
             // the server's own section table decides order and how many of each to show
             raw = res.laidOut()
-            offline = false; degraded = false
             planning = false
             // Line numbers and stop names are separate lookups; fill them in behind
             // the cards rather than making the whole screen wait on them.
@@ -152,37 +171,46 @@ fun DirectionsOnline(model: KavModel) {
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
+        } catch (e: Moovit.PlannerRefusal) {
+            // The planner answered, and the answer was no. Say which no: its own
+            // codes are exact, and reporting them as "the planner did not answer"
+            // is what made a Saturday with nothing running look like a server fault.
+            android.util.Log.i("KavPlan", "planner refused: ${e.code} ${e.title}")
+            error = when (e.code) {
+                Moovit.PLAN_TOO_CLOSE -> TOO_CLOSE
+                Moovit.PLAN_NO_ROUTES -> T(
+                    "Nothing is running for this trip at that time. Try another departure time.",
+                    "אין קווים לנסיעה הזו בשעה הזו. נסו שעת יציאה אחרת.",
+                )
+                Moovit.PLAN_TOO_FAR -> T(
+                    "These two places are too far apart to plan a trip between.",
+                    "שני המקומות האלה רחוקים מכדי לתכנן נסיעה ביניהם.",
+                )
+                Moovit.PLAN_NO_COVERAGE -> T(
+                    "Moovit has no timetable for this area.",
+                    "ל-Moovit אין לוח זמנים לאזור הזה.",
+                )
+                // an unknown code still has Moovit's own sentence, in the rider's
+                // own language, which beats anything invented for it here
+                else -> e.detail.ifBlank { e.title }.ifBlank {
+                    T("Moovit would not plan this trip.", "Moovit לא תכנן את הנסיעה הזו.")
+                }
+            }
+            planning = false
         } catch (e: Exception) {
-            // Two different failures, and they must not print the same sentence: no
-            // network at all, or a network that works and a call that still failed.
-            // Claiming "no connection" on a phone with five bars is just a lie.
+            // The planner never answered at all. Two ways for that to happen, and
+            // they must not print the same sentence: no network, or a network that
+            // works and a call that still failed. Claiming "no connection" on a
+            // phone with five bars is just a lie.
             android.util.Log.e("KavPlan", "online plan failed", e)
-            // 424 is the planner's word for "nothing to plan between these two": it is
-            // what a start and a destination a few doors apart get
-            if (e.message?.contains("424") == true &&
-                metres(fromLL.first, fromLL.second, toLL.first, toLL.second) < 600
-            ) {
-                error = TOO_CLOSE; planning = false; return@LaunchedEffect
-            }
-            val online = uk.noammm.kav.hasNetwork(ctx)
-            planning = true
-            val net = model.net ?: try {
-                uk.noammm.kav.loadNet(ctx).also { model.net = it }
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-            catch (e: Exception) { null }
-            if (net != null) {
-                val (its, res) = withContext(Dispatchers.Default) { Fallback.plan(net, fromLL, toLL) }
-                raw = its; plan = Moovit.Plan(its); resolved = res
-                offline = its.isNotEmpty()
-                degraded = its.isNotEmpty() && online
-                onlineError = e.message ?: e.javaClass.simpleName
-                error = if (its.isEmpty()) {
-                    if (online) "Moovit's planner did not answer: ${e.message ?: e.javaClass.simpleName}"
-                    else "No connection, and the offline timetable has no route for this trip."
-                } else null
-            } else {
-                error = e.message ?: e.javaClass.simpleName
-            }
+            val reason = e.message ?: e.javaClass.simpleName
+            error = if (uk.noammm.kav.hasNetwork(ctx)) T(
+                "Moovit's planner did not answer: $reason",
+                "התכנון של Moovit לא הגיב: $reason",
+            ) else T(
+                "No connection. Kav needs one to plan a trip.",
+                "אין חיבור. Kav זקוק לחיבור כדי לתכנן נסיעה.",
+            )
             planning = false
         }
     }
@@ -233,8 +261,8 @@ fun DirectionsOnline(model: KavModel) {
         val again = shown.firstOrNull { sameRoute(it, taken) }
             ?: shown.firstOrNull() ?: return@LaunchedEffect
         open = OpenTrip(
-            again, resolved, fromPlace?.name ?: "Current location",
-            toPlace?.name ?: "Destination", backHome = true,
+            again, resolved, fromPlace?.name ?: T("Current location", "המיקום הנוכחי"),
+            toPlace?.name ?: T("Destination", "יעד"), backHome = true,
         )
     }
 
@@ -289,9 +317,11 @@ fun DirectionsOnline(model: KavModel) {
             model = model,
             // the active trip and the two before it, or three taken trips when idle
             recentTrips = Prefs.trips(ctx).take(if (model.activeJourney != null) 2 else 3),
-            onSearch = {
-                fromPlace = null; departAt = 0L; timeType = Moovit.TIME_DEPARTURE; picking = "to"
-            },
+            // Home names only the destination, so it cannot show a start left over
+            // from the last trip either: it plans from where you are, the way the
+            // favourites below it already do, and the results header is where a
+            // different start gets chosen and can be seen.
+            onSearch = { fromPlace = null; departAt = 0L; timeType = Moovit.TIME_DEPARTURE; picking = "to" },
             onFavourite = { p ->
                 fromPlace = null; toPlace = p
                 departAt = 0L; timeType = Moovit.TIME_DEPARTURE
@@ -315,23 +345,23 @@ fun DirectionsOnline(model: KavModel) {
     }
 
     if (opening) {
-        LoadingScreen("Finding your route") { autoOpen = null; showResults = false }
+        LoadingScreen(T("Finding your route", "מוצאים לכם מסלול")) { autoOpen = null; showResults = false }
         return@AnimatedContent
     }
 
     Column(Modifier.fillMaxSize()) {
         PlanHeader(
-            from = fromPlace?.name ?: if (here != null) "Current location" else "Choose a start…",
-            to = toPlace?.name ?: "Where do you want to go?…",
+            from = endpointName(fromPlace) ?: if (here != null) hereName() else T("Choose a start…", "בחרו נקודת התחלה…"),
+            to = endpointName(toPlace) ?: T("Where do you want to go?…", "לאן תרצו להגיע?…"),
             fromIsHere = fromIsHere,
+            toIsHere = isHere(toPlace),
             onFrom = { picking = "from" },
             onTo = { picking = "to" },
             onSwap = {
                 val a = fromPlace
                 fromPlace = toPlace
-                toPlace = a ?: here?.let { Place("Current location", "", it.first, it.second) }
+                toPlace = a ?: here?.let(::herePlace)
             },
-            onTune = { model.settingsOpen = true },
             onBack = { showResults = false },
         )
         DepartRow(
@@ -347,14 +377,14 @@ fun DirectionsOnline(model: KavModel) {
             horizontalArrangement = Arrangement.spacedBy(K.gap2),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            FilterChip(sort.label, lit = sort != Sort.RECOMMENDED, caret = true) {
+            FilterChip(sort.labelText(), lit = sort != Sort.RECOMMENDED, caret = true) {
                 sort = Sort.entries[(sort.ordinal + 1) % Sort.entries.size]
             }
             Box(Modifier.height(20.dp).width(1.dp).background(K.border))
-            FilterChip("Fewest transfers", lit = sort == Sort.LEAST_TRANSFERS) {
+            FilterChip(T("Fewest transfers", "פחות החלפות"), lit = sort == Sort.LEAST_TRANSFERS) {
                 sort = if (sort == Sort.LEAST_TRANSFERS) Sort.RECOMMENDED else Sort.LEAST_TRANSFERS
             }
-            FilterChip("Least walking", lit = sort == Sort.LEAST_WALKING) {
+            FilterChip(T("Least walking", "פחות הליכה"), lit = sort == Sort.LEAST_WALKING) {
                 sort = if (sort == Sort.LEAST_WALKING) Sort.RECOMMENDED else Sort.LEAST_WALKING
             }
 
@@ -362,20 +392,30 @@ fun DirectionsOnline(model: KavModel) {
 
         when {
             error == TOO_CLOSE -> Note(
-                "You're too close to your destination to plan a route.",
+                T(
+                    "You're too close to your destination to plan a route.",
+                    "אתם קרובים מדי ליעד כדי לתכנן מסלול.",
+                ),
                 Modifier.padding(K.gap4),
             )
-            error != null -> Note("Could not reach Moovit: $error", Modifier.padding(K.gap4))
+            // Printed as it stands. Whoever set it already knows whether Moovit
+            // refused the trip or never answered, and wrapping a refusal in "could
+            // not reach Moovit" is how "nothing is running tonight" came to read as
+            // a broken server.
+            error != null -> Note(error!!, Modifier.padding(K.gap4))
             toLL == null -> Note(
-                if (here == null) "Choose where you are starting from, and where you are going."
-                else "Where do you want to go?",
+                if (here == null) T(
+                    "Choose where you are starting from, and where you are going.",
+                    "בחרו מהיכן אתם יוצאים ולאן אתם רוצים להגיע.",
+                )
+                else T("Where do you want to go?", "לאן תרצו להגיע?"),
                 Modifier.padding(K.gap4),
             )
-            fromLL == null -> Note("Choose a start to find routes.", Modifier.padding(K.gap4))
-            planning -> LoadingBlock("Finding routes")
+            fromLL == null -> Note(T("Choose a start to find routes.", "בחרו נקודת התחלה כדי למצוא מסלולים."), Modifier.padding(K.gap4))
+            planning -> LoadingBlock(T("Finding routes", "מחפשים מסלולים"))
             shown.isEmpty() -> Note(
-                if (raw.isEmpty()) "No routes found for this trip."
-                else "Every route found is switched off in your filters.",
+                if (raw.isEmpty()) T("No routes found for this trip.", "לא נמצאו מסלולים לנסיעה הזו.")
+                else T("Every route found is switched off in your filters.", "כל המסלולים שנמצאו הוסתרו על ידי המסננים שלכם."),
                 Modifier.padding(K.gap4),
             )
             // Moovit files its results under headings it sends with them ("Taxi &
@@ -388,7 +428,7 @@ fun DirectionsOnline(model: KavModel) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     val base = if (departAt > 0L) departAt else System.currentTimeMillis()
-                    ShiftButton("‹ Earlier") {
+                    ShiftButton(T("‹ Earlier", "› מוקדם יותר")) {
                         // half an hour back can land before now, the same clamp
                         // Moovit's own Earlier goes through
                         val (ms, type) = clampDepart(
@@ -405,16 +445,8 @@ fun DirectionsOnline(model: KavModel) {
                         fontSize = 12.sp, color = K.dim,
                     )
                     Spacer(Modifier.weight(1f))
-                    ShiftButton("Later ›") { departAt = base + 30 * 60_000L }
+                    ShiftButton(T("Later ›", "מאוחר יותר ‹")) { departAt = base + 30 * 60_000L }
                 }
-                if (offline) Note(
-                    if (degraded)
-                        "Moovit's planner did not answer ($onlineError), planned on your " +
-                            "phone instead. No live times, no fares."
-                    else "No connection, planned on your phone from the timetable in the " +
-                        "app. No live times, no fares.",
-                    Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
-                )
                 LazyColumn(
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = K.gap3, end = K.gap3,
@@ -435,8 +467,8 @@ fun DirectionsOnline(model: KavModel) {
                             // that trip's route, so tapping it there comes back here
                             toPlace?.let { to -> Prefs.noteTripRoute(ctx, fromPlace, to, shown[i]) }
                             open = OpenTrip(
-                                shown[i], resolved, fromPlace?.name ?: "Current location",
-                                toPlace?.name ?: "Destination",
+                                shown[i], resolved, fromPlace?.name ?: T("Current location", "המיקום הנוכחי"),
+                                toPlace?.name ?: T("Destination", "יעד"),
                             )
                         }
                     }
@@ -461,27 +493,38 @@ fun DirectionsOnline(model: KavModel) {
     ) { which ->
         if (which != null) {
         PlacePicker(
-            title = if (which == "from") "start…" else "destination…",
+            title = if (which == "from") T("start…", "התחלה…") else T("destination…", "יעד…"),
             here = here,
             // A destination can be "where I am" too, planning back to here from a
             // start you picked is an ordinary thing to want, and the origin picker
             // offered it while this one silently did not.
-            allowMyLocation = here != null && which != "fav",
+            // offered even with no fix yet: the row itself goes and asks for one
+            allowMyLocation = which != "fav",
             initialSetting = if (which == "fav") settingFav else null,
             onMyLocation = {
                 if (which == "from") fromPlace = null
-                else toPlace = here?.let { Place("Current location", "", it.first, it.second) }
+                else toPlace = here?.let(::herePlace)
                 picking = null
-                showResults = true
+                if (which != "from" || toPlace != null) showResults = true
+                model.placeQuery = ""
             },
             onPick = { p ->
                 if (which == "from") fromPlace = p else toPlace = p
                 picking = null
-                showResults = true
+                // Picking a start on Home with nowhere to go yet is half a trip; stay
+                // on Home so the destination can be named, rather than planning to
+                // nothing and showing an error for it.
+                if (which != "from" || toPlace != null) showResults = true
+                // that search is finished; the next one starts clean
+                model.placeQuery = ""
             },
             onDismiss = { picking = null; model.settingFavourite = null },
+            net = model.net,
             favourites = model.favourites,
             onSaveFavourites = { model.saveFavourites(ctx, it) },
+            query = model.placeQuery,
+            onQuery = { model.placeQuery = it },
+            onLocate = { model.locate(it.first, it.second) },
         )
         }
     }
@@ -555,8 +598,8 @@ private fun ShiftButton(label: String, onClick: () -> Unit) {
 /** What the chip says: the plan the rider chose, then the time they gave it. */
 private fun whenLabel(departAt: Long, timeType: Int): String {
     // a latest departure names no clock time, the mode is the whole answer
-    if (timeType == Moovit.TIME_LAST) return "Latest departure"
-    if (departAt <= 0L) return "Depart now"
+    if (timeType == Moovit.TIME_LAST) return T("Latest departure", "יציאה אחרונה")
+    if (departAt <= 0L) return T("Depart now", "יציאה עכשיו")
     val now = java.util.Calendar.getInstance()
     val then = java.util.Calendar.getInstance().apply { timeInMillis = departAt }
     val sameDay = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&
@@ -565,7 +608,7 @@ private fun whenLabel(departAt: Long, timeType: Int): String {
         if (sameDay) "HH:mm" else "EEE HH:mm", java.util.Locale.getDefault(),
     ).format(java.util.Date(departAt))
     return when (timeType) {
-        Moovit.TIME_ARRIVAL -> "Arrive by " + stamp
-        else -> "Depart " + stamp
+        Moovit.TIME_ARRIVAL -> T("Arrive by ", "הגעה עד ") + stamp
+        else -> T("Depart ", "יציאה ") + stamp
     }
 }

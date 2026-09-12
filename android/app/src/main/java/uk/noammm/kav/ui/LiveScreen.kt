@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,6 +54,16 @@ object Online {
 }
 
 private val hm = SimpleDateFormat("HH:mm", Locale.US)
+
+/**
+ * What the Live tab has opened on top of its map: nothing, one vehicle, or one stop.
+ * A vehicle remembers the stop it was opened from, so backing out of it goes back to
+ * that stop rather than all the way out to the map.
+ */
+private sealed interface LiveFocus {
+    data class Vehicle(val tripId: Long, val from: Int? = null) : LiveFocus
+    data class Stop(val id: Int) : LiveFocus
+}
 
 /**
  * A vehicle the Live tab is showing: the arrival that carries its position, at the
@@ -97,14 +108,24 @@ fun LiveScreen(model: KavModel) {
             else ask.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
     }
-    var status by remember { mutableStateOf("connecting to Moovit…") }
+    var status by remember { mutableStateOf(T("connecting to Moovit…", "מתחברים ל-Moovit…")) }
     var loading by remember { mutableStateOf(true) }
+    // The stop database is paged by id and the ids are nowhere in particular, so until
+    // the walk is finished "the stops near you" are only the nearest of those seen so
+    // far, which can be a different district entirely. None of it is worth showing, so
+    // the map and the list wait behind a bar that says how far the walk has got.
+    var scanned by remember {
+        mutableFloatStateOf(if (Online.stopsComplete) 1f else Online.stopsNext.toFloat() / Moovit.STOP_ID_CEILING)
+    }
+    var stopsReady by remember { mutableStateOf(Online.stopsComplete) }
+    var found by remember { mutableIntStateOf(Online.stops.size) }
+    var stopsError by remember { mutableStateOf<String?>(null) }
     var arrivals by remember { mutableStateOf<Map<Moovit.ArrivalKey, Moovit.Arrival>>(emptyMap()) }
     var near by remember { mutableStateOf<List<Moovit.Stop>>(emptyList()) }
     var lines by remember { mutableStateOf<Map<Int, Moovit.LineInfo?>>(emptyMap()) }
     var modes by remember { mutableStateOf<Map<Int, Int>>(emptyMap()) }
     var pollSecs by remember { mutableIntStateOf(20) }
-    var selected by remember { mutableStateOf<Long?>(null) }
+    var focus by remember { mutableStateOf<LiveFocus?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() / 1000 } }
 
@@ -118,7 +139,12 @@ fun LiveScreen(model: KavModel) {
                     Online.stops = it.stops; Online.stopsNext = it.nextId; Online.stopsComplete = it.complete
                 }
             }
-            fun nearby() = Moovit.nearbyStops(Online.stops, here.first, here.second, k = 40)
+            found = Online.stops.size
+            stopsReady = Online.stopsComplete
+            scanned = if (Online.stopsComplete) 1f else Online.stopsNext.toFloat() / Moovit.STOP_ID_CEILING
+            // A walking radius rather than a flat count, capped where one StopsArrivals
+            // request stays reasonable on mobile data (~135 KB at 120 stops, measured).
+            fun nearby() = Moovit.nearbyStops(Online.stops, here.first, here.second, k = 120, radiusKm = 1.5)
             if (Online.stops.isNotEmpty()) near = withContext(Dispatchers.Default) { nearby() }
             // The database is paged by id, and the ids are nowhere in particular, so the
             // first pages are not the stops near you. Walk the whole range once, four
@@ -128,37 +154,69 @@ fun LiveScreen(model: KavModel) {
                 var blocks = 0
                 while (isActive && !Online.stopsComplete) {
                     val from = Online.stopsNext
+                    // counted per page rather than per block, so the bar moves forty
+                    // times across a block instead of standing still through all of it
+                    val pages = java.util.concurrent.atomic.AtomicInteger(0)
                     val block = try {
                         // inside its own scope, so one failed page fails the block and is
                         // caught here, rather than taking the whole effect down with it
                         coroutineScope {
-                            (0 until 4).map { i -> async { Moovit.stopPages(s, from + i * 1000, 10) } }.awaitAll().flatten()
+                            (0 until 4).map { i ->
+                                async {
+                                    Moovit.stopPages(s, from + i * 1000, 10) {
+                                        scanned = ((from - 1 + pages.incrementAndGet() * 100).toFloat() /
+                                            Moovit.STOP_ID_CEILING).coerceIn(0f, 1f)
+                                    }
+                                }
+                            }.awaitAll().flatten()
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        status = "Could not load stops · retrying"
+                        // the walk retries for as long as the tab is open, and with the
+                        // list held back a silent bar would be a screen with no reason
+                        stopsError = T("Could not load stops · retrying", "לא ניתן היה לטעון תחנות · מנסים שוב")
+                        status = stopsError.orEmpty()
+                        scanned = ((from - 1).toFloat() / Moovit.STOP_ID_CEILING).coerceIn(0f, 1f)
                         delay(10_000); continue
                     }
+                    stopsError = null
                     val known = Online.stops.mapTo(HashSet()) { it.id }
                     Online.stops = Online.stops + block.filter { it.id !in known }
                     Online.stopsNext = from + 4000
                     Online.stopsComplete = Online.stopsNext >= Moovit.STOP_ID_CEILING
                     near = nearby()
+                    found = Online.stops.size
+                    scanned = if (Online.stopsComplete) 1f
+                        else (Online.stopsNext.toFloat() / Moovit.STOP_ID_CEILING).coerceIn(0f, 1f)
+                    stopsReady = Online.stopsComplete
                     blocks++
                     if (blocks % 3 == 0 || Online.stopsComplete) StopStore.save(app, Online.stops, Online.stopsNext, Online.stopsComplete)
                 }
             }
-            while (near.isEmpty()) { status = "loading stops…"; delay(300) }
+            while (near.isEmpty()) { status = T("loading stops…", "טוענים תחנות…"); delay(300) }
             while (coroutineContext.isActive) {
                 val ids = near.map { it.id }
                 try {
                     val (found, poll) = withContext(Dispatchers.IO) { Moovit.stopArrivals(s, ids) }
                     arrivals = found; pollSecs = poll.coerceIn(10, 60); loading = false
                     val tracked = found.values.filter { it.hasLocation }
-                    status = if (tracked.isEmpty()) "No tracked vehicles right now"
-                        else "${tracked.map { it.tripId }.distinct().size} live vehicles · ${ids.size} stops" +
-                            (if (Online.stopsComplete) "" else " · still loading stops")
+                    // Until the crawl finishes these are the nearest stops OF THOSE KNOWN
+                    // SO FAR, and the database is paged by id, not by geography, so that
+                    // set can be nowhere near you. Say so plainly instead of appending a
+                    // footnote to a sentence that otherwise claims to have looked around.
+                    status = if (!Online.stopsComplete) {
+                        val pct = (Online.stopsNext.toFloat() / Moovit.STOP_ID_CEILING * 100)
+                            .toInt().coerceIn(0, 99)
+                        T("Still finding the stops near you · $pct%", "עדיין מאתרים תחנות בסביבתכם · $pct%")
+                    } else if (tracked.isEmpty()) {
+                        T("No tracked vehicles right now", "אין כרגע כלי רכב במעקב")
+                    } else {
+                        T(
+                            "${tracked.map { it.tripId }.distinct().size} live vehicles · ${ids.size} stops",
+                            "${tracked.map { it.tripId }.distinct().size} כלי רכב בזמן אמת · ${ids.size} תחנות",
+                        )
+                    }
                     // The number on the bus lives in its line group: one lookup per line,
                     // several at a time, soonest vehicles first, shown as each batch lands.
                     val missing = tracked.sortedBy { it.rtUtc.takeIf { t -> t > 0 } ?: it.staticUtc }
@@ -177,7 +235,7 @@ fun LiveScreen(model: KavModel) {
                     throw e
                 } catch (e: Exception) {
                     loading = false
-                    status = "Could not refresh · retrying shortly"
+                    status = T("Could not refresh · retrying shortly", "לא ניתן היה לרענן · ננסה שוב בקרוב")
                 }
                 delay(pollSecs * 1000L)
             }
@@ -185,7 +243,7 @@ fun LiveScreen(model: KavModel) {
             throw e
         } catch (e: Exception) {
             loading = false
-            status = "online error: ${e.message ?: e.javaClass.simpleName}"
+            status = T("online error: ${e.message ?: e.javaClass.simpleName}", "שגיאת רשת: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 
@@ -200,21 +258,45 @@ fun LiveScreen(model: KavModel) {
         }.sortedBy { it.eta }
     }
 
-    androidx.activity.compose.BackHandler(selected != null) { selected = null }
+    androidx.activity.compose.BackHandler(focus != null) {
+        focus = (focus as? LiveFocus.Vehicle)?.from?.let { LiveFocus.Stop(it) }
+    }
     androidx.compose.animation.AnimatedContent(
-        targetState = selected,
+        targetState = focus,
         modifier = Modifier.fillMaxSize(),
-        transitionSpec = { if (targetState != null) forward() else backward() },
+        transitionSpec = {
+            // a vehicle opened from a stop sits one level deeper than it; every other
+            // move towards something is deeper, and towards nothing is back out
+            val deeper = targetState != null &&
+                (initialState == null || (targetState is LiveFocus.Vehicle && initialState is LiveFocus.Stop))
+            if (deeper) forward() else backward()
+        },
         label = "live",
-    ) { tripId ->
-        if (tripId != null) {
-            LiveVehicleScreen(vehicles.firstOrNull { it.tripId == tripId }, now) { selected = null }
-            return@AnimatedContent
+    ) { f ->
+        when (f) {
+            is LiveFocus.Vehicle -> {
+                LiveVehicleScreen(vehicles.firstOrNull { it.tripId == f.tripId }, now) {
+                    focus = f.from?.let { LiveFocus.Stop(it) }
+                }
+                return@AnimatedContent
+            }
+            is LiveFocus.Stop -> {
+                LiveStopScreen(
+                    stopsById[f.id], f.id, arrivals, lines, modes, now,
+                    onVehicle = { focus = LiveFocus.Vehicle(it, from = f.id) },
+                    onBack = { focus = null },
+                )
+                return@AnimatedContent
+            }
+            null -> Unit
         }
         Column(Modifier.fillMaxSize()) {
-            ScreenHeader("Live", "vehicles", onSettings = { model.settingsOpen = true })
+            ScreenHeader(T("Live", "כלי רכב בזמן אמת"), "", onSettings = { model.settingsOpen = true })
             Text(
-                "Online mode: positions come from Moovit's servers, refreshed every ${pollSecs}s.",
+                T(
+                    "Online mode: positions come from Moovit's servers, refreshed every ${pollSecs}s.",
+                    "מצב מקוון: המיקומים מגיעים משרתי Moovit, מתעדכן כל ${pollSecs} שניות.",
+                ),
                 fontSize = 11.sp, color = K.dim, lineHeight = 15.sp,
                 modifier = Modifier.padding(horizontal = K.gap4).padding(bottom = K.gap2),
             )
@@ -223,30 +305,55 @@ fun LiveScreen(model: KavModel) {
                 horizontalArrangement = Arrangement.spacedBy(K.gap2),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Chip("Use my location", false) {
+                Chip(T("Use my location", "השתמשו במיקום שלי"), false) {
                     if (hasLocationPermission(ctx)) requestLocationOnce(ctx) { model.here = it }
                     else ask.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
                 }
-                Text("showing central Tel Aviv", style = DisplayItalic, fontSize = 12.sp, color = K.dim)
+                Text(T("showing central Tel Aviv", "מוצג מרכז תל אביב"), style = DisplayItalic, fontSize = 12.sp, color = K.dim)
             }
             Box(
                 Modifier.padding(horizontal = K.gap3).fillMaxWidth().weight(1f)
                     .clip(RoundedCornerShape(14.dp)).background(K.surface1),
             ) {
-                LiveMap(here, near, vehicles)
-                Text(
-                    status, style = Mono, fontSize = 11.sp, color = K.muted,
-                    modifier = Modifier.align(Alignment.TopStart)
-                        .padding(K.gap2).clip(RoundedCornerShape(6.dp)).background(K.glassPlate).padding(6.dp),
-                )
+                if (stopsReady) {
+                    LiveMap(
+                        here, near, vehicles,
+                        onVehicle = { focus = LiveFocus.Vehicle(it.tripId) },
+                        onStop = { focus = LiveFocus.Stop(it.id) },
+                    )
+                    Text(
+                        status, style = Mono, fontSize = 11.sp, color = K.muted,
+                        modifier = Modifier.align(Alignment.TopStart)
+                            .padding(K.gap2).clip(RoundedCornerShape(6.dp)).background(K.glassPlate).padding(6.dp),
+                    )
+                } else Column(
+                    Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = K.gap5),
+                    verticalArrangement = Arrangement.spacedBy(K.gap2),
+                ) {
+                    Text(
+                        T("Finding the stops near you", "מאתרים את התחנות בסביבתכם"),
+                        fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium,
+                    )
+                    ProgressBar(scanned, Modifier.fillMaxWidth())
+                    Text(
+                        T("$found stops found · ${(scanned * 100).toInt()}%",
+                            "נמצאו $found תחנות · ${(scanned * 100).toInt()}%"),
+                        style = Mono, fontSize = 11.sp, color = K.dim,
+                    )
+                    stopsError?.let { Text(it, fontSize = 11.sp, color = K.problem, lineHeight = 15.sp) }
+                }
             }
-            if (loading) Box(
-                Modifier.fillMaxWidth().height(200.dp + LocalBottomBarInset.current)
-                    .padding(bottom = LocalBottomBarInset.current),
-                contentAlignment = Alignment.Center,
-            ) { LoadingPulse("Finding vehicles") }
-            else LiveList(vehicles, now, Modifier.fillMaxWidth()
-                .heightIn(max = 260.dp + LocalBottomBarInset.current).padding(K.gap2)) { selected = it.tripId }
+            if (stopsReady) {
+                if (loading) Box(
+                    Modifier.fillMaxWidth().height(200.dp + LocalBottomBarInset.current)
+                        .padding(bottom = LocalBottomBarInset.current),
+                    contentAlignment = Alignment.Center,
+                ) { LoadingPulse(T("Finding vehicles", "מאתרים כלי רכב")) }
+                else LiveList(vehicles, now, Modifier.fillMaxWidth()
+                    .heightIn(max = 260.dp + LocalBottomBarInset.current).padding(K.gap2)) {
+                    focus = LiveFocus.Vehicle(it.tripId)
+                }
+            }
         }
     }
 }
@@ -265,8 +372,16 @@ private fun LiveMap(
     center: Pair<Double, Double>,
     stops: List<Moovit.Stop>,
     vehicles: List<Tracked>,
+    onVehicle: (Tracked) -> Unit,
+    onStop: (Moovit.Stop) -> Unit,
 ) {
     val pulse = rememberLivePulse()
+    // A dot is 16 dp across and no finger is that accurate, so the target around it is
+    // the one a thumb actually has, and the nearest vehicle inside it wins.
+    val reach = with(LocalDensity.current) { 22.dp.toPx() }
+    // A stop is the smaller circle and it sits still, so its target is a little wider
+    // than the ring drawn on it; a vehicle standing at one still wins the tap.
+    val stopReach = with(LocalDensity.current) { 20.dp.toPx() }
     // keep the frame steady while vehicles move: fit the stops and you, not the traffic
     val points = remember(stops, center) { stops.map { it.lat to it.lon } + center }
     // stops as circles, the way Moovit rings them on its own map, and you; both
@@ -289,10 +404,17 @@ private fun LiveMap(
             val a = v.arrival
             val o = proj.point(a.lat, a.lon)
             val tint = if (a.vehicleStatus == 2) K.problem else K.live
-            drawCircle(tint.copy(alpha = 0.20f), 15.dp.toPx() * pulse.value, o)
-            drawCircle(K.bg, 8.dp.toPx(), o)
-            drawCircle(tint, 5.dp.toPx(), o)
+            drawCircle(tint.copy(alpha = 0.20f), 18.dp.toPx() * pulse.value, o)
+            drawCircle(K.bg, 11.dp.toPx(), o)
+            drawCircle(tint, 9.dp.toPx(), o)
+            drawModeMark(modeOf(v.routeType), o, 12.dp.toPx())
         }
+    }, onTap = { at, proj ->
+        val vehicle = vehicles.map { it to (proj.point(it.arrival.lat, it.arrival.lon) - at).getDistance() }
+            .filter { it.second <= reach }.minByOrNull { it.second }?.first
+        if (vehicle != null) onVehicle(vehicle)
+        else stops.map { it to (proj.point(it.lat, it.lon) - at).getDistance() }
+            .filter { it.second <= stopReach }.minByOrNull { it.second }?.let { onStop(it.first) }
     })
 }
 
@@ -314,13 +436,16 @@ private fun LinePlate(v: Tracked) {
     }
 }
 
-private fun stopName(stop: Moovit.Stop?, id: Int) = stop?.name?.ifBlank { null } ?: "stop $id"
+private fun stopName(stop: Moovit.Stop?, id: Int) = stop?.name?.ifBlank { null } ?: T("stop $id", "תחנה $id")
 
 @Composable
 private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onSelect: (Tracked) -> Unit) {
     if (vehicles.isEmpty()) {
         Note(
-            "Nothing tracked near you right now. Vehicles appear here as soon as one of your stops has a bus reporting its position.",
+            T(
+                "Nothing tracked near you right now. Vehicles appear here as soon as one of your stops has a bus reporting its position.",
+                "אין כרגע כלי רכב במעקב בסביבתכם. כלי רכב יופיעו כאן ברגע שאחת התחנות שלכם תקבל דיווח מיקום מאוטובוס.",
+            ),
             Modifier.padding(horizontal = K.gap4, vertical = K.gap3),
         )
         return
@@ -341,7 +466,8 @@ private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onS
                 LinePlate(v)
                 Column(Modifier.weight(1f)) {
                     Text(
-                        v.line?.destination?.ifBlank { null }?.let { "to $it" } ?: if (v.pending) "Looking up the line…" else "Line ${v.number}",
+                        v.line?.destination?.ifBlank { null }?.let { T("to $it", "אל $it") }
+                            ?: if (v.pending) T("Looking up the line…", "מאתרים את הקו…") else T("Line ${v.number}", "קו ${v.number}"),
                         fontSize = 14.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
@@ -349,8 +475,8 @@ private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onS
                         fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text("${ageS}s ago", style = Mono, fontSize = 11.sp, color = if (a.vehicleStatus == 2) K.problem else K.live)
-                Text("›", fontSize = 22.sp, color = K.dim)
+                Text(T("${ageS}s ago", "לפני ${ageS} שנ׳"), style = Mono, fontSize = 11.sp, color = if (a.vehicleStatus == 2) K.problem else K.live)
+                Text(T.onward, fontSize = 22.sp, color = K.dim)
             }
         }
     }
@@ -369,9 +495,9 @@ private fun LiveVehicleScreen(v: Tracked?, now: Long, onBack: () -> Unit) {
     val pulse = rememberLivePulse()
     Column(Modifier.fillMaxSize().background(K.bg).verticalScroll(rememberScrollState())
         .padding(bottom = LocalBottomBarInset.current)) {
-        ScreenHeader("Line", shown?.number.orEmpty(), back = onBack)
+        ScreenHeader(T("Line", "קו"), shown?.number.orEmpty(), back = onBack)
         if (shown == null) {
-            Note("This vehicle is no longer reporting.", Modifier.padding(K.gap4))
+            Note(T("This vehicle is no longer reporting.", "כלי הרכב הזה כבר לא משדר מיקום."), Modifier.padding(K.gap4))
             return@Column
         }
         val a = shown.arrival
@@ -382,10 +508,10 @@ private fun LiveVehicleScreen(v: Tracked?, now: Long, onBack: () -> Unit) {
             LinePlate(shown)
             Column(Modifier.weight(1f)) {
                 shown.line?.destination?.ifBlank { null }?.let {
-                    Text("to $it", fontSize = 14.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(T("to $it", "אל $it"), fontSize = 14.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
                 shown.line?.origin?.ifBlank { null }?.let {
-                    Text("from $it", fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(T("from $it", "מ-$it"), fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -410,9 +536,10 @@ private fun LiveVehicleScreen(v: Tracked?, now: Long, onBack: () -> Unit) {
             animatedOverlay = { proj ->
                 val p = proj.point(a.lat, a.lon)
                 val tint = if (a.vehicleStatus == 2) K.problem else K.live
-                drawCircle(tint.copy(alpha = 0.20f), 18.dp.toPx() * pulse.value, p)
-                drawCircle(K.bg, 9.dp.toPx(), p)
-                drawCircle(tint, 6.dp.toPx(), p)
+                drawCircle(tint.copy(alpha = 0.20f), 20.dp.toPx() * pulse.value, p)
+                drawCircle(K.bg, 12.dp.toPx(), p)
+                drawCircle(tint, 10.dp.toPx(), p)
+                drawModeMark(modeOf(shown.routeType), p, 13.dp.toPx())
             },
         )
         Spacer(Modifier.height(K.gap3))
@@ -421,27 +548,163 @@ private fun LiveVehicleScreen(v: Tracked?, now: Long, onBack: () -> Unit) {
                 .clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap4),
         ) {
             val (headline, tint) = when {
-                a.vehicleStatus == 3 -> "Not departed yet" to K.dim
-                a.vehicleStatus == 2 -> "Out of route" to K.problem
-                now - a.sampleUtc <= 120 -> "Location updated recently" to K.live
-                else -> "Location is estimated" to K.problem
+                a.vehicleStatus == 3 -> T("Not departed yet", "טרם יצא") to K.dim
+                a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
+                now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.live
+                else -> T("Location is estimated", "המיקום משוער") to K.problem
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 LiveGlyph(tint, 13.dp); Spacer(Modifier.width(6.dp))
                 Text(headline, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = tint)
             }
             if (a.sampleUtc > 0) Text(
-                "Location updated: ${hm.format(Date(a.sampleUtc * 1000))}",
+                T("Location updated: ${hm.format(Date(a.sampleUtc * 1000))}", "המיקום עודכן: ${hm.format(Date(a.sampleUtc * 1000))}"),
                 fontSize = 14.sp, color = K.dim, modifier = Modifier.padding(top = K.gap1),
             )
             Spacer(Modifier.height(K.gap3))
-            LiveFact("Next of your stops", stopName(stop, a.stopId))
-            LiveFact("Arriving", whenLabel(shown.eta, now))
+            LiveFact(T("Next of your stops", "התחנה הבאה שלכם"), stopName(stop, a.stopId))
+            LiveFact(T("Arriving", "הגעה"), whenLabel(shown.eta, now))
             val away = a.stopsAway
-            if (away >= 0) LiveFact("Stops away", if (away == 0) "at the stop" else "$away")
-            if (route.isEmpty() && a.tripShapeId > 0) LiveFact("Route", "loading…")
+            if (away >= 0) LiveFact(T("Stops away", "תחנות"), if (away == 0) T("at the stop", "בתחנה") else "$away")
+            if (route.isEmpty() && a.tripShapeId > 0) LiveFact(T("Route", "מסלול"), T("loading…", "טוען…"))
         }
         Spacer(Modifier.height(K.gap8))
+    }
+}
+
+/**
+ * One stop on its own: everything calling at it, soonest first. The tab is already
+ * polling this stop for arrivals in order to find vehicles; this reads that same poll
+ * the other way round, by stop rather than by vehicle, so it costs no extra request.
+ *
+ * A vehicle reporting its position is tappable and opens on its own route; one that is
+ * not is still a departure, and is listed as the timetable has it.
+ */
+@Composable
+private fun LiveStopScreen(
+    stop: Moovit.Stop?,
+    stopId: Int,
+    arrivals: Map<Moovit.ArrivalKey, Moovit.Arrival>,
+    lines: Map<Int, Moovit.LineInfo?>,
+    modes: Map<Int, Int>,
+    now: Long,
+    onVehicle: (Long) -> Unit,
+    onBack: () -> Unit,
+) {
+    val due = remember(arrivals, stopId) {
+        arrivals.values.filter { it.stopId == stopId }
+            .sortedBy { a -> a.rtUtc.takeIf { it > 0 } ?: a.staticUtc }
+    }
+    // The tab looks up the number only on a line it is tracking a vehicle of. Here
+    // every line calling at the stop is on screen, so the rest are looked up now.
+    var extraLines by remember { mutableStateOf<Map<Int, Moovit.LineInfo?>>(emptyMap()) }
+    var extraModes by remember { mutableStateOf<Map<Int, Int>>(emptyMap()) }
+    val lineIds = remember(due) { due.map { it.lineId }.distinct() }
+    LaunchedEffect(lineIds) {
+        val s = Online.session ?: return@LaunchedEffect
+        for (batch in lineIds.filter { it !in lines && it !in extraLines }.chunked(8)) {
+            val named = withContext(Dispatchers.IO) {
+                batch.map { id -> async { id to runCatching { Moovit.lineInfo(s, id) }.getOrNull() } }.awaitAll().toMap()
+            }
+            extraLines = extraLines + named
+            val agencies = named.values.mapNotNull { it?.agencyId }.distinct()
+                .filter { it !in modes && it !in extraModes }
+            if (agencies.isNotEmpty()) extraModes = extraModes + withContext(Dispatchers.IO) {
+                agencies.associateWith { runCatching { Moovit.agencyRouteType(s, it) }.getOrDefault(3) }
+            }
+        }
+    }
+    val info = lines + extraLines
+    val kinds = modes + extraModes
+    val rows = remember(due, info, kinds, stop) {
+        due.map { a ->
+            val line = info[a.lineId]
+            Tracked(a, stop, line, a.lineId in info, kinds[line?.agencyId ?: -1] ?: 3)
+        }
+    }
+    val moving = remember(due) { due.filter { it.hasLocation } }
+    val pulse = rememberLivePulse()
+
+    Column(Modifier.fillMaxSize().background(K.bg)) {
+        ScreenHeader(T("Stop", "תחנה"), stopName(stop, stopId), back = onBack)
+        if (stop != null) {
+            val points = remember(stop, moving) {
+                listOf(stop.lat to stop.lon) + moving.map { it.lat to it.lon }
+            }
+            val geometry = remember(stop) {
+                MapGeometry(dots = listOf(
+                    MapDot(stop.lat, stop.lon, K.bg, 8f),
+                    MapDot(stop.lat, stop.lon, Color.Transparent, 5f, K.text, 2f),
+                ))
+            }
+            val reach = with(LocalDensity.current) { 22.dp.toPx() }
+            TileMap(
+                points,
+                Modifier.padding(horizontal = K.gap3).fillMaxWidth().height(240.dp)
+                    .clip(RoundedCornerShape(K.rCard)).background(K.surface1),
+                geometry = geometry,
+                animatedOverlay = { proj ->
+                    for (a in moving) {
+                        val o = proj.point(a.lat, a.lon)
+                        val tint = if (a.vehicleStatus == 2) K.problem else K.live
+                        drawCircle(tint.copy(alpha = 0.20f), 18.dp.toPx() * pulse.value, o)
+                        drawCircle(K.bg, 11.dp.toPx(), o)
+                        drawCircle(tint, 9.dp.toPx(), o)
+                        drawModeMark(modeOf(kinds[info[a.lineId]?.agencyId ?: -1] ?: 3), o, 12.dp.toPx())
+                    }
+                },
+                onTap = { at, proj ->
+                    moving.map { it to (proj.point(it.lat, it.lon) - at).getDistance() }
+                        .filter { it.second <= reach }.minByOrNull { it.second }
+                        ?.let { onVehicle(it.first.tripId) }
+                },
+            )
+            Spacer(Modifier.height(K.gap3))
+        }
+        if (rows.isEmpty()) {
+            Note(
+                T(
+                    "Nothing is due at this stop right now.",
+                    "אין כרגע יציאות מהתחנה הזו.",
+                ),
+                Modifier.padding(horizontal = K.gap4, vertical = K.gap3),
+            )
+            return@Column
+        }
+        Text(
+            T("${rows.size} due · ${moving.size} reporting a position",
+                "${rows.size} יציאות · ${moving.size} מדווחות מיקום"),
+            style = Mono, fontSize = 11.sp, color = K.dim,
+            modifier = Modifier.padding(horizontal = K.gap4).padding(bottom = K.gap2),
+        )
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
+            start = K.gap1, end = K.gap1, bottom = K.gap1 + LocalBottomBarInset.current,
+        )) {
+            items(rows, key = { it.tripId }) { v ->
+                val live = v.arrival.hasLocation
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl))
+                        .clickable(role = Role.Button, enabled = live) { onVehicle(v.tripId) }
+                        .padding(horizontal = K.gap3, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(K.gap3),
+                ) {
+                    LinePlate(v)
+                    Text(
+                        v.line?.destination?.ifBlank { null }?.let { T("to $it", "אל $it") }
+                            ?: if (v.pending) T("Looking up the line…", "מאתרים את הקו…") else T("Line ${v.number}", "קו ${v.number}"),
+                        fontSize = 14.sp, color = K.text, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                    )
+                    if (live) LiveGlyph(if (v.arrival.vehicleStatus == 2) K.problem else K.live, 11.dp)
+                    Text(
+                        whenLabel(v.eta, now), style = Mono, fontSize = 13.sp,
+                        color = if (live) K.text else K.scheduled,
+                    )
+                    Text(T.onward, fontSize = 22.sp, color = if (live) K.dim else Color.Transparent)
+                }
+            }
+        }
     }
 }
 

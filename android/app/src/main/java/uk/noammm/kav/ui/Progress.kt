@@ -203,7 +203,16 @@ internal fun journeyProgress(
     val live = fix?.takeIf { it.isFresh(now) }
     if (live != null) {
         for (k in steps.lastIndex downTo i + 1) {
-            if (onStep(steps[k], r, chosen, live)) { i = k; break }
+            if (!onStep(steps[k], r, chosen, live)) continue
+            // Never leap over a ride that is still under way. A transfer walk runs
+            // between two stops on the same corridor the bus is driving down, so
+            // "within 45 m of the walk path" goes true while the rider is still sitting
+            // on the bus a stop short of getting off, and the screen jumped to
+            // "Walk 3 min to…" before they had arrived anywhere. A nearer step can
+            // still catch up: only the ones on the far side of the ride are refused.
+            if ((i until k).any { steps[it] is Step.Ride && !done(steps[it], r, chosen, now, live) }) continue
+            i = k
+            break
         }
     }
     while (i < steps.lastIndex && done(steps[i], r, chosen, now, live)) i++

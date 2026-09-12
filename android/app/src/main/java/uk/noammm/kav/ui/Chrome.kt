@@ -41,17 +41,17 @@ private fun PlateButton(label: String, onClick: () -> Unit, content: @Composable
 }
 
 @Composable
-fun BackButton(onClick: () -> Unit) = PlateButton("Back", onClick) {
+fun BackButton(onClick: () -> Unit) = PlateButton(T("Back", "חזרה"), onClick) {
     Canvas(Modifier.size(20.dp)) {
         val w = size.width; val h = size.height
-        drawLine(K.muted, Offset(w * .66f, h * .16f), Offset(w * .30f, h * .50f), w * .11f, StrokeCap.Round)
-        drawLine(K.muted, Offset(w * .30f, h * .50f), Offset(w * .66f, h * .84f), w * .11f, StrokeCap.Round)
+        drawLine(K.muted, Offset(w * mirrorX(.66f), h * .16f), Offset(w * mirrorX(.30f), h * .50f), w * .11f, StrokeCap.Round)
+        drawLine(K.muted, Offset(w * mirrorX(.30f), h * .50f), Offset(w * mirrorX(.66f), h * .84f), w * .11f, StrokeCap.Round)
     }
 }
 
 /** The gear, with a dot on its shoulder while a newer release is waiting. */
 @Composable
-fun SettingsButton(badge: Boolean = false, onClick: () -> Unit) = PlateButton("Settings", onClick) {
+fun SettingsButton(badge: Boolean = false, onClick: () -> Unit) = PlateButton(T("Settings", "הגדרות"), onClick) {
     Canvas(Modifier.size(20.dp)) {
         val w = size.width
         drawCircle(K.muted, w * .18f, Offset(w * .5f, w * .5f), style = Stroke(w * .11f))
@@ -60,17 +60,6 @@ fun SettingsButton(badge: Boolean = false, onClick: () -> Unit) = PlateButton("S
             drawCircle(K.bg, w * .26f, Offset(w * .92f, w * .08f))
             drawCircle(K.accent, w * .17f, Offset(w * .92f, w * .08f))
         }
-    }
-}
-
-@Composable
-fun SwapButton(onClick: () -> Unit) = PlateButton("Swap origin and destination", onClick) {
-    Canvas(Modifier.size(20.dp)) {
-        val w = size.width; val h = size.height; val sw = w * .11f
-        fun l(x1: Float, y1: Float, x2: Float, y2: Float) =
-            drawLine(K.muted, Offset(x1 * w, y1 * h), Offset(x2 * w, y2 * h), sw, StrokeCap.Round)
-        l(.30f, .14f, .30f, .82f); l(.16f, .68f, .30f, .84f); l(.44f, .68f, .30f, .84f)
-        l(.70f, .86f, .70f, .18f); l(.56f, .32f, .70f, .16f); l(.84f, .32f, .70f, .16f)
     }
 }
 

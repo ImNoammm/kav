@@ -3,15 +3,15 @@
 
     <!-- Both, and FINE is not optional: from Android 12 a coarse-only app is handed a
          deliberately fuzzed fix, randomised within a grid cell of roughly a kilometre
-         or two. For a transit app that is not a rounding error — it puts you in the
+         or two. For a transit app that is not a rounding error: it puts you in the
          next town, so the planner boards you at stops you cannot walk to and the place
          search ranks the wrong city first. Read once per session, never stored. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
-    <!-- Routing goes through Moovit while there is a connection, and falls back to
-         the bundled timetable when there is not. That is a fact about the network,
-         not a setting — see docs/STRIPPED.md. -->
+    <!-- Routing goes through Moovit's own servers, so planning a trip needs a
+         connection. The map is the part that does not: its tiles are bundled and
+         read from disk, so the map still draws with the radio off. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -19,8 +19,7 @@
          Android asks you once, per app, before it will take an APK from one. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- Deliberately NOT declared, and the reason each one is refused is in
-         docs/STRIPPED.md:
+    <!-- Deliberately NOT declared, and why each one is refused:
            ADVERTISING_ID            - there is no advertising
            ACCESS_BACKGROUND_LOCATION- nothing tracks you between sessions
            GET_ACCOUNTS / CONTACTS   - there are no accounts -->

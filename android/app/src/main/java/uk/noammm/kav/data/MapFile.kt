@@ -1,5 +1,6 @@
 package uk.noammm.kav.data
 
+import uk.noammm.kav.ui.T
 import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -111,7 +112,7 @@ object MapFile {
         when (c.responseCode) {
             200 -> { have = 0; part.delete() } // the server ignored the range
             206 -> {}
-            else -> throw RuntimeException("Download HTTP ${c.responseCode}")
+            else -> throw RuntimeException(T("Download HTTP ${c.responseCode}", "הורדה נכשלה, שגיאת HTTP ${c.responseCode}"))
         }
         c.inputStream.use { input ->
             java.io.FileOutputStream(part, have > 0).use { out ->
@@ -126,8 +127,8 @@ object MapFile {
                 }
             }
         }
-        if (part.length() != BYTES) throw RuntimeException("Interrupted at ${part.length() / (1 shl 20)} MB, try again")
-        if (!part.renameTo(file)) throw RuntimeException("Could not keep the download")
+        if (part.length() != BYTES) throw RuntimeException(T("Interrupted at ${part.length() / (1 shl 20)} MB, try again", "ההורדה נקטעה אחרי ${part.length() / (1 shl 20)} MB, נסו שוב"))
+        if (!part.renameTo(file)) throw RuntimeException(T("Could not keep the download", "לא ניתן היה לשמור את ההורדה"))
     }
 
     /** Free the space; the map goes back to offering its download. */

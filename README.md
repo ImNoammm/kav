@@ -3,7 +3,8 @@
 # Kav
 
 An Android app for getting around on public transport in Israel. No ads, no
-account, no analytics, nothing phoning home about where you go.
+account, no analytics, nothing phoning home about where you go. Hebrew and
+English, and it lays itself out right to left when you pick Hebrew.
 
 I built it because Moovit is the only app that really covers Israeli transit and
 it has become unusable: full-screen ads, a subscription nag, and a permissions
@@ -32,13 +33,15 @@ browsing routes, and a live screen with every bus reporting its position around
 you. Favourite places sit on the home screen. Home is built in, the rest you
 name yourself.
 
-## Offline
+## Online and off
 
-The whole national timetable is compiled into the app, about 25 MB. Planning a
-journey works with no signal at all: in a tunnel, abroad, on a dead SIM. Live
-vehicle positions and the update check are the only things that touch the
-network; there is no server of mine, and your places and trips stay in the
-app's own storage on the phone.
+Planning a trip goes through Moovit's servers, so that part needs a connection,
+and so do live vehicle positions and the update check.
+
+The rest is on the phone. The map is stored locally, so it draws with the radio
+off. The timetable is compiled into the app, about 25 MB, so stops, lines and
+place search work with no signal at all. There is no server of mine, and your
+places and trips stay in the app's own storage.
 
 ## Building it
 
@@ -55,5 +58,5 @@ feed with no licence attached, so build it yourself:
 
 ```sh
 tools/fetch.sh
-KAV_REGION=il KAV_OUT=android/app/src/main/assets python3 tools/export_web_bundle.py
+KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
 ```

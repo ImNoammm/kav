@@ -7,12 +7,11 @@ import java.util.zip.GZIPInputStream
 /**
  * The KAV3 timetable bundle and the CSA router over it.
  *
- * Transcribed from webui/app.js: same binary file, same algorithm, no
- * reinterpretation. Nothing here touches Android, it is integer arrays and
- * arithmetic, so it stays testable on a plain JVM.
+ * Nothing here touches Android, it is integer arrays and arithmetic, so it
+ * stays testable on a plain JVM.
  */
 
-/** Growable int buffer, the `Vec` of webui/app.js. */
+/** Growable int buffer. */
 private class IntVec(cap: Int = 1 shl 16) {
     var a = IntArray(cap)
     var n = 0
@@ -80,19 +79,9 @@ class Net private constructor() {
     lateinit var stArr: IntArray; private set
     lateinit var stDep: IntArray; private set
 
-    // footpaths
-    lateinit var xStart: IntArray; private set
-    lateinit var xTo: IntArray; private set
-    lateinit var xW: IntArray; private set
-
     // connections, departure-sorted
     lateinit var cST: IntArray; private set      // stop_time index
     lateinit var cTrip: IntArray; private set
-    lateinit var bucket: IntArray; private set   // first connection departing >= t
-    var nConn = 0; private set
-
-    /** Size of the decoded bundle, for the honest number in Settings. */
-    var sourceBytes = 0L; private set
 
     // per-stop departure index
     lateinit var dStart: IntArray; private set
@@ -169,6 +158,10 @@ class Net private constructor() {
         tripStart[nT] = ss.n
         stStop = ss.trimmed(); stArr = sa.trimmed(); stDep = sd.trimmed()
 
+        // The footpaths and then the road polylines follow. Nothing reads either:
+        // the footpath graph existed only so the on-device planner could change
+        // between stops, and the map is its own file. Parsing stops here, so
+        // neither is ever allocated.
         // Invert tripRoute (trip -> route) into route -> its trips, a counting sort
         // exactly like the connection/departure indices below. Then, once per route,
         // pick the longest trip as the stand-in for "the line" and keep its stop
@@ -238,16 +231,6 @@ class Net private constructor() {
             }
         }
 
-        xStart = IntArray(nS + 1)
-        val xt = IntVec(1 shl 18); val xw = IntVec(1 shl 18)
-        for (i in 0 until nS) {
-            xStart[i] = xt.n
-            val c = vi()
-            for (k in 0 until c) { xt.push(i + vi()); xw.push(vi()) }
-        }
-        xStart[nS] = xt.n
-        xTo = xt.trimmed(); xW = xw.trimmed()
-
         // The road polylines follow, for the map. v0 has no map, so parsing stops
         // here and the ~50 MB of geometry is never allocated.
 
@@ -277,8 +260,6 @@ class Net private constructor() {
             while (i < z) { cnt[stDep[i] + 1]++; i++ }
         }
         for (i in 0..span) cnt[i + 1] += cnt[i]
-        // cnt[d] is now the first index whose departure is >= d, exactly the bucket
-        bucket = cnt.copyOf(span + 1)
 
         cST = IntArray(m); cTrip = IntArray(m)
         for (t in 0 until nT) {
@@ -289,7 +270,6 @@ class Net private constructor() {
                 i++
             }
         }
-        nConn = m
 
         // per-stop departures, already in time order
         val nS = stops.size
@@ -302,72 +282,7 @@ class Net private constructor() {
         for (i in 0 until m) dConn[fill[stStop[cST[i]]]++] = i
     }
 
-    /* CSA
-       Earliest arrival, stop to stop. Scratch arrays are kept and refilled so a
-       query allocates nothing. */
-    private var arrT: IntArray? = null
-    private lateinit var boardT: IntArray
-    private lateinit var viaConn: IntArray
-    private lateinit var viaWalk: IntArray
-    private lateinit var tripSeen: BooleanArray
-    private lateinit var tripBoard: IntArray
-    private lateinit var tripBoardT: IntArray
 
-    @Synchronized
-    fun plan(from: Int, to: Int, depTime: Int): Journey? {
-        val nS = stops.size; val nT = tripRoute.size
-        var a0 = arrT
-        if (a0 == null) {
-            a0 = IntArray(nS); arrT = a0
-            boardT = IntArray(nS); viaConn = IntArray(nS); viaWalk = IntArray(nS)
-            tripSeen = BooleanArray(nT); tripBoard = IntArray(nT); tripBoardT = IntArray(nT)
-        }
-        val arrT = a0
-        arrT.fill(INF); boardT.fill(INF); viaConn.fill(-1); viaWalk.fill(-1); tripSeen.fill(false)
-
-        arrT[from] = depTime; boardT[from] = depTime
-        for (x in xStart[from] until xStart[from + 1]) {
-            val j = xTo[x]; val a = depTime + xW[x]
-            if (a < arrT[j]) { arrT[j] = a; boardT[j] = a; viaWalk[j] = from }
-        }
-
-        var i = bucket[minOf(depTime, bucket.size - 1)]
-        while (i < nConn) {
-            val j = cST[i]; val d = stDep[j]
-            if (d >= arrT[to]) break
-            val t = cTrip[i]; val f = stStop[j]
-            if (!tripSeen[t]) {
-                if (boardT[f] > d) { i++; continue }
-                tripSeen[t] = true; tripBoard[t] = f; tripBoardT[t] = d
-            }
-            val to2 = stStop[j + 1]; val a = stArr[j + 1]
-            if (a < arrT[to2]) {
-                arrT[to2] = a; boardT[to2] = a + MIN_CHANGE; viaConn[to2] = i; viaWalk[to2] = -1
-                for (x in xStart[to2] until xStart[to2 + 1]) {
-                    val nb = xTo[x]; val aw = a + xW[x]
-                    if (aw < arrT[nb]) { arrT[nb] = aw; boardT[nb] = aw; viaWalk[nb] = to2; viaConn[nb] = -1 }
-                }
-            }
-            i++
-        }
-        if (arrT[to] >= INF) return null
-
-        val legs = ArrayList<Leg>()
-        var cur = to; var guard = 0
-        while (cur != from && guard++ < 200) {
-            if (viaWalk[cur] >= 0) {
-                val prev = viaWalk[cur]
-                legs.add(Leg(false, -1, -1, prev, cur, arrT[prev], arrT[cur]))
-                cur = prev
-            } else if (viaConn[cur] >= 0) {
-                val c = viaConn[cur]; val t = cTrip[c]; val brd = tripBoard[t]
-                legs.add(Leg(true, t, tripRoute[t], brd, cur, tripBoardT[t], stArr[cST[c] + 1]))
-                cur = brd
-            } else break
-        }
-        legs.reverse()
-        return Journey(if (legs.isEmpty()) depTime else legs[0].dep, arrT[to], legs)
-    }
 
     companion object {
         /** Reads a `.kav` or gzipped `.kav.gz` stream. */
@@ -376,7 +291,7 @@ class Net private constructor() {
             val bytes = if (raw.size > 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte())
                 GZIPInputStream(raw.inputStream(), 1 shl 16).use { it.readBytes() }
             else raw
-            return Net().also { it.parse(bytes); it.sourceBytes = bytes.size.toLong() }
+            return Net().also { it.parse(bytes) }
         }
     }
 }

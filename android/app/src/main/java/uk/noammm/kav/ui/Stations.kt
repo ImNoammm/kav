@@ -49,7 +49,8 @@ private fun StationsBody(model: KavModel, net: Net) {
 @Composable
 private fun StationList(model: KavModel, net: Net) {
     val ctx = LocalContext.current
-    var q by remember { mutableStateOf("") }
+    // held by the model: opening a stop disposes this list (see KavModel.stopQuery)
+    var q by model::stopQuery
     var locating by remember { mutableStateOf(false) }
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) { locating = true; requestLocationOnce(ctx) { model.here = it; locating = false } }
@@ -68,13 +69,13 @@ private fun StationList(model: KavModel, net: Net) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Find a", "stop", onSettings = { model.settingsOpen = true })
-        KavField(q, { q = it }, "search stops…", Modifier.padding(horizontal = K.gap3).fillMaxWidth())
+        ScreenHeader(T("Find a", "מצאו"), T("stop", "תחנה"), onSettings = { model.settingsOpen = true })
+        KavField(q, { q = it }, T("search stops…", "חיפוש תחנות…"), Modifier.padding(horizontal = K.gap3).fillMaxWidth())
         Spacer(Modifier.height(K.gap3))
 
         if (q.isNotBlank()) {
             if (hits.isEmpty()) {
-                Note("Nothing matches that.", Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
+                Note(T("Nothing matches that.", "שום דבר לא תואם."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
             }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
                 start = K.gap2, end = K.gap2, bottom = LocalBottomBarInset.current,
@@ -82,12 +83,12 @@ private fun StationList(model: KavModel, net: Net) {
                 items(hits, key = { it }) { s -> StopRow(net, s) { model.stationStop = s } }
             }
         } else {
-            Sig("Nearby", "stops", Modifier.padding(horizontal = K.gap4, vertical = K.gap1))
+            Sig(T("Nearby", "תחנות"), T("stops", "בסביבה"), Modifier.padding(horizontal = K.gap4, vertical = K.gap1))
             when {
                 here == null -> Column(Modifier.padding(horizontal = K.gap4, vertical = K.gap3)) {
-                    Note(if (locating) "Waiting for a fix…" else "Kav does not know where you are yet.")
+                    Note(if (locating) T("Waiting for a fix…", "ממתינים למיקום…") else T("Kav does not know where you are yet.", "Kav עדיין לא יודע איפה אתם."))
                     Spacer(Modifier.height(K.gap3))
-                    Chip(if (locating) "Locating…" else "Use my location", locating) {
+                    Chip(if (locating) T("Locating…", "מאתרים מיקום…") else T("Use my location", "השתמשו במיקום שלי"), locating) {
                         if (hasLocationPermission(ctx)) {
                             locating = true
                             requestLocationOnce(ctx) { model.here = it; locating = false }
@@ -97,13 +98,16 @@ private fun StationList(model: KavModel, net: Net) {
                     }
                     Spacer(Modifier.height(K.gap3))
                     Text(
-                        "Coarse location, read once, used only to sort this list. " +
-                            "It is never stored and never leaves the phone.",
+                        T(
+                            "Coarse location, read once, used only to sort this list. " +
+                                "It is never stored and never leaves the phone.",
+                            "מיקום גס, שנקרא פעם אחת, משמש רק למיון הרשימה הזו. הוא לעולם לא נשמר ולא יוצא מהטלפון.",
+                        ),
                         fontSize = 11.sp, color = K.dim, lineHeight = 16.sp,
                     )
                 }
                 near.isEmpty() -> Note(
-                    "No stops within 2.5 km of you.",
+                    T("No stops within 2.5 km of you.", "אין תחנות במרחק של 2.5 ק״מ מכם."),
                     Modifier.padding(horizontal = K.gap4, vertical = K.gap4),
                 )
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
@@ -135,28 +139,30 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
     }
 
     Column(Modifier.fillMaxSize().background(K.bg)) {
-        ScreenHeader("Next", "departures", back = onBack)
+        ScreenHeader(T("Next", "היציאות"), T("departures", "הקרובות"), back = onBack)
         Column(Modifier.padding(horizontal = K.gap4)) {
             Text(net.stops[stop].name, fontSize = 14.sp, color = K.text)
-            val prefix = listOfNotNull(net.cityOf(stop).takeIf { it.isNotBlank() }, net.stopCode(stop)).joinToString(" · ")
             Text(
-                if (prefix.isNotBlank()) "$prefix · scheduled times, no live feed available"
-                else "scheduled times, no live feed available",
+                listOfNotNull(
+                    net.cityOf(stop).takeIf { it.isNotBlank() },
+                    net.stopCode(stop),
+                    T("scheduled times, no live feed available", "לוחות זמנים מתוכננים, אין זמינות בזמן אמת"),
+                ).joinToString(" · "),
                 fontSize = 11.sp, color = K.dim,
             )
             Spacer(Modifier.height(K.gap3))
             Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                Chip("Start here", false) {
+                Chip(T("Start here", "התחלה כאן"), false) {
                     model.pendingFrom = placeOf(net, stop); model.tab = uk.noammm.kav.Tab.Directions
                 }
-                Chip("End here", false) {
+                Chip(T("End here", "סיום כאן"), false) {
                     model.pendingTo = placeOf(net, stop); model.tab = uk.noammm.kav.Tab.Directions
                 }
             }
         }
         Spacer(Modifier.height(K.gap3))
         if (rows.isEmpty()) {
-            Note("Nothing more today.", Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
+            Note(T("Nothing more today.", "אין עוד יציאות היום."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
             start = K.gap2, end = K.gap2, bottom = LocalBottomBarInset.current,
@@ -194,7 +200,7 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
 }
 
 /** An offline stop as a place Directions can actually plan with. */
-private fun placeOf(net: Net, stop: Int) = uk.noammm.kav.data.Moovit.Place(
+internal fun placeOf(net: Net, stop: Int) = uk.noammm.kav.data.Moovit.Place(
     name = net.stops.getOrNull(stop)?.name ?: "Stop",
     detail = net.cityOf(stop),
     lat = net.stops[stop].lat,

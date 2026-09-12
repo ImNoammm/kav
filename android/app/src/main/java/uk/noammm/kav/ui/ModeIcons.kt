@@ -6,14 +6,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 
 /*
@@ -70,9 +75,45 @@ private val MODE_PATHS: Map<Mode, List<String>> = mapOf(
 private const val VIEWPORT = 26f
 
 private val pathCache = HashMap<Mode, List<Path>>()
+private val markCache = HashMap<Triple<Mode, Int, ULong>, ImageBitmap>()
 
 private fun pathsFor(mode: Mode): List<Path>? = MODE_PATHS[mode]?.let { data ->
     pathCache.getOrPut(mode) { data.map { PathParser().parsePathString(it).toPath() } }
+}
+
+/**
+ * The mode's mark rasterised once, [px] pixels square and filled with [ink], on
+ * nothing. The map draws it in the middle of a coloured disc, so the ink is the
+ * background colour and the disc reads as the vehicle's own colour around it.
+ *
+ * One cache serves both drawing paths: MapLibre's symbol layer wants an Android
+ * bitmap, a Compose canvas wants an ImageBitmap, and a bus painted by the GL layer
+ * has to be the same bus the Live tab paints over its own map.
+ */
+fun modeMark(mode: Mode, px: Int, ink: Color = K.bg): ImageBitmap =
+    markCache.getOrPut(Triple(mode, px, ink.value)) {
+        val image = ImageBitmap(px, px)
+        val paths = pathsFor(mode)
+        CanvasDrawScope().draw(
+            Density(1f), LayoutDirection.Ltr, androidx.compose.ui.graphics.Canvas(image),
+            Size(px.toFloat(), px.toFloat()),
+        ) {
+            if (paths != null) {
+                scale(px / VIEWPORT, px / VIEWPORT, Offset.Zero) { paths.forEach { drawPath(it, ink) } }
+            } else {
+                drawFallback(mode, ink)
+            }
+        }
+        image
+    }
+
+/** The name [modeMark] is registered under on a map style, one per vehicle. */
+fun modeIconName(mode: Mode): String = "kav-mode-${mode.name.lowercase(java.util.Locale.US)}"
+
+/** The same mark, centred on [centre], for the canvases that paint their own vehicles. */
+fun DrawScope.drawModeMark(mode: Mode, centre: Offset, span: Float, ink: Color = K.bg) {
+    val px = span.toInt().coerceAtLeast(4)
+    drawImage(modeMark(mode, px, ink), topLeft = Offset(centre.x - px / 2f, centre.y - px / 2f))
 }
 
 /**

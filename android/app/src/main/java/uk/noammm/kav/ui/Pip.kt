@@ -27,7 +27,7 @@ fun PipOverlay(model: KavModel) {
     }
     Box(Modifier.fillMaxSize().background(K.bg), contentAlignment = Alignment.CenterStart) {
         if (journey == null) {
-            Text("Trip ended", fontSize = 15.sp, color = K.dim, modifier = Modifier.padding(K.gap4))
+            Text(T("Trip ended", "הנסיעה הסתיימה"), fontSize = 15.sp, color = K.dim, modifier = Modifier.padding(K.gap4))
             return@Box
         }
         val steps = remember(journey.trip, journey.fromLabel, journey.toLabel) {

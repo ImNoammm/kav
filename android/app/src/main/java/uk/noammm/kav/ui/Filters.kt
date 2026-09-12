@@ -28,14 +28,31 @@ import uk.noammm.kav.data.Moovit
  * too. Bike, walking-only and share taxis are sorted out on the phone once the plan
  * is back, because the request has no word for them.
  */
-enum class ResultFilter(val label: String, val desc: String) {
-    BUS("Bus", "Every bus operator"),
-    TRAIN("Train", "Israel Railways"),
-    LIGHT_RAIL("Light rail", "Trams, the Carmelit and the cable cars"),
-    SHARE_TAXI("Share taxi", "Monit sherut lines"),
-    TAXI("Taxi", "Gett rides, on their own or before a train"),
-    BIKE("Bike", "Cycling routes"),
-    WALK("Walking only", "Routes done entirely on foot"),
+enum class ResultFilter {
+    BUS, TRAIN, LIGHT_RAIL, SHARE_TAXI, TAXI, BIKE, WALK;
+
+    /** Recomputed on every access so a language change is picked up immediately. */
+    val label: String
+        get() = when (this) {
+            BUS -> T("Bus", "אוטובוס")
+            TRAIN -> T("Train", "רכבת")
+            LIGHT_RAIL -> T("Light rail", "רכבת קלה")
+            SHARE_TAXI -> T("Share taxi", "מונית שירות")
+            TAXI -> T("Taxi", "מונית")
+            BIKE -> T("Bike", "אופניים")
+            WALK -> T("Walking only", "הליכה בלבד")
+        }
+
+    val desc: String
+        get() = when (this) {
+            BUS -> T("Every bus operator", "כל מפעילי האוטובוסים")
+            TRAIN -> T("Israel Railways", "רכבת ישראל")
+            LIGHT_RAIL -> T("Trams, the Carmelit and the cable cars", "רכבות קלות, הכרמלית והרכבלים")
+            SHARE_TAXI -> T("Monit sherut lines", "קווי מוניות שירות")
+            TAXI -> T("Gett rides, on their own or before a train", "נסיעות Gett, בפני עצמן או לפני רכבת")
+            BIKE -> T("Cycling routes", "מסלולי אופניים")
+            WALK -> T("Routes done entirely on foot", "מסלולים המתבצעים כולם ברגל")
+        }
 }
 
 /** MVRouteType values for the request: every mode, minus the ones switched off. */

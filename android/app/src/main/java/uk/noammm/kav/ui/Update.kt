@@ -45,7 +45,7 @@ fun UpdatePrompt(model: KavModel) {
                 Column {
                     Text("Kav", fontSize = 20.sp, color = K.text, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "${Updates.installedVersion(ctx)} → ${release.version}",
+                        T.ltr("${Updates.installedVersion(ctx)} → ${release.version}"),
                         fontSize = 15.sp, color = K.accent, fontWeight = FontWeight.Medium,
                     )
                 }
@@ -57,7 +57,7 @@ fun UpdatePrompt(model: KavModel) {
                     Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill)).background(K.plateStrong)
                         .clickable(role = Role.Button) { model.updateDismissed = true },
                     contentAlignment = Alignment.Center,
-                ) { Text("No", fontSize = 15.sp, color = K.text) }
+                ) { Text(T("No", "לא"), fontSize = 15.sp, color = K.text) }
                 UpdateButton(model, Modifier.weight(1f)) { scope.launch { model.installUpdate(ctx) } }
             }
         }
@@ -80,7 +80,7 @@ private fun AppIcon(size: androidx.compose.ui.unit.Dp) {
 
 @Composable
 private fun ReleaseNotes(release: Updates.Release, maxHeight: androidx.compose.ui.unit.Dp) {
-    val notes = release.notes.trim().ifBlank { release.name.ifBlank { "No release notes." } }
+    val notes = release.notes.trim().ifBlank { release.name.ifBlank { T("No release notes.", "אין מה חדש.") } }
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(K.sunken)
             .heightIn(max = maxHeight).verticalScroll(rememberScrollState()).padding(K.gap3),
@@ -97,12 +97,13 @@ private fun UpdateProgress(model: KavModel) {
                 Box(Modifier.fillMaxWidth(p.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
             }
             Text(
-                if (p >= 1f) "Opening the installer…" else "Downloading… ${(p * 100).toInt()}%",
+                if (p >= 1f) T("Opening the installer…", "פותחים את ההתקנה…")
+                else T("Downloading… ${(p * 100).toInt()}%", "מורידים… ${(p * 100).toInt()}%"),
                 fontSize = 12.sp, color = K.dim,
             )
         }
     }
-    model.updateError?.let { Text("Could not update: $it", fontSize = 12.sp, color = K.critical, lineHeight = 17.sp) }
+    model.updateError?.let { Text(T("Could not update: $it", "העדכון נכשל: $it"), fontSize = 12.sp, color = K.critical, lineHeight = 17.sp) }
 }
 
 @Composable
@@ -115,7 +116,7 @@ private fun UpdateButton(model: KavModel, modifier: Modifier = Modifier, onClick
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            if (busy) "Updating…" else "Update", fontSize = 15.sp,
+            if (busy) T("Updating…", "מעדכנים…") else T("Update", "עדכון"), fontSize = 15.sp,
             color = if (busy) K.muted else K.bg, fontWeight = FontWeight.Medium,
         )
     }
@@ -136,19 +137,19 @@ fun UpdateSection(model: KavModel) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
             AppIcon(40.dp)
             Column(Modifier.weight(1f)) {
-                Text("Kav ${Updates.installedVersion(ctx)}", fontSize = 14.sp, color = K.text)
+                Text(T.ltr("Kav ${Updates.installedVersion(ctx)}"), fontSize = 14.sp, color = K.text)
                 Text(
                     when {
-                        release != null -> "${release.version} is available"
-                        checking -> "Looking…"
-                        model.updateChecked -> "This is the newest release"
-                        else -> "Not checked yet"
+                        release != null -> T("${release.version} is available", "גרסה ${release.version} זמינה")
+                        checking -> T("Looking…", "בודקים…")
+                        model.updateChecked -> T("This is the newest release", "זו הגרסה העדכנית ביותר")
+                        else -> T("Not checked yet", "עוד לא נבדק")
                     },
                     fontSize = 12.sp, color = if (release != null) K.accent else K.dim,
                 )
             }
             if (release != null) UpdateButton(model) { scope.launch { model.installUpdate(ctx) } }
-            else Chip(if (checking) "Checking…" else "Check for updates", false) {
+            else Chip(if (checking) T("Checking…", "בודקים…") else T("Check for updates", "בדקו עדכונים"), false) {
                 if (checking) return@Chip
                 scope.launch {
                     checking = true

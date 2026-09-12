@@ -137,10 +137,10 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
     Column(Modifier.fillMaxSize().background(K.bg)) {
         ScreenHeader("Next", "departures", back = onBack)
         Column(Modifier.padding(horizontal = K.gap4)) {
-            Text(net.name[stop], fontSize = 14.sp, color = K.text)
-            val city = net.cityOf(stop)
+            Text(net.stops[stop].name, fontSize = 14.sp, color = K.text)
+            val prefix = listOfNotNull(net.cityOf(stop).takeIf { it.isNotBlank() }, net.stopCode(stop)).joinToString(" · ")
             Text(
-                if (city.isNotBlank()) "$city · scheduled times, no live feed available"
+                if (prefix.isNotBlank()) "$prefix · scheduled times, no live feed available"
                 else "scheduled times, no live feed available",
                 fontSize = 11.sp, color = K.dim,
             )
@@ -179,10 +179,13 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                     horizontalArrangement = Arrangement.spacedBy(K.gap3),
                 ) {
                     LineBadge(net, net.tripRoute[t])
-                    Text(
-                        net.name[last], fontSize = 13.sp, color = K.muted,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            net.stops[last].name, fontSize = 13.sp, color = K.muted,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                        net.stopCode(last)?.let { Text(it, fontSize = 11.sp, color = K.dim, maxLines = 1) }
+                    }
                     Text(relative(dep, t0) ?: hhmm(dep), style = Mono, color = K.scheduled)
                 }
             }
@@ -192,9 +195,9 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
 
 /** An offline stop as a place Directions can actually plan with. */
 private fun placeOf(net: Net, stop: Int) = uk.noammm.kav.data.Moovit.Place(
-    name = net.name.getOrElse(stop) { "Stop" },
+    name = net.stops.getOrNull(stop)?.name ?: "Stop",
     detail = net.cityOf(stop),
-    lat = net.lat[stop].toDouble(),
-    lon = net.lon[stop].toDouble(),
+    lat = net.stops[stop].lat,
+    lon = net.stops[stop].lon,
     type = 1,
 )

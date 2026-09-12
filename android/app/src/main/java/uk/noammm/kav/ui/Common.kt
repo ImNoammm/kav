@@ -141,7 +141,7 @@ fun WalkGlyph(tint: Color = K.dim, size: androidx.compose.ui.unit.Dp = 13.dp) {
 
 @Composable
 fun LineBadge(net: Net, route: Int, modifier: Modifier = Modifier) {
-    val mode = modeOf(net.rType.getOrElse(route) { 3 })
+    val mode = modeOf(net.routes.getOrNull(route)?.type ?: 3)
     Row(
         modifier
             .clip(RoundedCornerShape(6.dp))
@@ -153,7 +153,7 @@ fun LineBadge(net: Net, route: Int, modifier: Modifier = Modifier) {
     ) {
         ModeGlyph(mode, K.dim, 12.dp)
         Text(
-            net.rShort.getOrElse(route) { "·" }.ifBlank { "·" },
+            (net.routes.getOrNull(route)?.short ?: "·").ifBlank { "·" },
             fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = K.text,
         )
     }

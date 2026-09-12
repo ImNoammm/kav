@@ -4,24 +4,32 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.BottomSheetScaffold
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberBottomSheetScaffoldState
+import androidx.compose.material3.rememberStandardBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.data.Net
-import uk.noammm.kav.data.representativeTrip
 import uk.noammm.kav.data.searchRoutes
 
 /** GTFS route_type values as the Israeli MOT feed uses them. */
@@ -53,12 +61,9 @@ private fun LineList(model: KavModel, net: Net) {
     var q by remember { mutableStateOf("") }
     var mode by remember { mutableIntStateOf(-1) }
     var hits by remember(net) { mutableStateOf(emptyList<Int>()) }
-    var endpoints by remember(net) { mutableStateOf(emptyMap<Int, Pair<Int, Int>>()) }
-    LaunchedEffect(net) {
-        endpoints = withContext(Dispatchers.Default) { lineEndpoints(net) }
-    }
-    LaunchedEffect(net, q, mode) {
-        hits = withContext(Dispatchers.Default) { net.searchRoutes(q, mode).toList() }
+    val here = model.here
+    LaunchedEffect(net, q, mode, here) {
+        hits = withContext(Dispatchers.Default) { net.searchRoutes(q, mode, here).toList() }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -95,7 +100,7 @@ private fun LineList(model: KavModel, net: Net) {
                     horizontalArrangement = Arrangement.spacedBy(K.gap3),
                 ) {
                     LineIdentity(net, r)
-                    LineDirection(net, endpoints[r], Modifier.weight(1f))
+                    LineDirection(net, net.routes[r].stops[0], Modifier.weight(1f))
                     Text("›", fontSize = 22.sp, color = K.dim)
                 }
             }
@@ -103,19 +108,32 @@ private fun LineList(model: KavModel, net: Net) {
     }
 }
 
-/** One pass over trips, using the same longest-run policy as the stop list. */
-private fun lineEndpoints(net: Net): Map<Int, Pair<Int, Int>> {
-    val longest = IntArray(net.nRoutes) { -1 }
-    for (t in net.tripRoute.indices) {
-        val route = net.tripRoute[t]
-        val previous = longest[route]
-        if (previous < 0 || net.tripStart[t + 1] - net.tripStart[t] >
-            net.tripStart[previous + 1] - net.tripStart[previous]) longest[route] = t
-    }
-    return buildMap {
-        longest.forEachIndexed { route, t ->
-            if (t >= 0 && net.tripStart[t + 1] > net.tripStart[t])
-                put(route, net.stStop[net.tripStart[t]] to net.stStop[net.tripStart[t + 1] - 1])
+/** Popup for choosing which direction of a line to view. Reports the picked
+ *  direction's index into Route.stops; callers decide what that means. */
+@Composable
+private fun DirectionPicker(net: Net, route: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+    val stopsByDirection = net.routes[route].stops
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
+            verticalArrangement = Arrangement.spacedBy(K.gap3),
+        ) {
+            Text("Choose a direction", fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            stopsByDirection.forEachIndexed { i, stops ->
+                if (stops.isNotEmpty()) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(K.rControl)).background(K.surface2)
+                            .clickable(role = Role.Button) { onPick(i) }
+                            .padding(K.gap3),
+                    ) {
+                        val last = stops.last()
+                        val place = net.stops[last].name + net.cityOf(last).takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                        Text("To $place", fontSize = 15.sp, color = K.text)
+                    }
+                }
+            }
         }
     }
 }
@@ -123,60 +141,166 @@ private fun lineEndpoints(net: Net): Map<Int, Pair<Int, Int>> {
 @Composable
 private fun LineIdentity(net: Net, route: Int) {
     Column(Modifier.widthIn(min = 54.dp, max = 88.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(net.rShort[route].ifBlank { "—" }, fontSize = 23.sp, color = K.text,
+        Text(net.routes[route].short.ifBlank { "—" }, fontSize = 23.sp, color = K.text,
             fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(modeName(modeOf(net.rType[route])), fontSize = 11.sp, color = K.dim)
+        Text(modeName(modeOf(net.routes[route].type)), fontSize = 11.sp, color = K.dim)
     }
 }
 
+private fun stopLabel(net: Net, stop: Int): String {
+    val detail = listOfNotNull(net.cityOf(stop).takeIf { it.isNotBlank() }, net.stopCode(stop)).joinToString(" · ")
+    return net.stops[stop].name + detail.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+}
+
+/** From/to summary for a stop sequence, "From" on top since that's the order it's travelled. */
 @Composable
-private fun LineDirection(net: Net, endpoints: Pair<Int, Int>?, modifier: Modifier = Modifier) {
-    fun name(stop: Int): String = net.name[stop] + net.cityOf(stop).takeIf { it.isNotBlank() }
-        ?.let { " · $it" }.orEmpty()
+private fun LineDirection(net: Net, stops: IntArray, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-        if (endpoints == null) Text("Route stops", fontSize = 15.sp, color = K.muted)
+        if (stops.isEmpty()) Text("Route stops", fontSize = 15.sp, color = K.muted)
         else {
-            Text("To \u2068${name(endpoints.second)}\u2069", fontSize = 15.sp, lineHeight = 20.sp,
-                fontWeight = FontWeight.Medium, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("From \u2068${name(endpoints.first)}\u2069", fontSize = 12.sp, lineHeight = 17.sp,
+            Text("From \u2068${stopLabel(net, stops.first())}\u2069", fontSize = 12.sp, lineHeight = 17.sp,
                 color = K.dim, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("To \u2068${stopLabel(net, stops.last())}\u2069", fontSize = 15.sp, lineHeight = 20.sp,
+                fontWeight = FontWeight.Medium, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Unit) {
-    // scanning 123k trips for the longest one is milliseconds, but not on the
-    // frame that draws the screen
-    var stops by remember(route) { mutableStateOf<List<Int>?>(null) }
-    LaunchedEffect(route) {
-        stops = withContext(Dispatchers.Default) {
-            val t = net.representativeTrip(route)
-            if (t < 0) emptyList()
-            else (net.tripStart[t] until net.tripStart[t + 1]).map { net.stStop[it] }
+    val perDirectionStops = net.routes[route].stops
+    var direction by remember(route) { mutableIntStateOf(0) }
+    var picking by remember(route) { mutableStateOf(false) }
+    val list = perDirectionStops[direction]
+    // The trip whose own stop_times produced `list`, so each row can show when
+    // this specific line reaches that stop instead of sending you to Stations.
+    val underlyingRoute = net.routes[route].directions.getOrNull(direction) ?: route
+    val tripIdx = net.routes[underlyingRoute].bestTrip
+
+    val here = model.here
+    var nearest by remember(route, direction) { mutableStateOf<Int?>(null) }
+    var nearestDeps by remember(route, direction) { mutableStateOf<List<Int>>(emptyList()) }
+    LaunchedEffect(route, direction, here) {
+        if (here == null || list.isEmpty()) { nearest = null; nearestDeps = emptyList(); return@LaunchedEffect }
+        val t0 = nowSec()
+        val (s, deps) = withContext(Dispatchers.Default) {
+            var best = -1; var bestD = Double.MAX_VALUE
+            for (candidate in list) {
+                val st = net.stops[candidate]
+                val d = metres(here.first, here.second, st.lat, st.lon)
+                if (d < bestD) { bestD = d; best = candidate }
+            }
+            val out = ArrayList<Int>(5)
+            var i = net.dStart[best]
+            while (i < net.dStart[best + 1] && out.size < 5) {
+                val c = net.dConn[i]
+                if (net.tripRoute[net.cTrip[c]] == underlyingRoute && net.stDep[net.cST[c]] >= t0) out.add(c)
+                i++
+            }
+            best to out
         }
+        nearest = s; nearestDeps = deps
     }
 
-    Column(Modifier.fillMaxSize().background(K.bg)) {
-        ScreenHeader("Line", net.rShort[route], back = onBack)
-        Row(
-            Modifier.padding(horizontal = K.gap4).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(K.gap3),
-        ) {
-            LineIdentity(net, route)
-            LineDirection(net, stops?.takeIf { it.isNotEmpty() }?.let { it.first() to it.last() }, Modifier.weight(1f))
-        }
-        val list = stops
-        if (list == null) LoadingBlock("Loading stops")
-        else Text(
-            if (list.isEmpty()) "no trips on this line in the loaded timetable"
-            else "${list.size} stops · full route",
-            fontSize = 11.sp, color = K.dim,
-            modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
-        )
-        if (list != null) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
+    // The selected stop is the one showing its time on the row; it starts out as
+    // the nearest one once located, but a tap can move it to any other stop.
+    var selectedStop by remember(route, direction) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(nearest) { if (selectedStop == null) selectedStop = nearest }
+
+    val listState = rememberLazyListState()
+    LaunchedEffect(nearest, list) {
+        val idx = nearest?.let { list.indexOf(it) } ?: return@LaunchedEffect
+        if (idx < 0) return@LaunchedEffect
+        listState.scrollToItem(idx)
+        val info = listState.layoutInfo
+        val item = info.visibleItemsInfo.find { it.index == idx } ?: return@LaunchedEffect
+        val viewportCenter = (info.viewportStartOffset + info.viewportEndOffset) / 2
+        val itemCenter = item.offset + item.size / 2
+        listState.animateScrollBy((itemCenter - viewportCenter).toFloat())
+    }
+
+    val sheetState = rememberStandardBottomSheetState(initialValue = SheetValue.PartiallyExpanded, skipHiddenState = true)
+    val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
+
+    BottomSheetScaffold(
+        scaffoldState = scaffoldState,
+        sheetPeekHeight = 96.dp,
+        containerColor = K.bg,
+        sheetContainerColor = K.surface1,
+        sheetContentColor = K.text,
+        sheetDragHandle = {
+            Box(Modifier.padding(vertical = K.gap2).size(width = 36.dp, height = 4.dp)
+                .clip(RoundedCornerShape(999.dp)).background(K.surface4))
+        },
+        sheetContent = {
+            Column(Modifier.fillMaxWidth().padding(horizontal = K.gap4).padding(bottom = K.gap5)) {
+                when {
+                    here == null -> Text("Kav does not know where you are yet.", fontSize = 13.sp, color = K.dim)
+                    nearest == null -> Text("This line has no stops in the loaded timetable.", fontSize = 13.sp, color = K.dim)
+                    else -> {
+                        Text("Nearest stop on this line", fontSize = 11.sp, color = K.dim)
+                        Text(stopLabel(net, nearest!!), fontSize = 16.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(K.gap3))
+                        if (nearestDeps.isEmpty()) {
+                            Text("No more departures today.", fontSize = 13.sp, color = K.muted)
+                        } else {
+                            Row(horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
+                                nearestDeps.forEach { c -> Text(hhmm(net.stDep[net.cST[c]]), style = Mono, color = K.scheduled) }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).background(K.bg)) {
+            ScreenHeader("Line", net.routes[route].short, back = onBack)
+            Row(
+                Modifier.padding(horizontal = K.gap4).fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(K.gap3),
+            ) {
+                LineIdentity(net, route)
+                LineDirection(net, list, Modifier.weight(1f))
+                if (perDirectionStops.size > 1) {
+                    Box(
+                        Modifier.size(32.dp).clip(RoundedCornerShape(K.rPill)).background(K.plate)
+                            .clickable(role = Role.Button) { picking = true },
+                        contentAlignment = Alignment.Center,
+                    ) { Text("⇄", fontSize = 16.sp, color = K.text) }
+                }
+            }
+            if (picking) {
+                DirectionPicker(net, route, onPick = { direction = it; picking = false }) { picking = false }
+            }
+            if (list.isNotEmpty()) {
+                val points = remember(route, direction) { list.map { net.stops[it].lat to net.stops[it].lon } }
+                val geometry = remember(route, direction, nearest) {
+                    MapGeometry(
+                        lines = listOf(MapLine(points, K.route, 4f, casing = 7f)),
+                        dots = list.map { s ->
+                            val st = net.stops[s]
+                            if (s == nearest) MapDot(st.lat, st.lon, K.accent, 7f, K.bg, 2f)
+                            else MapDot(st.lat, st.lon, K.bg, 4f, K.text, 1.5f)
+                        },
+                    )
+                }
+                TileMap(
+                    points, Modifier.fillMaxWidth().padding(horizontal = K.gap4).height(160.dp)
+                        .clip(RoundedCornerShape(K.rControl)).background(K.surface1),
+                    geometry = geometry,
+                )
+                Spacer(Modifier.height(K.gap2))
+            }
+            Text(
+                if (list.isEmpty()) "no trips on this line in the loaded timetable"
+                else "${list.size} stops · full route",
+                fontSize = 11.sp, color = K.dim,
+                modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
+            )
+            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(
                 start = K.gap2, end = K.gap2, bottom = LocalBottomBarInset.current,
             )) {
                 items(list.size) { i ->
@@ -185,7 +309,7 @@ private fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Unit
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
-                            .clickable { model.stationStop = s; model.tab = uk.noammm.kav.Tab.Stations }
+                            .clickable { selectedStop = s }
                             .padding(horizontal = K.gap3, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -200,12 +324,15 @@ private fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Unit
                         Spacer(Modifier.width(K.gap3))
                         Column(Modifier.weight(1f)) {
                             Text(
-                                net.name[s], fontSize = 13.sp,
+                                net.stops[s].name, fontSize = 13.sp,
                                 color = if (i == 0 || i == list.lastIndex) K.text else K.muted,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
-                            val c = net.cityOf(s)
-                            if (c.isNotBlank()) Text(c, fontSize = 11.sp, color = K.dim, maxLines = 1)
+                            val detail = listOfNotNull(net.cityOf(s).takeIf { it.isNotBlank() }, net.stopCode(s)).joinToString(" · ")
+                            if (detail.isNotBlank()) Text(detail, fontSize = 11.sp, color = K.dim, maxLines = 1)
+                        }
+                        if (tripIdx >= 0 && s == selectedStop) {
+                            Text(hhmm(net.stDep[net.tripStart[tripIdx] + i]), style = Mono, color = K.scheduled)
                         }
                     }
                 }

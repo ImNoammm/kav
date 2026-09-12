@@ -25,6 +25,7 @@ private class IntVec(cap: Int = 1 shl 16) {
 
 const val MIN_CHANGE = 120
 const val INF = 0x7fffffff
+const val DIRECTION_PAIR_M = 500.0
 
 class Leg(
     val ride: Boolean,
@@ -41,20 +42,36 @@ class Journey(val depart: Int, val arrive: Int, val legs: List<Leg>) {
     val rides get() = legs.count { it.ride }
 }
 
+data class Route(val short: String, val long: String, val type: Int) {
+    /** Indices into tripRoute/tripStart of every trip on this route, filled once at load. */
+    var trips: IntArray = EMPTY
+    /** One entry per direction: the ordered stop indices of that direction's longest trip.
+     *  Index 0 is this route's own direction; index 1, if present, is the opposite-direction
+     *  route's stops (same short name, endpoints swapped). Always has at least one entry. */
+    var stops: Array<IntArray> = EMPTY_STOPS
+    /** Parallel to [stops]: which underlying route index each direction's stops came from
+     *  (this route's own index at 0, the paired route's index at 1). */
+    var directions: IntArray = EMPTY
+    /** This route's own longest trip: the one whose stop_times produced [stops]'s own
+     *  (index-0) entry, so a stop's scheduled time on this line can be looked up without
+     *  a fresh scan. -1 if the route has no trips today. */
+    var bestTrip: Int = -1
+    private companion object {
+        val EMPTY = IntArray(0)
+        val EMPTY_STOPS: Array<IntArray> = emptyArray()
+    }
+}
+
+data class Stop(val name: String, val lat: Double, val lon: Double, val code: Int, val cityOf: Int)
+
 class Net private constructor() {
 
     // stops
-    lateinit var name: Array<String>; private set
-    lateinit var lat: DoubleArray; private set
-    lateinit var lon: DoubleArray; private set
-    lateinit var code: IntArray; private set
-    lateinit var cityOf: IntArray; private set
+    lateinit var stops: Array<Stop>; private set
     lateinit var city: Array<String>; private set
 
     // routes
-    lateinit var rShort: Array<String>; private set
-    lateinit var rLong: Array<String>; private set
-    lateinit var rType: IntArray; private set
+    lateinit var routes: Array<Route>; private set
 
     // trips (CSR of stop_times)
     lateinit var tripRoute: IntArray; private set
@@ -84,11 +101,13 @@ class Net private constructor() {
     // search haystack
     lateinit var hay: Array<String>; private set
 
-    val nStops get() = lat.size
+    val nStops get() = stops.size
     val nTrips get() = tripRoute.size
-    val nRoutes get() = rShort.size
+    val nRoutes get() = routes.size
 
-    fun cityOf(s: Int): String = city.getOrElse(cityOf[s]) { "" }
+    fun cityOf(s: Int): String = city.getOrElse(stops[s].cityOf) { "" }
+    /** "Stop 12345" for display, or null when the feed has no code for this stop. */
+    fun stopCode(s: Int): String? = stops[s].code.takeIf { it > 0 }?.let { "Stop $it" }
     fun tripLast(t: Int): Int = stStop[tripStart[t + 1] - 1]
 
     /* varint reader
@@ -124,18 +143,15 @@ class Net private constructor() {
 
         city = Array(nC) { vs() }
 
-        name = Array(nS) { "" }
-        lat = DoubleArray(nS); lon = DoubleArray(nS)
-        code = IntArray(nS); cityOf = IntArray(nS)
         var la = 0L; var lo = 0L
-        for (i in 0 until nS) {
+        stops = Array(nS) {
             la += vi(); lo += vi()
-            lat[i] = la / 1e5; lon[i] = lo / 1e5
-            code[i] = vi(); cityOf[i] = vi(); name[i] = vs()
+            val sLat = la / 1e5; val sLon = lo / 1e5
+            val sCode = vi(); val sCityOf = vi(); val sName = vs()
+            Stop(sName, sLat, sLon, sCode, sCityOf)
         }
 
-        rShort = Array(nR) { "" }; rLong = Array(nR) { "" }; rType = IntArray(nR)
-        for (i in 0 until nR) { rShort[i] = vs(); rLong[i] = vs(); rType[i] = vi() }
+        routes = Array(nR) { Route(vs(), vs(), vi()) }
 
         tripRoute = IntArray(nT); tripStart = IntArray(nT + 1)
         val ss = IntVec(1 shl 21); val sa = IntVec(1 shl 21); val sd = IntVec(1 shl 21)
@@ -153,6 +169,75 @@ class Net private constructor() {
         tripStart[nT] = ss.n
         stStop = ss.trimmed(); stArr = sa.trimmed(); stDep = sd.trimmed()
 
+        // Invert tripRoute (trip -> route) into route -> its trips, a counting sort
+        // exactly like the connection/departure indices below. Then, once per route,
+        // pick the longest trip as the stand-in for "the line" and keep its stop
+        // sequence too, so the Lines screen never re-derives it on render.
+        val own = arrayOfNulls<IntArray>(nR)
+        run {
+            val deg = IntArray(nR)
+            for (t in 0 until nT) deg[tripRoute[t]]++
+            val start = IntArray(nR + 1)
+            for (r in 0 until nR) start[r + 1] = start[r] + deg[r]
+            val fill = start.copyOf(nR)
+            val order = IntArray(nT)
+            for (t in 0 until nT) order[fill[tripRoute[t]]++] = t
+            for (r in 0 until nR) {
+                val trips = order.copyOfRange(start[r], start[r + 1])
+                routes[r].trips = trips
+                var best = -1; var bestLen = -1
+                for (t in trips) {
+                    val len = tripStart[t + 1] - tripStart[t]
+                    if (len > bestLen) { bestLen = len; best = t }
+                }
+                routes[r].bestTrip = best
+                own[r] = if (best < 0) IntArray(0) else stStop.copyOfRange(tripStart[best], tripStart[best + 1])
+            }
+        }
+
+        // Pair up opposite-direction routes: same short name, first/last stop within
+        // DIRECTION_PAIR_M of one another. Grouping by short name first keeps this
+        // cheap even though the feed repeats a short name across many rows (rail
+        // direction ~500 times, per searchRoutes). stops[i] and directions[i] are
+        // parallel: directions[i] names which route's own trip produced the stop
+        // sequence at stops[i], since the two directions' stop sequences (and route
+        // metadata) can genuinely differ, not just reverse.
+        run {
+            // A terminus's boarding platform and its drop-off bay are almost always
+            // separate stop_ids a short walk apart, so an exact-stop (or exact-name)
+            // match at the far end misses most real pairs; a radius catches them.
+            val limit2 = DIRECTION_PAIR_M * DIRECTION_PAIR_M
+            fun near(s1: Int, s2: Int): Boolean {
+                val dy = (stops[s1].lat - stops[s2].lat) * 111_000
+                val dx = (stops[s1].lon - stops[s2].lon) * 93_000
+                return dy * dy + dx * dx <= limit2
+            }
+            val bySort = HashMap<String, MutableList<Int>>()
+            for (r in 0 until nR) if (own[r]!!.isNotEmpty()) bySort.getOrPut(routes[r].short) { mutableListOf() }.add(r)
+            val paired = BooleanArray(nR)
+            for (group in bySort.values) {
+                for (i in group.indices) {
+                    val a = group[i]
+                    if (paired[a]) continue
+                    val aStops = own[a]!!
+                    for (k in i + 1 until group.size) {
+                        val b = group[k]
+                        if (paired[b]) continue
+                        val bStops = own[b]!!
+                        if (near(aStops.first(), bStops.last()) && near(aStops.last(), bStops.first())) {
+                            routes[a].stops = arrayOf(aStops, bStops); routes[a].directions = intArrayOf(a, b)
+                            routes[b].stops = arrayOf(bStops, aStops); routes[b].directions = intArrayOf(b, a)
+                            paired[a] = true; paired[b] = true
+                            break
+                        }
+                    }
+                }
+            }
+            for (r in 0 until nR) if (routes[r].stops.isEmpty()) {
+                routes[r].stops = arrayOf(own[r]!!); routes[r].directions = intArrayOf(r)
+            }
+        }
+
         xStart = IntArray(nS + 1)
         val xt = IntVec(1 shl 18); val xw = IntVec(1 shl 18)
         for (i in 0 until nS) {
@@ -166,7 +251,7 @@ class Net private constructor() {
         // The road polylines follow, for the map. v0 has no map, so parsing stops
         // here and the ~50 MB of geometry is never allocated.
 
-        hay = Array(nS) { (name[it] + " " + cityOf(it)).lowercase() }
+        hay = Array(nS) { (stops[it].name + " " + cityOf(it)).lowercase() }
         b = ByteArray(0)   // let the 25 MB source buffer go before the arrays grow
         buildConnections()
     }
@@ -207,7 +292,7 @@ class Net private constructor() {
         nConn = m
 
         // per-stop departures, already in time order
-        val nS = lat.size
+        val nS = stops.size
         dStart = IntArray(nS + 1)
         val deg = IntArray(nS)
         for (i in 0 until m) deg[stStop[cST[i]]]++
@@ -230,7 +315,7 @@ class Net private constructor() {
 
     @Synchronized
     fun plan(from: Int, to: Int, depTime: Int): Journey? {
-        val nS = lat.size; val nT = tripRoute.size
+        val nS = stops.size; val nT = tripRoute.size
         var a0 = arrT
         if (a0 == null) {
             a0 = IntArray(nS); arrT = a0

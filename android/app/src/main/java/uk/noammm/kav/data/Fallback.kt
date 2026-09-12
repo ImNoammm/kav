@@ -28,9 +28,9 @@ object Fallback {
 
     private fun nearest(net: Net, lat: Double, lon: Double): Int {
         var best = Double.MAX_VALUE; var idx = -1
-        for (i in net.lat.indices) {
-            val dy = (net.lat[i] - lat) * 111.0
-            val dx = (net.lon[i] - lon) * 93.0
+        for (i in net.stops.indices) {
+            val dy = (net.stops[i].lat - lat) * 111.0
+            val dx = (net.stops[i].lon - lon) * 93.0
             val d = dy * dy + dx * dx
             if (d < best) { best = d; idx = i }
         }
@@ -65,8 +65,9 @@ object Fallback {
             val legs = ArrayList<Moovit.Leg>(j.legs.size * 2)
             for (l in j.legs) {
                 fun note(stop: Int) {
-                    if (stop in 0 until net.name.size && stop !in stops) {
-                        stops[stop] = Moovit.StopInfo(stop, net.name[stop], "")
+                    if (stop in 0 until net.stops.size && stop !in stops) {
+                        val code = net.stops[stop].code.takeIf { it > 0 }?.toString() ?: ""
+                        stops[stop] = Moovit.StopInfo(stop, net.stops[stop].name, code)
                     }
                 }
                 note(l.from); note(l.to)
@@ -75,13 +76,13 @@ object Fallback {
                     // UI reads it except through Resolved, which is built right below
                     val route = l.route
                     if (route !in lines) {
-                        val rt = net.rType.getOrElse(route) { 3 }
+                        val rt = net.routes.getOrNull(route)?.type ?: 3
                         lines[route] = Moovit.LineInfo(
                             groupId = -1,
-                            number = net.rShort.getOrElse(route) { "" },
+                            number = net.routes.getOrNull(route)?.short ?: "",
                             agencyId = route,
-                            origin = net.name.getOrElse(l.from) { "" },
-                            destination = net.name.getOrElse(l.to) { "" },
+                            origin = net.stops.getOrNull(l.from)?.name ?: "",
+                            destination = net.stops.getOrNull(l.to)?.name ?: "",
                             caption = "",
                         )
                         types[route] = rt
@@ -136,9 +137,9 @@ object Fallback {
     }
 
     private fun metresBetween(net: Net, a: Int, b: Int): Int {
-        if (a !in net.lat.indices || b !in net.lat.indices) return 0
-        val dy = (net.lat[a] - net.lat[b]) * 111_000
-        val dx = (net.lon[a] - net.lon[b]) * 93_000
+        if (a !in net.stops.indices || b !in net.stops.indices) return 0
+        val dy = (net.stops[a].lat - net.stops[b].lat) * 111_000
+        val dx = (net.stops[a].lon - net.stops[b].lon) * 93_000
         return Math.sqrt(dy * dy + dx * dx).toInt()
     }
 }

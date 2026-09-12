@@ -75,12 +75,12 @@ fun StopRow(net: Net, stop: Int, trailing: String? = null, onClick: () -> Unit) 
     ) {
         Column(Modifier.weight(1f)) {
             Text(
-                net.name[stop], fontSize = 15.sp, color = K.text,
+                net.stops[stop].name, fontSize = 15.sp, color = K.text,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            val city = net.cityOf(stop)
-            if (city.isNotBlank()) {
-                Text(city, fontSize = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val detail = listOfNotNull(net.cityOf(stop).takeIf { it.isNotBlank() }, net.stopCode(stop)).joinToString(" · ")
+            if (detail.isNotBlank()) {
+                Text(detail, fontSize = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         if (trailing != null) {

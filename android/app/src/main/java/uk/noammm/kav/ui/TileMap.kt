@@ -7,6 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,13 +23,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -136,6 +137,7 @@ data class MapMarker(
 data class MapGeometry(
     val lines: List<MapLine> = emptyList(),
     val dots: List<MapDot> = emptyList(),
+    /** Drawn on the `live` path only; the static `geometry` carries lines and dots. */
     val markers: List<MapMarker> = emptyList(),
 )
 
@@ -313,6 +315,19 @@ data class Follow(val lat: Double, val lon: Double, val bearing: Float, val zoom
 private const val ANCHOR_X = 0.5f
 private const val ANCHOR_Y = 0.72f
 private const val TILT_DEG = 40f
+
+/**
+ * A screen point back into the space the overlays draw in. They are drawn through
+ * `rotate(-rotation, anchor)`, so undoing a tap means turning it the other way about
+ * the same pivot. A no-op on a map that is not following anything, which never turns.
+ */
+private fun unrotate(at: Offset, anchor: Offset, rotation: Float): Offset {
+    if (rotation == 0f) return at
+    val rad = Math.toRadians(rotation.toDouble())
+    val c = kotlin.math.cos(rad); val sn = kotlin.math.sin(rad)
+    val dx = (at.x - anchor.x).toDouble(); val dy = (at.y - anchor.y).toDouble()
+    return Offset((dx * c - dy * sn + anchor.x).toFloat(), (dx * sn + dy * c + anchor.y).toFloat())
+}
 
 /** What the caller needs to place its own geometry on the map. */
 class MapProjection(
@@ -571,6 +586,13 @@ fun TileMap(
     live: MapGeometry? = null,
     animatedOverlay: DrawScope.(MapProjection) -> Unit = {},
     overlay: DrawScope.(MapProjection) -> Unit = {},
+    /**
+     * A tap on the ground, given in the same coordinates the overlays draw in: a
+     * caller that placed a marker with [MapProjection.point] can compare the two and
+     * decide whether the tap landed on it. Flat projection, like the overlays, so it
+     * means nothing while the map is leaning.
+     */
+    onTap: ((Offset, MapProjection) -> Unit)? = null,
 ) {
     val ctx = LocalContext.current
     val density = LocalDensity.current
@@ -636,10 +658,22 @@ fun TileMap(
     LaunchedEffect(map, mapReady) {
         if (mapReady) map?.setStyle(Style.Builder().fromJson(MapFile.styleJson(ctx))) { style = it }
     }
+    fun Style.ensureKavIcons() {
+        val px = with(density) { 1.dp.toPx() }
+        if (getImage(MAP_ARROW_ICON) == null) addImage(MAP_ARROW_ICON, arrowBitmap(px))
+        // one vehicle mark per mode: a train on the map is the train Moovit draws,
+        // not a bus standing in for everything that is not a bus
+        val span = (12f * px).toInt().coerceAtLeast(8)
+        for (m in Mode.entries) {
+            val name = modeIconName(m)
+            if (getImage(name) == null) addImage(name, modeMark(m, span).asAndroidBitmap())
+        }
+    }
     LaunchedEffect(style, geometry) {
         val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
         if (geometry != null) {
             s.ensureKavLayers()
+            s.ensureKavIcons()
             s.setKavGeometry(geometry)
         }
     }
@@ -647,7 +681,7 @@ fun TileMap(
         val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
         if (live != null) {
             s.ensureKavLayers()
-            if (s.getImage(MAP_ARROW_ICON) == null) s.addImage(MAP_ARROW_ICON, arrowBitmap(with(density) { 1.dp.toPx() }))
+            s.ensureKavIcons()
             s.setKavLive(live)
         }
     }
@@ -694,12 +728,29 @@ fun TileMap(
         }
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
 
+        val tap by rememberUpdatedState(onTap)
         Canvas(
-            Modifier.fillMaxSize().graphicsLayer { alpha = 1f - tilt / TILT_DEG }.pointerInput(camera) {
-                detectTransformGestures { centroid, panChange, zoomChange, _ ->
-                    camera.gesture(centroid, panChange, zoomChange, liveViewport)
-                }
-            },
+            Modifier.fillMaxSize().graphicsLayer { alpha = 1f - tilt / TILT_DEG }
+                // The tap detector sits OUTSIDE the transform one, so the transform
+                // gets every event first: a pan past slop is consumed there and never
+                // reaches here, and only a press that went nowhere is read as a tap.
+                // Attached only where a caller wants taps, so the maps that only want
+                // to be panned keep exactly the gesture handling they always had.
+                .then(if (onTap == null) Modifier else Modifier.pointerInput(anchor) {
+                    detectTapGestures { at ->
+                        val current = camera.value ?: return@detectTapGestures
+                        tap?.invoke(
+                            unrotate(at, anchor, current.rotation),
+                            MapProjection(current.worldX, current.worldY, current.pxPerWorld,
+                                size.width.toFloat(), size.height.toFloat()),
+                        )
+                    }
+                })
+                .pointerInput(camera) {
+                    detectTransformGestures { centroid, panChange, zoomChange, _ ->
+                        camera.gesture(centroid, panChange, zoomChange, liveViewport)
+                    }
+                },
         ) {
             val current = camera.value ?: return@Canvas
             turned { overlay(MapProjection(current.worldX, current.worldY, current.pxPerWorld, size.width, size.height)) }
@@ -719,7 +770,7 @@ fun TileMap(
 
         if (camera.manual) {
             Text(
-                if (follow != null) "Follow" else "Reset",
+                if (follow != null) T("Follow", "עקבו") else T("Reset", "איפוס"),
                 fontSize = 11.sp, color = K.text,
                 modifier = Modifier.align(Alignment.TopEnd)
                     .padding(top = contentPadding.calculateTopPadding() + K.gap2,
@@ -762,20 +813,23 @@ private fun MapDownloadCard(modifier: Modifier) {
                     Box(Modifier.width(160.dp).height(6.dp).clip(RoundedCornerShape(999.dp)).background(K.surface4)) {
                         Box(Modifier.fillMaxWidth(s.progress.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
                     }
-                    Text("Downloading… ${(s.progress * 100).toInt()}%", fontSize = 12.sp, color = K.dim)
+                    Text(T("Downloading… ${(s.progress * 100).toInt()}%", "מורידים… ${(s.progress * 100).toInt()}%"), fontSize = 12.sp, color = K.dim)
                 }
                 else -> {
-                    Text("Download the map", fontSize = 14.sp, color = K.text, fontWeight = FontWeight.Medium)
+                    Text(T("Download the map", "הורדת המפה"), fontSize = 14.sp, color = K.text, fontWeight = FontWeight.Medium)
                     Text(
-                        "About ${MapFile.BYTES shr 20} MB for all of Israel, once. Then it works with no signal.",
+                        T(
+                            "About ${MapFile.BYTES shr 20} MB for all of Israel, once. Then it works with no signal.",
+                            "כ-${MapFile.BYTES shr 20} מגה-בייט לכל ישראל, פעם אחת. אחר כך היא עובדת גם בלי קליטה.",
+                        ),
                         fontSize = 12.sp, color = K.dim,
                     )
-                    if (s is MapFile.State.Failed) Text("Couldn't download it. ${s.why}", fontSize = 12.sp, color = K.critical)
+                    if (s is MapFile.State.Failed) Text(T("Couldn't download it. ${s.why}", "ההורדה נכשלה. ${s.why}"), fontSize = 12.sp, color = K.critical)
                     Box(
                         Modifier.clip(RoundedCornerShape(K.rPill)).background(K.accent)
                             .clickable { MapFile.startDownload(ctx) }
                             .padding(horizontal = 18.dp, vertical = 8.dp),
-                    ) { Text(if (s is MapFile.State.Failed) "Try again" else "Download", fontSize = 13.sp, color = K.bg, fontWeight = FontWeight.Medium) }
+                    ) { Text(if (s is MapFile.State.Failed) T("Try again", "נסו שוב") else T("Download", "הורדה"), fontSize = 13.sp, color = K.bg, fontWeight = FontWeight.Medium) }
                 }
             }
         }

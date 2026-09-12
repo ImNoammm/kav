@@ -125,7 +125,7 @@ private fun TripDetailBody(
         ) {
             BackButton(onBack)
             Spacer(Modifier.width(K.gap3))
-            Sig("Your", "trip", Modifier.weight(1f))
+            Sig(T("Your", "הנסיעה"), T("trip", "שלכם"), Modifier.weight(1f))
             StartButton(onStart)
         }
 
@@ -154,7 +154,7 @@ private fun Summary(trip: Moovit.Itinerary, r: Moovit.Resolved) {
         )
         Spacer(Modifier.height(K.gap1))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(K.gap3), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-            Text("Arrives ${hm.format(Date(trip.arr * 1000))}", fontSize = 14.sp, color = K.muted)
+            Text(T("Arrives ${hm.format(Date(trip.arr * 1000))}", "הגעה ב-${hm.format(Date(trip.arr * 1000))}"), fontSize = 14.sp, color = K.muted)
             if (trip.fare >= 0) {
                 Text("%s%.2f".format(trip.currency, trip.fare / 100.0), fontSize = 14.sp, color = K.muted)
             }
@@ -162,7 +162,7 @@ private fun Summary(trip: Moovit.Itinerary, r: Moovit.Resolved) {
         Spacer(Modifier.height(K.gap3))
         TripStrip(trip, r)
         val chips = ArrayList<String>()
-        if (trip.accessible) chips.add("Step-free")
+        if (trip.accessible) chips.add(T("Step-free", "נגיש"))
         if (trip.co2g >= 0) chips.add(co2(trip.co2g))
         trip.tags.forEach { chips.add(it) }
         if (chips.isNotEmpty()) {
@@ -189,29 +189,29 @@ private fun Summary(trip: Moovit.Itinerary, r: Moovit.Resolved) {
 private fun depNote(deps: List<Moovit.Departure>): String? {
     val d = deps.firstOrNull() ?: return null
     val state = when (d.state) {
-        Moovit.TimeState.CANCELED -> "Canceled for this station"
+        Moovit.TimeState.CANCELED -> T("Canceled for this station", "מבוטל לתחנה זו")
         Moovit.TimeState.FREQUENCY -> null
-        Moovit.TimeState.OUT_OF_SHAPE -> "Deviated from route"
+        Moovit.TimeState.OUT_OF_SHAPE -> T("Deviated from route", "סוטה מהמסלול")
         Moovit.TimeState.REAL_TIME -> null
-        Moovit.TimeState.REAL_TIME_HIGH -> "Arrival time is accurate"
-        Moovit.TimeState.REAL_TIME_MEDIUM -> "Arrival time is fairly accurate"
-        Moovit.TimeState.REAL_TIME_LOW -> "Arrival time may not be accurate"
-        Moovit.TimeState.REAL_TIME_DROPPED -> "Real-Time unavailable"
-        Moovit.TimeState.STATISTICAL -> "Based on previous arrivals"
-        Moovit.TimeState.STATIC -> "Scheduled time"
+        Moovit.TimeState.REAL_TIME_HIGH -> T("Arrival time is accurate", "זמן ההגעה מדויק")
+        Moovit.TimeState.REAL_TIME_MEDIUM -> T("Arrival time is fairly accurate", "זמן ההגעה מדויק למדי")
+        Moovit.TimeState.REAL_TIME_LOW -> T("Arrival time may not be accurate", "ייתכן שזמן ההגעה אינו מדויק")
+        Moovit.TimeState.REAL_TIME_DROPPED -> T("Real-Time unavailable", "אין מידע בזמן אמת")
+        Moovit.TimeState.STATISTICAL -> T("Based on previous arrivals", "מבוסס על הגעות קודמות")
+        Moovit.TimeState.STATIC -> T("Scheduled time", "לפי לוח זמנים")
     }
     val alert = when {
-        d.alert == 4 -> "Service alert on this line"
-        d.alert == 3 -> "Service change on this line"
-        d.status == 2 -> "Running late"
-        d.status == 4 -> "Running ahead of schedule"
+        d.alert == 4 -> T("Service alert on this line", "התרעת שירות בקו זה")
+        d.alert == 3 -> T("Service change on this line", "שינוי שירות בקו זה")
+        d.status == 2 -> T("Running late", "באיחור")
+        d.status == 4 -> T("Running ahead of schedule", "מקדים את הלוח")
         else -> null
     }
     return listOfNotNull(state, alert).joinToString(" · ").ifBlank { null }
 }
 
 /** Compact emissions label, using grams below one kilogram. */
-fun co2(g: Int): String = if (g < 1000) "$g g CO2e" else "%.2f kg CO2e".format(g / 1000.0)
+fun co2(g: Int): String = if (g < 1000) T("$g g CO2e", "$g גרם CO2e") else T("%.2f kg CO2e", "%.2f ק\"ג CO2e").format(g / 1000.0)
 
 @Composable
 private fun TripStrip(trip: Moovit.Itinerary, r: Moovit.Resolved) {
@@ -224,7 +224,7 @@ private fun TripStrip(trip: Moovit.Itinerary, r: Moovit.Resolved) {
                 Moovit.LegKind.RIDE -> { { RouteChoices(l, r) } }
                 else -> continue
             }
-            if (!first) Text("›", fontSize = 13.sp, color = K.surface4)
+            if (!first) Text(T.onward, fontSize = 13.sp, color = K.surface4)
             first = false
             glyph()
         }
@@ -246,7 +246,7 @@ private fun Timeline(
             .clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(vertical = K.gap2),
     ) {
         Rail(Node.ORIGIN, thick = false, top = true) {
-            Endpoint(fromLabel, hm.format(Date(trip.dep * 1000)), "Leave at")
+            Endpoint(fromLabel, hm.format(Date(trip.dep * 1000)), T("Leave at", "יציאה בשעה"))
         }
         trip.legs.forEachIndexed { i, l ->
             when (l.kind) {
@@ -265,12 +265,12 @@ private fun Timeline(
                     }
                 }
                 Moovit.LegKind.TAXI -> Rail(Node.RIDE, thick = true) {
-                    Step("Gett · ${l.minutes} min", null)
+                    Step(T("Gett · ${l.minutes} min", "Gett · ${l.minutes} דק׳"), null)
                     Spacer(Modifier.height(K.gap2))
                     GettButton(l)
                 }
                 Moovit.LegKind.BIKE -> Rail(Node.RIDE, thick = true) {
-                    Step("Cycle ${l.minutes} min", null)
+                    Step(T("Cycle ${l.minutes} min", "אופניים ${l.minutes} דק׳"), null)
                 }
                 Moovit.LegKind.RIDE -> {
                     val wait = trip.legs.getOrNull(i - 1)?.takeIf { w -> w.kind == Moovit.LegKind.WAIT }
@@ -278,7 +278,7 @@ private fun Timeline(
                     val alight = r.stop(l.toStop)
                     Rail(Node.BOARD, thick = false) {
                         StopRowDetail(
-                            board?.name ?: "Board here", board?.code,
+                            board?.name ?: T("Board here", "עלייה כאן"), board?.code,
                             hm.format(Date(l.dep * 1000)), legMode(l, r),
                         )
                         Spacer(Modifier.height(K.gap2))
@@ -289,7 +289,7 @@ private fun Timeline(
                     }
                     Rail(Node.ALIGHT, thick = false) {
                         StopRowDetail(
-                            alight?.name ?: "Get off here", alight?.code,
+                            alight?.name ?: T("Get off here", "ירידה כאן"), alight?.code,
                             hm.format(Date(l.arr * 1000)), legMode(l, r),
                         )
                     }
@@ -298,24 +298,26 @@ private fun Timeline(
             }
         }
         Rail(Node.DEST, thick = false, bottom = true) {
-            Endpoint(toLabel, hm.format(Date(trip.arr * 1000)), "Arrive")
+            Endpoint(toLabel, hm.format(Date(trip.arr * 1000)), T("Arrive", "הגעה"))
         }
     }
 }
 
 private fun walkLabel(metres: Int, mins: Int): String {
     val d = if (metres > 0) distanceLabel(metres.toDouble()) else null
-    val m = if (mins >= 1) "$mins min" else null
-    return listOfNotNull("Walk", d, m).let {
-        if (it.size == 3) "Walk ${it[1]} · ${it[2]}" else it.joinToString(" ")
+    val m = if (mins >= 1) T("$mins min", "$mins דק׳") else null
+    val walk = T("Walk", "הליכה")
+    return listOfNotNull(walk, d, m).let {
+        if (it.size == 3) "$walk ${it[1]} · ${it[2]}" else it.joinToString(" ")
     }
 }
 
 private fun rideLabel(l: Moovit.Leg): String {
     // stopSequenceIds includes the stop you board at, so the ride is one fewer
     val n = (l.stops.size - 1).coerceAtLeast(0)
-    val stops = if (n == 1) "1 stop" else "$n stops"
-    return if (n > 0) "Ride $stops · ${l.minutes} min" else "Ride ${l.minutes} min"
+    val stops = if (n == 1) T("1 stop", "תחנה 1") else T("$n stops", "$n תחנות")
+    return if (n > 0) T("Ride $stops · ${l.minutes} min", "נסיעה $stops · ${l.minutes} דק׳")
+        else T("Ride ${l.minutes} min", "נסיעה ${l.minutes} דק׳")
 }
 
 /**
@@ -385,7 +387,7 @@ private fun StopRowDetail(name: String, code: String?, time: String, mode: Mode?
         }
         Column(Modifier.weight(1f)) {
             Text(name, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (!code.isNullOrBlank()) Text("Stop $code", fontSize = 14.sp, color = K.dim)
+            if (!code.isNullOrBlank()) Text(T("Stop $code", "תחנה $code"), fontSize = 14.sp, color = K.dim)
         }
         Spacer(Modifier.width(K.gap2))
         Text(time, fontSize = 14.sp, color = K.text)
@@ -415,7 +417,7 @@ private fun BoardCard(
 ) {
     val options = Moovit.boardingOptions(ride, wait)
     Column(Modifier.fillMaxWidth()) {
-        if (options.size > 1) Text("Take one of these lines", fontSize = 14.sp, color = K.dim)
+        if (options.size > 1) Text(T("Take one of these lines", "בחרו אחד מהקווים האלה"), fontSize = 14.sp, color = K.dim)
         options.forEachIndexed { index, (option, boarding) ->
             if (index > 0) Box(Modifier.fillMaxWidth().padding(vertical = K.gap2).height(1.dp).background(K.border))
             BoardOption(option, boarding, r, onTrack)
@@ -450,16 +452,22 @@ private fun BoardOption(
                 )
             }
             Spacer(Modifier.width(K.gap3))
-            Text(
-                info?.destination?.ifBlank { null }?.let { "to $it" } ?: "",
-                fontSize = 14.sp, color = K.muted, maxLines = 2,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    info?.destination?.ifBlank { null }?.let { T("to $it", "לכיוון $it") } ?: "",
+                    fontSize = 14.sp, color = K.muted, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // who actually runs it: Egged, Dan, Metropoline, Israel Railways
+                r.agencyName(agency)?.let {
+                    Text(it, fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
         val deps = r.departures(ride, wait).filter { it.timeUtc >= now - 60 }.take(3)
         if (deps.isNotEmpty()) {
             Spacer(Modifier.height(K.gap2))
-            Text("Departures", fontSize = 14.sp, color = K.dim)
+            Text(T("Departures", "יציאות"), fontSize = 14.sp, color = K.dim)
             Spacer(Modifier.height(K.gap1))
             DepartureTimes(deps, now)
             depNote(deps)?.let {
@@ -467,9 +475,10 @@ private fun BoardOption(
             }
         }
         wait?.let { AlertRow(it.alertCategory, it.alertText, r.line(ride.lineId)?.groupId ?: 0) }
-        // Tracking requires both a vehicle position and a drawable journey leg.
-        val trackable = r.arrival(ride)?.hasLocation == true && ride.shape.size >= 2
+        // The glyph is lit only with a real vehicle position; the button opens either
+        // way, and the live screen says which of the several reasons applies.
+        val live = r.arrival(ride)?.hasLocation == true
         Spacer(Modifier.height(K.gap2))
-        LiveLocationButton(trackable) { onTrack(ride, ride.fromStop) }
+        LiveLocationButton(live) { onTrack(ride, ride.fromStop) }
     }
 }

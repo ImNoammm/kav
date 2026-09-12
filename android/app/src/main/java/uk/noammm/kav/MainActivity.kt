@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -67,23 +68,29 @@ import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.Updates
 import uk.noammm.kav.ui.*
 
-enum class Tab(val label: String) { Directions("Home"), Stations("Stations"), Lines("Lines"), Live("Live") }
+enum class Tab {
+    Directions, Stations, Lines, Live;
+
+    /** Computed rather than held: an enum constant is built once, and a label stored
+     *  in it would freeze at whichever language happened to be loaded first. */
+    val label: String get() = when (this) {
+        Directions -> T("Home", "בית")
+        Stations -> T("Stations", "תחנות")
+        Lines -> T("Lines", "קווים")
+        Live -> T("Live", "בזמן אמת")
+    }
+}
 
 /** Parsing the national bundle costs ~1 s and ~110 MB; an activity restart must
  *  not pay it twice. */
 object Loaded {
-    private data class Timetable(val net: Net, val parseMs: Long)
-    @Volatile private var timetable: Timetable? = null
+    @Volatile private var net_: Net? = null
 
-    val net: Net? get() = timetable?.net
-    val parseMs: Long get() = timetable?.parseMs ?: 0
-    val wireBytes: Long get() = timetable?.net?.sourceBytes ?: 0
+    val net: Net? get() = net_
 
-    fun store(net: Net, parseMs: Long) {
-        timetable = Timetable(net, parseMs)
-    }
+    fun store(net: Net) { net_ = net }
 
-    fun clear() { timetable = null }
+    fun clear() { net_ = null }
 }
 
 /** Whether the activity is showing as a small window over other apps, and whether it should. */
@@ -101,7 +108,18 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             addOnPictureInPictureModeChangedListener { Pip.active = it.isInPictureInPictureMode }
         }
-        setContent { KavTheme { Root() } }
+        T.lang = Prefs.lang(this)
+        setContent {
+            KavTheme {
+                // Hebrew is read right to left, and Compose mirrors a whole tree from
+                // this one local: rows reverse, start/end padding swaps sides, text
+                // aligns to the right. The system locale cannot drive it here because
+                // Kav's language is its own setting, not the phone's.
+                CompositionLocalProvider(
+                    LocalLayoutDirection provides if (T.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
+                ) { LanguageSwitch { Root() } }
+            }
+        }
     }
 
     /**
@@ -206,6 +224,18 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     var stationStop by mutableIntStateOf(-1)
     var lineRoute by mutableIntStateOf(-1)
 
+    /**
+     * What the rider last typed into each search box, kept here rather than in the
+     * list that draws it. Opening a stop or a line swaps the screen's AnimatedContent
+     * branch, which disposes that list and everything remembered inside it, so coming
+     * back after one tap used to land on an empty box and the whole nearby list again.
+     * The picker's own query is cleared once a place is actually picked: that search
+     * is finished, the other two are still where the rider was looking.
+     */
+    var stopQuery by mutableStateOf("")
+    var lineQuery by mutableStateOf("")
+    var placeQuery by mutableStateOf("")
+
     /** Where the phone is: the latest fix, and the same point for screens that only want a point. */
     var fix by mutableStateOf<Fix?>(null)
     var here by mutableStateOf<Pair<Double, Double>?>(null)
@@ -276,15 +306,14 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
 
 private val netLoadMutex = Mutex()
 
-/** Parse on demand, sharing one parse between browsers and Directions' fallback. */
+/** Parse on demand, sharing one parse between every screen that browses it. */
 suspend fun loadNet(ctx: Context): Net = withContext(Dispatchers.Default) {
     netLoadMutex.withLock {
         Loaded.net ?: run {
-            val t0 = System.nanoTime()
             val n = ctx.assets.open("il.kav").use { Net.read(it) }
             // Net.read is synchronous: keep its completed result even if its
             // original caller left, so the next caller need not parse it again.
-            Loaded.store(n, (System.nanoTime() - t0) / 1_000_000)
+            Loaded.store(n)
             n
         }
     }
@@ -324,10 +353,22 @@ private fun Shell(model: KavModel) {
     // button, and ask for BOTH, because a coarse-only grant is fuzzed to a grid cell
     // a kilometre or more across, which plans your trip from the wrong town.
     LaunchedEffect(Unit) {
-        if (hasPreciseLocation(ctx)) requestLocationOnce(ctx) { model.locate(it.first, it.second) }
-        else askLocation.launch(
+        if (!hasPreciseLocation(ctx)) askLocation.launch(
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
         )
+    }
+    // And ask AGAIN on every resume until there is a fix. requestLocationOnce gives up
+    // immediately when every provider is switched off, so opening Kav with location off
+    // used to leave "My location" missing for the rest of the process: turning location
+    // on changed nothing, because nothing asked a second time. Coming back from the
+    // system toggle is a resume, and this is what notices.
+    val shellLifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(shellLifecycle) {
+        shellLifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (model.here == null && hasLocationPermission(ctx)) {
+                requestLocationOnce(ctx) { model.locate(it.first, it.second) }
+            }
+        }
     }
 
     // The shell outlives both browser tabs. collect (not collectLatest) lets a
@@ -501,19 +542,19 @@ private fun ExitPrompt(onStay: () -> Unit, onExit: () -> Unit) {
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
             verticalArrangement = Arrangement.spacedBy(K.gap4),
         ) {
-            Text("Exit Kav?", fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-            Text("A trip in progress is kept until you end it.", fontSize = 14.sp, color = K.dim, lineHeight = 20.sp)
+            Text(T("Exit Kav?", "לצאת מ־Kav?"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("A trip in progress is kept until you end it.", "נסיעה שמתבצעת נשמרת עד שתסיימו אותה."), fontSize = 14.sp, color = K.dim, lineHeight = 20.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
                 Box(
                     Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill)).background(K.plateStrong)
                         .clickable(role = Role.Button, onClick = onStay),
                     contentAlignment = Alignment.Center,
-                ) { Text("Stay", fontSize = 15.sp, color = K.text) }
+                ) { Text(T("Stay", "השארות"), fontSize = 15.sp, color = K.text) }
                 Box(
                     Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill)).background(K.accent)
                         .clickable(role = Role.Button, onClick = onExit),
                     contentAlignment = Alignment.Center,
-                ) { Text("Exit", fontSize = 15.sp, color = K.bg, fontWeight = FontWeight.Medium) }
+                ) { Text(T("Exit", "יציאה"), fontSize = 15.sp, color = K.bg, fontWeight = FontWeight.Medium) }
             }
         }
     }
@@ -847,6 +888,15 @@ object Prefs {
     /** The accent, as ARGB. */
     fun accent(ctx: Context): Int = store(ctx).getInt("accent", android.graphics.Color.rgb(0x9A, 0xBE, 0xFF))
     fun setAccent(ctx: Context, argb: Int) = store(ctx).edit().putInt("accent", argb).apply()
+
+    /**
+     * Kav's own language. Deliberately not the phone's: Moovit answers in Hebrew
+     * whatever the phone is set to, so a rider with an English phone was reading
+     * Hebrew stop names inside English sentences with no way to fix either half.
+     */
+    fun lang(ctx: Context): Lang =
+        Lang.entries.firstOrNull { it.code == store(ctx).getString("lang", null) } ?: Lang.EN
+    fun setLang(ctx: Context, lang: Lang) = store(ctx).edit().putString("lang", lang.code).apply()
 
     /** Set once the first-launch screens have been through. */
     fun onboarded(ctx: Context): Boolean = store(ctx).getBoolean("onboarded", false)

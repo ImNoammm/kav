@@ -39,18 +39,21 @@ val DefaultAccent = Color(0xFF9ABEFF)
  */
 private const val MAX_SAT = 0.62f
 
-class AccentPreset(val label: String, val hue: Float, val sat: Float) {
+class AccentPreset(private val nameEn: String, private val nameHe: String, val hue: Float, val sat: Float) {
+    // Computed, not stored: a plain val here would read T.lang once at class-init
+    // time and freeze in that language for the process's lifetime.
+    val label: String get() = T(nameEn, nameHe)
     val color: Color get() = Color.hsv(hue, sat, 1f)
 }
 
 val AccentPresets = listOf(
-    AccentPreset("Blue", 219f, .40f),
-    AccentPreset("Green", 140f, .38f),
-    AccentPreset("Teal", 178f, .42f),
-    AccentPreset("Violet", 262f, .34f),
-    AccentPreset("Amber", 44f, .48f),
-    AccentPreset("Pink", 338f, .36f),
-    AccentPreset("White", 0f, 0f),
+    AccentPreset("Blue", "כחול", 219f, .40f),
+    AccentPreset("Green", "ירוק", 140f, .38f),
+    AccentPreset("Teal", "טורקיז", 178f, .42f),
+    AccentPreset("Violet", "סגול", 262f, .34f),
+    AccentPreset("Amber", "ענבר", 44f, .48f),
+    AccentPreset("Pink", "ורוד", 338f, .36f),
+    AccentPreset("White", "לבן", 0f, 0f),
 )
 
 private fun hsvOf(c: Color): FloatArray = FloatArray(3).also { android.graphics.Color.colorToHSV(c.toArgb(), it) }
@@ -68,7 +71,7 @@ fun AccentPicker(modifier: Modifier = Modifier, wheel: androidx.compose.ui.unit.
     val rimColours = remember { (0..12).map { Color.hsv((it * 30 % 360).toFloat(), MAX_SAT, 1f) } }
 
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.size(wheel).semantics { contentDescription = "Colour wheel" }) {
+        Box(Modifier.size(wheel).semantics { contentDescription = T("Colour wheel", "גלגל צבעים") }) {
             val radiusPx = with(density) { wheel.toPx() / 2 }
             fun pick(at: Offset) {
                 val dx = at.x - radiusPx; val dy = at.y - radiusPx
@@ -126,7 +129,7 @@ fun AccentPreview(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(K.gap2),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Home", style = Display, fontSize = 15.sp, modifier = Modifier.weight(1f))
+            Text(T("Home", "בית"), style = Display, fontSize = 15.sp, modifier = Modifier.weight(1f))
             Canvas(Modifier.size(14.dp)) {
                 val w = size.width
                 drawCircle(K.muted, w * .18f, Offset(w * .5f, w * .5f), style = Stroke(w * .11f))
@@ -144,7 +147,7 @@ fun AccentPreview(modifier: Modifier = Modifier) {
                 drawCircle(K.accent, w * .29f, Offset(w * .40f, w * .40f), style = Stroke(w * .10f))
                 drawLine(K.accent, Offset(w * .63f, w * .63f), Offset(w * .88f, w * .88f), w * .10f, androidx.compose.ui.graphics.StrokeCap.Round)
             }
-            Text("Where to?", fontSize = 12.sp, color = K.muted)
+            Text(T("Where to?", "לאן?"), fontSize = 12.sp, color = K.muted)
         }
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(K.surface1),
@@ -153,8 +156,8 @@ fun AccentPreview(modifier: Modifier = Modifier) {
                 Modifier.fillMaxWidth().background(K.accent.copy(alpha = .18f)).padding(horizontal = K.gap3, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Wait for", fontSize = 10.sp, color = K.accent, modifier = Modifier.weight(1f))
-                Text("Resume", fontSize = 10.sp, color = K.accent)
+                Text(T("Wait for", "המתנה ל־"), fontSize = 10.sp, color = K.accent, modifier = Modifier.weight(1f))
+                Text(T("Resume", "המשך"), fontSize = 10.sp, color = K.accent)
             }
             Row(Modifier.padding(horizontal = K.gap3, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -163,19 +166,19 @@ fun AccentPreview(modifier: Modifier = Modifier) {
                         .border(1.dp, K.borderStrong, RoundedCornerShape(5.dp)).padding(horizontal = 5.dp, vertical = 1.dp),
                 )
                 Spacer(Modifier.width(K.gap2))
-                Text("to Tel Aviv", fontSize = 10.sp, color = K.muted, modifier = Modifier.weight(1f))
-                Text("3 min", fontSize = 11.sp, color = K.accent)
+                Text(T("to Tel Aviv", "לתל אביב"), fontSize = 10.sp, color = K.muted, modifier = Modifier.weight(1f))
+                Text(T("3 min", "3 דק׳"), fontSize = 11.sp, color = K.accent)
             }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(8.dp).clip(RoundedCornerShape(999.dp)).background(K.accent))
             Spacer(Modifier.width(6.dp))
-            Text("Live", fontSize = 10.sp, color = K.accent, modifier = Modifier.weight(1f))
+            Text(T("Live", "בזמן אמת"), fontSize = 10.sp, color = K.accent, modifier = Modifier.weight(1f))
             Row(
                 Modifier.clip(RoundedCornerShape(999.dp)).background(K.accent).padding(horizontal = 10.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Start", fontSize = 10.sp, color = K.bg)
+                Text(T("Start", "התחלה"), fontSize = 10.sp, color = K.bg)
             }
         }
     }

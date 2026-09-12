@@ -49,8 +49,11 @@ val LocalServiceAlertOpener = staticCompositionLocalOf<(Int, String) -> Unit> { 
 fun hhmm(s: Int): String = "%02d:%02d".format((s / 3600) % 24, (s / 60) % 60)
 
 fun dur(s: Int): String =
-    if (s >= 3600) "${s / 3600}h ${((s % 3600) / 60.0).roundToInt()}m"
-    else "${(s / 60.0).roundToInt()} min"
+    if (s >= 3600) T(
+        "${s / 3600}h ${((s % 3600) / 60.0).roundToInt()}m",
+        "${s / 3600} שע' ${((s % 3600) / 60.0).roundToInt()} דק'",
+    )
+    else T("${(s / 60.0).roundToInt()} min", "${(s / 60.0).roundToInt()} דק'")
 
 fun nowSec(): Int {
     val c = Calendar.getInstance()
@@ -62,7 +65,7 @@ fun relative(t: Int, from: Int = nowSec()): String? {
     val d = t - from
     if (d < 0 || d > 3600) return null
     val m = (d / 60.0).roundToInt()
-    return if (m <= 0) "now" else "$m min"
+    return if (m <= 0) T("now", "עכשיו") else T("$m min", "$m דק'")
 }
 
 /* geo */
@@ -77,7 +80,8 @@ fun metres(la1: Double, lo1: Double, la2: Double, lo2: Double): Double {
 }
 
 fun distanceLabel(m: Double): String =
-    if (m < 1000) "${m.roundToInt()} m" else "%.1f km".format(m / 1000)
+    if (m < 1000) T("${m.roundToInt()} m", "${m.roundToInt()} מ'")
+    else T("%.1f km", "%.1f ק\"מ").format(m / 1000)
 
 /* modes */
 
@@ -116,10 +120,10 @@ fun modeOf(type: Int): Mode = when (type) {
 }
 
 fun modeName(m: Mode): String = when (m) {
-    Mode.BUS -> "Bus"; Mode.TRAIN -> "Train"; Mode.TRAM -> "Light rail"
-    Mode.SUBWAY -> "Metro"; Mode.FERRY -> "Ferry"; Mode.CABLE -> "Cable car"
-    Mode.GONDOLA -> "Cable car"; Mode.FUNICULAR -> "Funicular"
-    Mode.TAXI -> "Share taxi"; Mode.OTHER -> "Other"
+    Mode.BUS -> T("Bus", "אוטובוס"); Mode.TRAIN -> T("Train", "רכבת"); Mode.TRAM -> T("Light rail", "רכבת קלה")
+    Mode.SUBWAY -> T("Metro", "מטרו"); Mode.FERRY -> T("Ferry", "מעבורת"); Mode.CABLE -> T("Cable car", "רכבל")
+    Mode.GONDOLA -> T("Cable car", "רכבל"); Mode.FUNICULAR -> T("Funicular", "פוניקולר")
+    Mode.TAXI -> T("Share taxi", "מונית שירות"); Mode.OTHER -> T("Other", "אחר")
 }
 
 @Composable
@@ -216,14 +220,14 @@ fun WithTimetable(model: uk.noammm.kav.KavModel, content: @Composable (Net) -> U
     when {
         net != null -> content(net)
         model.netError != null -> Column(Modifier.padding(K.gap4)) {
-            Note("Could not open the offline timetable: ${model.netError}")
+            Note(T("Could not open the offline timetable: ${model.netError}", "לא ניתן היה לפתוח את לוח הזמנים המקוון: ${model.netError}"))
             Spacer(Modifier.height(K.gap3))
-            Chip("Retry", false) {
+            Chip(T("Retry", "נסו שוב"), false) {
                 model.netError = null
                 model.netLoadAttempt++
             }
         }
-        else -> LoadingBlock("Opening the timetable")
+        else -> LoadingBlock(T("Opening the timetable", "פותחים את לוח הזמנים"))
     }
 }
 
@@ -250,17 +254,21 @@ fun PreciseLocationNudge() {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text("Your location is not accurate", fontSize = 13.sp, color = K.text)
+            Text(T("Your location is not accurate", "המיקום שלכם אינו מדויק"), fontSize = 13.sp, color = K.text)
             Text(
-                "Turn on ‘Use precise location’. Without it Android rounds your position " +
-                    "to about a kilometre, which can plan your trip from the wrong town.",
+                T(
+                    "Turn on ‘Use precise location’. Without it Android rounds your position " +
+                        "to about a kilometre, which can plan your trip from the wrong town.",
+                    "הפעילו את ‘השתמשו במיקום מדויק’. בלעדיו אנדרואיד מעגל את המיקום שלכם " +
+                        "לכדי קילומטר בערך, מה שעלול לתכנן את הנסיעה מהעיר הלא נכונה.",
+                ),
                 fontSize = 11.sp, color = K.dim, lineHeight = 15.sp,
                 modifier = Modifier.padding(top = 3.dp),
             )
         }
         Spacer(Modifier.width(K.gap3))
         Text(
-            "Change settings", fontSize = 12.sp, color = K.text,
+            T("Change settings", "שינוי הגדרות"), fontSize = 12.sp, color = K.text,
             modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(K.plateStrong)
                 .clickable {
                     runCatching {
@@ -322,7 +330,7 @@ fun AlertRow(category: Int, text: String, groupId: Int = 0) {
         AlertPip(category, 15.dp)
         Spacer(Modifier.width(8.dp))
         Text(text, fontSize = 13.sp, color = K.text, modifier = Modifier.weight(1f))
-        if (groupId > 0) Text("›", fontSize = 15.sp, color = K.dim)
+        if (groupId > 0) Text(T.onward, fontSize = 15.sp, color = K.dim)
     }
 }
 
@@ -396,12 +404,12 @@ fun ServiceAlertSheet(groupId: Int, fallbackLabel: String, onDismiss: () -> Unit
             // notice scrolls, rather than the way out leaving with the first screen.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    fallbackLabel.ifBlank { "Service alert" },
+                    fallbackLabel.ifBlank { T("Service alert", "הודעת שירות") },
                     fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    "Close", fontSize = 14.sp, color = K.accent,
+                    T("Close", "סגירה"), fontSize = 14.sp, color = K.accent,
                     modifier = Modifier.clip(RoundedCornerShape(K.rPill))
                         .clickable(role = Role.Button, onClick = onDismiss)
                         .padding(horizontal = K.gap2, vertical = K.gap1),
@@ -411,10 +419,10 @@ fun ServiceAlertSheet(groupId: Int, fallbackLabel: String, onDismiss: () -> Unit
             val list = alerts
             when {
                 list == null && !failed ->
-                    LoadingPulse("Fetching the notice", Modifier.fillMaxWidth().padding(top = K.gap4, bottom = K.gap2))
+                    LoadingPulse(T("Fetching the notice", "מביאים את ההודעה"), Modifier.fillMaxWidth().padding(top = K.gap4, bottom = K.gap2))
                 failed || list.isNullOrEmpty() ->
                     Text(
-                        "The operator published no further detail for this alert.",
+                        T("The operator published no further detail for this alert.", "המפעיל לא פרסם פרטים נוספים על הודעה זו."),
                         fontSize = 14.sp, color = K.muted, modifier = Modifier.padding(top = K.gap3),
                     )
                 else -> list.forEachIndexed { i, a ->
@@ -444,12 +452,12 @@ fun ServiceAlertSheet(groupId: Int, fallbackLabel: String, onDismiss: () -> Unit
 
 /** "From 8 Sep", "Until 12 Sep", "8–12 Sep", only what the server actually bounds. */
 private fun alertWindow(a: Moovit.ServiceAlert): String? {
-    val day = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault())
+    val day = java.text.SimpleDateFormat("d MMM", T.locale)
     fun at(t: Long) = day.format(java.util.Date(t * 1000))
     return when {
         a.activeFrom > 0 && a.activeTo > 0 -> "${at(a.activeFrom)} – ${at(a.activeTo)}"
-        a.activeFrom > 0 -> "From ${at(a.activeFrom)}"
-        a.activeTo > 0 -> "Until ${at(a.activeTo)}"
+        a.activeFrom > 0 -> T("From ${at(a.activeFrom)}", "מ-${at(a.activeFrom)}")
+        a.activeTo > 0 -> T("Until ${at(a.activeTo)}", "עד ${at(a.activeTo)}")
         else -> null
     }
 }

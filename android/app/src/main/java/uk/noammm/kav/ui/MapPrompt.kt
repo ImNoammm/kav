@@ -34,11 +34,16 @@ fun MapPrompt() {
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
             verticalArrangement = Arrangement.spacedBy(K.gap4),
         ) {
-            Text("Download the map", fontSize = 20.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Download the map", "הורדת המפה"), fontSize = 20.sp, color = K.text, fontWeight = FontWeight.SemiBold)
             Text(
-                "Kav keeps its map on your phone instead of loading tiles from a server as " +
-                    "you go, so nothing tracks where you look. It's about ${MapFile.BYTES shr 20} MB for " +
-                    "all of Israel, downloaded once. After that the map works with no signal.",
+                T(
+                    "Kav keeps its map on your phone instead of loading tiles from a server as " +
+                        "you go, so nothing tracks where you look. It's about ${MapFile.BYTES shr 20} MB for " +
+                        "all of Israel, downloaded once. After that the map works with no signal.",
+                    "Kav שומרת את המפה על הטלפון שלכם במקום לטעון אריחים משרת תוך כדי תנועה, " +
+                        "כך שאף אחד לא עוקב אחרי מה שאתם מסתכלים עליו. מדובר בכ-${MapFile.BYTES shr 20} מגה-בייט " +
+                        "לכל ישראל, בהורדה חד-פעמית. אחר כך המפה עובדת גם בלי קליטה.",
+                ),
                 fontSize = 14.sp, color = K.muted, lineHeight = 20.sp,
             )
             when (state) {
@@ -46,10 +51,10 @@ fun MapPrompt() {
                     Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)).background(K.surface4)) {
                         Box(Modifier.fillMaxWidth(state.progress.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
                     }
-                    Text("Downloading… ${(state.progress * 100).toInt()}%", fontSize = 12.sp, color = K.dim)
+                    Text(T("Downloading… ${(state.progress * 100).toInt()}%", "מורידים… ${(state.progress * 100).toInt()}%"), fontSize = 12.sp, color = K.dim)
                 }
                 is MapFile.State.Failed ->
-                    Text("Couldn't download it. ${state.why}", fontSize = 12.sp, color = K.critical, lineHeight = 17.sp)
+                    Text(T("Couldn't download it. ${state.why}", "ההורדה נכשלה. ${state.why}"), fontSize = 12.sp, color = K.critical, lineHeight = 17.sp)
                 else -> {}
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
@@ -57,7 +62,7 @@ fun MapPrompt() {
                     Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill)).background(K.plateStrong)
                         .clickable(role = Role.Button) { dismissed = true },
                     contentAlignment = Alignment.Center,
-                ) { Text("Later", fontSize = 15.sp, color = K.text) }
+                ) { Text(T("Later", "אחר כך"), fontSize = 15.sp, color = K.text) }
                 val busy = state is MapFile.State.Downloading
                 Box(
                     Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill))
@@ -67,9 +72,9 @@ fun MapPrompt() {
                 ) {
                     Text(
                         when {
-                            busy -> "Downloading…"
-                            state is MapFile.State.Failed -> "Try again"
-                            else -> "Download"
+                            busy -> T("Downloading…", "מורידים…")
+                            state is MapFile.State.Failed -> T("Try again", "נסו שוב")
+                            else -> T("Download", "הורדה")
                         },
                         fontSize = 15.sp, color = if (busy) K.muted else K.bg, fontWeight = FontWeight.Medium,
                     )

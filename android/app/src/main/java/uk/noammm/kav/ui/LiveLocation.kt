@@ -37,8 +37,8 @@ fun whenLabel(t: Long, now: Long = System.currentTimeMillis() / 1000): String {
     val m = ((t - now) / 60).toInt()
     return when {
         m < 0 -> hm.format(Date(t * 1000))
-        m == 0 -> "now"
-        m < 60 -> "in $m min"
+        m == 0 -> T("now", "עכשיו")
+        m < 60 -> T("in $m min", "בעוד $m דק׳")
         else -> hm.format(Date(t * 1000))
     }
 }
@@ -89,20 +89,26 @@ fun rememberLineRoutes(shapeIds: List<Int>): Map<Int, List<Pair<Double, Double>>
     return out
 }
 
-/** Tracking is available only when the caller has a vehicle position and route. */
+/**
+ * [live] is whether there is a vehicle position to follow, and it tints the button;
+ * it does NOT gate the tap. A greyed-out control that cannot say why reads as broken,
+ * and the screen behind this one already has the sentence for every case: no live
+ * location, not departed yet, canceled here, off its route. Let it be pressed and let
+ * that screen answer.
+ */
 @Composable
-fun LiveLocationButton(enabled: Boolean, onClick: () -> Unit) {
+fun LiveLocationButton(live: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.heightIn(min = 44.dp).glassSurface(22.dp)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = K.gap4, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LiveGlyph(if (enabled) K.live else K.dim, 14.dp)
+        LiveGlyph(if (live) K.live else K.dim, 14.dp)
         Spacer(Modifier.width(6.dp))
         Text(
-            "Live location", fontSize = 14.sp,
-            color = if (enabled) K.text else K.dim,
+            T("Live location", "מיקום בזמן אמת"), fontSize = 14.sp,
+            color = if (live) K.text else K.dim,
         )
     }
 }
@@ -122,7 +128,7 @@ fun LiveLocationScreen(
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(bottom = LocalBottomBarInset.current)) {
-        ScreenHeader("Live", "location", back = onBack)
+        ScreenHeader(T("Live", "מיקום בזמן אמת"), "", back = onBack)
 
         Row(
             Modifier.fillMaxWidth().padding(horizontal = K.gap3, vertical = K.gap3),
@@ -145,11 +151,16 @@ fun LiveLocationScreen(
                 )
             }
             Spacer(Modifier.width(K.gap3))
-            Text(
-                info?.destination?.ifBlank { null }?.let { "to $it" } ?: "",
-                fontSize = 14.sp, color = K.muted, maxLines = 2,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    info?.destination?.ifBlank { null }?.let { T("to $it", "אל $it") } ?: "",
+                    fontSize = 14.sp, color = K.muted, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                r.agencyName(agency)?.let {
+                    Text(it, fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
 
         VehicleMap(
@@ -247,13 +258,13 @@ private fun StatusBlock(
             .clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap4),
     ) {
         val (headline, tint) = when {
-            a == null -> "This line doesn’t have a live location" to K.dim
-            a.status == 3 -> "Canceled for this station" to K.critical
-            a.vehicleStatus == 3 -> "Line not departed yet" to K.dim
-            !a.hasLocation -> "This line doesn’t have a live location" to K.dim
-            a.vehicleStatus == 2 -> "Out of route" to K.problem
-            now - a.sampleUtc <= 120 -> "Location updated recently" to K.live
-            else -> "Location is estimated" to K.problem
+            a == null -> T("This line doesn’t have a live location", "לקו הזה אין מיקום בזמן אמת") to K.dim
+            a.status == 3 -> T("Canceled for this station", "מבוטל עבור תחנה זו") to K.critical
+            a.vehicleStatus == 3 -> T("Line not departed yet", "הקו טרם יצא") to K.dim
+            !a.hasLocation -> T("This line doesn’t have a live location", "לקו הזה אין מיקום בזמן אמת") to K.dim
+            a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
+            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.live
+            else -> T("Location is estimated", "המיקום משוער") to K.problem
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (a?.hasLocation == true) { LiveGlyph(tint, 13.dp); Spacer(Modifier.width(6.dp)) }
@@ -261,13 +272,13 @@ private fun StatusBlock(
         }
         if (a != null && a.vehicleStatus == 2) {
             Text(
-                "This line has deviated from its planned route",
+                T("This line has deviated from its planned route", "הקו הזה סטה מהמסלול המתוכנן"),
                 fontSize = 14.sp, color = K.dim, modifier = Modifier.padding(top = K.gap1),
             )
         }
         if (a != null && a.sampleUtc > 0) {
             Text(
-                "Location updated: ${hm.format(Date(a.sampleUtc * 1000))}",
+                T("Location updated: ${hm.format(Date(a.sampleUtc * 1000))}", "המיקום עודכן: ${hm.format(Date(a.sampleUtc * 1000))}"),
                 fontSize = 14.sp, color = K.dim, modifier = Modifier.padding(top = K.gap1),
             )
         }
@@ -275,13 +286,13 @@ private fun StatusBlock(
         Spacer(Modifier.height(K.gap4))
         val nextStop = nextStopOnLeg(leg, a)
         if (nextStop != null) {
-            Fact("Next stop", r.stopName(nextStop) ?: "#$nextStop")
+            Fact(T("Next stop", "התחנה הבאה"), r.stopName(nextStop) ?: "#$nextStop")
         }
         val away = a?.stopsAway ?: -1
-        if (away >= 0) Fact(if (away == 1) "1 stop away" else "Stops away", if (away == 1) "" else "$away")
-        r.stopName(boardStopId)?.let { Fact("Your stop", it) }
+        if (away >= 0) Fact(if (away == 1) T("1 stop away", "תחנה אחת") else T("Stops away", "תחנות"), if (away == 1) "" else "$away")
+        r.stopName(boardStopId)?.let { Fact(T("Your stop", "התחנה שלכם"), it) }
         if (a != null && a.rtUtc > 0) {
-            Fact("Arriving", whenLabel(a.rtUtc, now))
+            Fact(T("Arriving", "הגעה"), whenLabel(a.rtUtc, now))
         }
     }
 }

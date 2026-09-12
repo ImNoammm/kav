@@ -1,5 +1,6 @@
 package uk.noammm.kav.data
 
+import uk.noammm.kav.ui.T
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -20,6 +21,8 @@ object Updates {
     const val OWNER = "ImNoammm"
     const val REPO = "kav"
     const val PAGE = "https://github.com/$OWNER/$REPO/releases"
+    /** Where a bug or an idea goes. The alternative people had was a Reddit comment. */
+    const val ISSUES = "https://github.com/$OWNER/$REPO/issues"
 
     class Release(
         val version: String,
@@ -77,7 +80,7 @@ object Updates {
 
     /** The release's APK, fetched to the cache with progress, reused if already there. */
     fun download(ctx: Context, release: Release, onProgress: (Long, Long) -> Unit): File {
-        val url = release.apkUrl ?: throw RuntimeException("This release has no APK attached")
+        val url = release.apkUrl ?: throw RuntimeException(T("This release has no APK attached", "לגרסה הזו לא מצורף קובץ APK"))
         val file = File(dir(ctx), "kav-${release.version}.apk")
         if (file.exists() && release.apkBytes > 0 && file.length() == release.apkBytes) {
             onProgress(file.length(), file.length()); return file
@@ -99,7 +102,7 @@ object Updates {
             c.setRequestProperty("User-Agent", "Kav")
             hops++
         }
-        if (c.responseCode != 200) throw RuntimeException("Download HTTP ${c.responseCode}")
+        if (c.responseCode != 200) throw RuntimeException(T("Download HTTP ${c.responseCode}", "הורדה נכשלה, שגיאת HTTP ${c.responseCode}"))
         val total = if (release.apkBytes > 0) release.apkBytes else c.contentLengthLong
         c.inputStream.use { input ->
             part.outputStream().use { out ->
@@ -114,7 +117,7 @@ object Updates {
                 }
             }
         }
-        if (!part.renameTo(file)) throw RuntimeException("Could not keep the download")
+        if (!part.renameTo(file)) throw RuntimeException(T("Could not keep the download", "לא ניתן היה לשמור את ההורדה"))
         return file
     }
 

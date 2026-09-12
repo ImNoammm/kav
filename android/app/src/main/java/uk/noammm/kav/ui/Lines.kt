@@ -29,6 +29,16 @@ private val FILTERS = listOf(
     "All" to -1, "Bus" to 3, "Train" to 2, "Light rail" to 0, "Share taxi" to 715,
 )
 
+/** FILTERS' English labels are used only as lookup ids for [mode]; translate at render time
+ *  instead of inside the top-level list, so switching [T.lang] actually recomposes the chips. */
+private fun filterLabel(label: String): String = when (label) {
+    "Bus" -> T("Bus", "אוטובוס")
+    "Train" -> T("Train", "רכבת")
+    "Light rail" -> T("Light rail", "רכבת קלה")
+    "Share taxi" -> T("Share taxi", "מונית שירות")
+    else -> T("All", "הכול")
+}
+
 @Composable
 fun LinesScreen(model: KavModel) {
     WithTimetable(model) { net -> LinesBody(model, net) }
@@ -50,7 +60,8 @@ private fun LinesBody(model: KavModel, net: Net) {
 
 @Composable
 private fun LineList(model: KavModel, net: Net) {
-    var q by remember { mutableStateOf("") }
+    // held by the model: opening a line disposes this list (see KavModel.lineQuery)
+    var q by model::lineQuery
     var mode by remember { mutableIntStateOf(-1) }
     var hits by remember(net) { mutableStateOf(emptyList<Int>()) }
     var endpoints by remember(net) { mutableStateOf(emptyMap<Int, Pair<Int, Int>>()) }
@@ -62,8 +73,8 @@ private fun LineList(model: KavModel, net: Net) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Browse the", "lines", onSettings = { model.settingsOpen = true })
-        KavField(q, { q = it }, "line number or name…", Modifier.padding(horizontal = K.gap3).fillMaxWidth())
+        ScreenHeader(T("Browse the", "עיינו"), T("lines", "בקווים"), onSettings = { model.settingsOpen = true })
+        KavField(q, { q = it }, T("line number or name…", "מספר או שם קו…"), Modifier.padding(horizontal = K.gap3).fillMaxWidth())
         Spacer(Modifier.height(K.gap3))
         Row(
             Modifier
@@ -71,11 +82,11 @@ private fun LineList(model: KavModel, net: Net) {
                 .padding(horizontal = K.gap3),
             horizontalArrangement = Arrangement.spacedBy(K.gap2),
         ) {
-            FILTERS.forEach { (label, t) -> Chip(label, mode == t) { mode = t } }
+            FILTERS.forEach { (label, t) -> Chip(filterLabel(label), mode == t) { mode = t } }
         }
         Spacer(Modifier.height(K.gap3))
         Text(
-            "${hits.size} routes · choose a line to see its stops",
+            T("${hits.size} routes · choose a line to see its stops", "${hits.size} קווים · בחרו קו כדי לראות את התחנות שלו"),
             fontSize = 12.sp, color = K.dim,
             modifier = Modifier.padding(horizontal = K.gap4),
         )
@@ -96,7 +107,7 @@ private fun LineList(model: KavModel, net: Net) {
                 ) {
                     LineIdentity(net, r)
                     LineDirection(net, endpoints[r], Modifier.weight(1f))
-                    Text("›", fontSize = 22.sp, color = K.dim)
+                    Text(T.onward, fontSize = 22.sp, color = K.dim)
                 }
             }
         }
@@ -134,11 +145,11 @@ private fun LineDirection(net: Net, endpoints: Pair<Int, Int>?, modifier: Modifi
     fun name(stop: Int): String = net.name[stop] + net.cityOf(stop).takeIf { it.isNotBlank() }
         ?.let { " · $it" }.orEmpty()
     Column(modifier, verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-        if (endpoints == null) Text("Route stops", fontSize = 15.sp, color = K.muted)
+        if (endpoints == null) Text(T("Route stops", "\u05ea\u05d7\u05e0\u05d5\u05ea \u05d4\u05de\u05e1\u05dc\u05d5\u05dc"), fontSize = 15.sp, color = K.muted)
         else {
-            Text("To \u2068${name(endpoints.second)}\u2069", fontSize = 15.sp, lineHeight = 20.sp,
+            Text(T("To \u2068${name(endpoints.second)}\u2069", "\u05d0\u05dc \u2068${name(endpoints.second)}\u2069"), fontSize = 15.sp, lineHeight = 20.sp,
                 fontWeight = FontWeight.Medium, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("From \u2068${name(endpoints.first)}\u2069", fontSize = 12.sp, lineHeight = 17.sp,
+            Text(T("From \u2068${name(endpoints.first)}\u2069", "\u05de\u05be\u2068${name(endpoints.first)}\u2069"), fontSize = 12.sp, lineHeight = 17.sp,
                 color = K.dim, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -158,7 +169,7 @@ private fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Unit
     }
 
     Column(Modifier.fillMaxSize().background(K.bg)) {
-        ScreenHeader("Line", net.rShort[route], back = onBack)
+        ScreenHeader(T("Line", "קו"), net.rShort[route], back = onBack)
         Row(
             Modifier.padding(horizontal = K.gap4).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -168,10 +179,10 @@ private fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Unit
             LineDirection(net, stops?.takeIf { it.isNotEmpty() }?.let { it.first() to it.last() }, Modifier.weight(1f))
         }
         val list = stops
-        if (list == null) LoadingBlock("Loading stops")
+        if (list == null) LoadingBlock(T("Loading stops", "טוען תחנות…"))
         else Text(
-            if (list.isEmpty()) "no trips on this line in the loaded timetable"
-            else "${list.size} stops · full route",
+            if (list.isEmpty()) T("no trips on this line in the loaded timetable", "אין נסיעות בקו הזה בלוח הזמנים הטעון")
+            else T("${list.size} stops · full route", "${list.size} תחנות · המסלול המלא"),
             fontSize = 11.sp, color = K.dim,
             modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
         )

@@ -35,8 +35,6 @@ object K {
     val rCard = 22.dp
     val rControl = 16.dp
     val rPill = 999.dp
-    val elevCard = 2.dp
-    val elevRaised = 8.dp
 
     /**
      * The one colour in the app. It is state rather than a constant so the picker can

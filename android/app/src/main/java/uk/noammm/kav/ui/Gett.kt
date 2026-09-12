@@ -43,14 +43,14 @@ fun GettButton(leg: Moovit.Leg, modifier: Modifier = Modifier) {
                 try {
                     context.startActivity(Intent(Intent.ACTION_VIEW, uri).setPackage("com.gettaxi.android"))
                 } catch (_: ActivityNotFoundException) {
-                    Toast.makeText(context, "Install Gett to open this taxi journey.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, T("Install Gett to open this taxi journey.", "יש להתקין את Gett כדי לפתוח את נסיעת המונית."), Toast.LENGTH_LONG).show()
                 }
             }.padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         ModeGlyph(Mode.TAXI, K.muted, 18.dp)
-        Text(if (uri == null) "Taxi details unavailable" else "Open Gett", fontSize = 13.sp,
+        Text(if (uri == null) T("Taxi details unavailable", "פרטי המונית לא זמינים") else T("Open Gett", "פתחו ב-Gett"), fontSize = 13.sp,
             color = if (uri == null) K.dim else K.text, fontWeight = FontWeight.Medium)
         if (uri != null) Text("↗", fontSize = 16.sp, color = K.muted)
     }

@@ -38,6 +38,7 @@ import java.util.Locale
 internal fun HomeScreen(
     model: KavModel,
     recentTrips: List<RecentTrip>,
+    /** Where the trip starts, worded exactly as the results header words it. */
     onSearch: () -> Unit,
     onFavourite: (Moovit.Place) -> Unit,
     onSetFavourite: (Favourite) -> Unit,
@@ -50,7 +51,7 @@ internal fun HomeScreen(
     var creating by remember { mutableStateOf(false) }
     fun save(list: List<Favourite>) = model.saveFavourites(ctx, list)
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Home", "", onSettings = { model.settingsOpen = true }, badge = model.update != null)
+        ScreenHeader(T("Home", "בית"), "", onSettings = { model.settingsOpen = true }, badge = model.update != null)
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = K.gap4, end = K.gap4, top = K.gap2,
@@ -58,9 +59,11 @@ internal fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(K.gap4),
         ) {
             item {
+                // The one question Home asks. Where the trip starts, and swapping the
+                // two ends, belong to the results header, which shows both of them.
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = 64.dp).glassSurface(24.dp)
-                        .clickable(role = Role.Button, onClickLabel = "Search destination", onClick = onSearch)
+                        .clickable(role = Role.Button, onClickLabel = T("Search destination", "חיפוש יעד"), onClick = onSearch)
                         .padding(horizontal = K.gap5, vertical = K.gap4),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(K.gap3),
@@ -70,7 +73,7 @@ internal fun HomeScreen(
                         drawCircle(K.accent, w * .29f, Offset(w * .40f, w * .40f), style = Stroke(w * .08f))
                         drawLine(K.accent, Offset(w * .63f, w * .63f), Offset(w * .88f, w * .88f), w * .08f, StrokeCap.Round)
                     }
-                    Text("Where to?", fontSize = 19.sp, color = K.muted, modifier = Modifier.weight(1f))
+                    Text(T("Where to?", "לאן?"), fontSize = 19.sp, color = K.muted, modifier = Modifier.weight(1f))
                 }
             }
             item {
@@ -82,6 +85,10 @@ internal fun HomeScreen(
                     onAdd = { creating = true },
                     onEdit = { editing = it },
                     horizontalPadding = 0.dp,
+                    // this is the strip whose order the rider sees every launch, so
+                    // this is where sorting and removing live
+                    onReorder = { save(it) },
+                    onRemove = { f -> save(favourites.filter { it.id != f.id }) },
                 )
             }
             item {
@@ -92,13 +99,13 @@ internal fun HomeScreen(
                         .padding(K.gap5),
                     verticalArrangement = Arrangement.spacedBy(K.gap2),
                 ) {
-                    Text("Ready when you are", fontSize = 21.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                    Note("Choose a destination to see your route and what to do next.")
+                    Text(T("Ready when you are", "מוכנים כשתרצו"), fontSize = 21.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                    Note(T("Choose a destination to see your route and what to do next.", "בחרו יעד כדי לראות את המסלול ואת הצעד הבא."))
                 }
             }
             if (recentTrips.isNotEmpty()) item {
                 Column(verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-                    Text("Recent trips", fontSize = 15.sp, color = K.muted, fontWeight = FontWeight.Medium)
+                    Text(T("Recent trips", "נסיעות אחרונות"), fontSize = 15.sp, color = K.muted, fontWeight = FontWeight.Medium)
                     Column(Modifier.clip(RoundedCornerShape(K.rCard)).background(K.surface1)) {
                         recentTrips.forEachIndexed { index, trip ->
                             if (index > 0) Box(
@@ -119,7 +126,7 @@ internal fun HomeScreen(
                                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        "from " + (trip.from?.name ?: "Current location"),
+                                        T("from ", "מ־") + (trip.from?.name ?: T("Current location", "המיקום הנוכחי")),
                                         fontSize = 13.sp, color = K.dim,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     )
@@ -132,8 +139,8 @@ internal fun HomeScreen(
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
-                    HomeShortcut("Stations", false, Modifier.weight(1f)) { model.tab = Tab.Stations }
-                    HomeShortcut("Lines", true, Modifier.weight(1f)) { model.tab = Tab.Lines }
+                    HomeShortcut(T("Stations", "תחנות"), false, Modifier.weight(1f)) { model.tab = Tab.Stations }
+                    HomeShortcut(T("Lines", "קווים"), true, Modifier.weight(1f)) { model.tab = Tab.Lines }
                 }
             }
         }
@@ -160,6 +167,9 @@ internal fun HomeScreen(
             },
             onRemove = if (f.id == Favourite.HOME) null else { { save(favourites.filter { it.id != f.id }); editing = null } },
             onDismiss = { editing = null },
+            // the same two steps a new favourite takes, minus the naming: close the
+            // editor, then ask the search where this one is now
+            onChangePlace = { editing = null; onSetFavourite(f) },
         )
     }
 }
@@ -172,8 +182,8 @@ private fun tripWhen(at: Long): String {
         now.get(java.util.Calendar.DAY_OF_YEAR) == then.get(java.util.Calendar.DAY_OF_YEAR)
     if (sameDay()) return SimpleDateFormat("HH:mm", Locale.US).format(Date(at))
     now.add(java.util.Calendar.DAY_OF_YEAR, -1)
-    if (sameDay()) return "Yesterday"
-    return SimpleDateFormat("d MMM", Locale.getDefault()).format(Date(at))
+    if (sameDay()) return T("Yesterday", "אתמול")
+    return SimpleDateFormat("d MMM", T.locale).format(Date(at))
 }
 
 /**
@@ -202,14 +212,14 @@ private fun JourneyCard(model: KavModel, journey: ActiveJourney, onResume: () ->
     ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = K.gap4), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Current trip", fontSize = 13.sp, color = K.dim)
-                Text("To ${journey.toLabel}", fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium,
+                Text(T("Current trip", "הנסיעה הנוכחית"), fontSize = 13.sp, color = K.dim)
+                Text(T("To ${journey.toLabel}", "אל ${journey.toLabel}"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Text(
-                "Resume", fontSize = 14.sp, color = K.accent, fontWeight = FontWeight.Medium,
+                T("Resume", "המשך"), fontSize = 14.sp, color = K.accent, fontWeight = FontWeight.Medium,
                 modifier = Modifier.clip(RoundedCornerShape(K.rPill))
-                    .clickable(role = Role.Button, onClickLabel = "Resume trip", onClick = onResume)
+                    .clickable(role = Role.Button, onClickLabel = T("Resume trip", "המשך נסיעה"), onClick = onResume)
                     .padding(horizontal = K.gap3, vertical = K.gap2),
             )
         }
@@ -254,32 +264,32 @@ internal fun stepInstruction(step: Step, journey: ActiveJourney, lastLeg: Boolea
     fun line(ride: Moovit.Leg): String = ride.shortName.ifBlank {
         r.line(ride.lineId)?.number.orEmpty()
     }.ifBlank {
-        "the " + modeName(modeOf(r.routeType(r.line(ride.lineId)?.agencyId ?: -1))).lowercase(Locale.US)
+        T("the ", "ה") + modeName(modeOf(r.routeType(r.line(ride.lineId)?.agencyId ?: -1))).lowercase(Locale.US)
     }
-    fun nextStop(id: Int) = stop(id) ?: if (lastLeg) journey.toLabel else "your next stop"
+    fun nextStop(id: Int) = stop(id) ?: if (lastLeg) journey.toLabel else T("your next stop", "התחנה הבאה שלכם")
     return when (step) {
-        is Step.Start -> "Leave at ${time(step.time)}" to "Start from ${step.label}"
-        is Step.Walk -> "Walk to ${nextStop(step.toStop)}" to listOfNotNull(
-            "${step.leg.minutes} min".takeIf { step.leg.minutes > 0 },
+        is Step.Start -> T("Leave at ${time(step.time)}", "יציאה בשעה ${time(step.time)}") to T("Start from ${step.label}", "התחלה מ${step.label}")
+        is Step.Walk -> T("Walk to ${nextStop(step.toStop)}", "הליכה אל ${nextStop(step.toStop)}") to listOfNotNull(
+            T("${step.leg.minutes} min", "${step.leg.minutes} דק׳").takeIf { step.leg.minutes > 0 },
             distanceLabel(step.leg.meters.toDouble()).takeIf { step.leg.meters > 0 },
-        ).joinToString(" · ").ifBlank { "Follow the walking route." }
+        ).joinToString(" · ").ifBlank { T("Follow the walking route.", "עקבו אחרי מסלול ההליכה.") }
         is Step.Wait -> {
             val (ride, wait) = boardingChoice(step.ride, step.wait, journey.chosen[step.legIndex] ?: 0)
             val departure = r.departures(ride, wait).firstOrNull { it.tripId == ride.tripId }
                 ?: Moovit.Departure(ride.tripId, ride.dep)
-            if (departure.status == 3) "${line(ride)} is cancelled" to "Find another route before continuing."
-            else "Wait for ${line(ride)}" to listOfNotNull(
+            if (departure.status == 3) T("${line(ride)} is cancelled", "${line(ride)} מבוטל") to T("Find another route before continuing.", "מצאו מסלול אחר לפני שתמשיכו.")
+            else T("Wait for ${line(ride)}", "המתנה ל${line(ride)}") to listOfNotNull(
                 stop(ride.fromStop),
-                (if (departure.live) "Live · " else "Scheduled · ") + whenLabel(departure.timeUtc, now),
+                (if (departure.live) T("Live · ", "בזמן אמת · ") else T("Scheduled · ", "מתוזמן · ")) + whenLabel(departure.timeUtc, now),
             ).joinToString(" · ")
         }
         is Step.Ride -> {
             val (ride, _) = boardingChoice(step.ride, step.wait, journey.chosen[step.legIndex] ?: 0)
-            "Ride ${line(ride)}" to "Get off at ${nextStop(ride.toStop)}"
+            T("Ride ${line(ride)}", "נסיעה ב${line(ride)}") to T("Get off at ${nextStop(ride.toStop)}", "ירידה ב${nextStop(ride.toStop)}")
         }
-        is Step.Taxi -> "Take a taxi" to "Continue to ${nextStop(step.leg.toStop)}"
-        is Step.Cycle -> "Cycle to ${nextStop(step.leg.toStop)}" to "Follow the cycling route."
-        is Step.Arrive -> "Arrive at ${step.label}" to "Planned arrival ${time(step.time)}"
+        is Step.Taxi -> T("Take a taxi", "קחו מונית") to T("Continue to ${nextStop(step.leg.toStop)}", "המשיכו אל ${nextStop(step.leg.toStop)}")
+        is Step.Cycle -> T("Cycle to ${nextStop(step.leg.toStop)}", "רכיבה אל ${nextStop(step.leg.toStop)}") to T("Follow the cycling route.", "עקבו אחרי מסלול הרכיבה.")
+        is Step.Arrive -> T("Arrive at ${step.label}", "הגעה אל ${step.label}") to T("Planned arrival ${time(step.time)}", "הגעה מתוכננת בשעה ${time(step.time)}")
     }
 }
 
@@ -294,8 +304,8 @@ private fun HomeShortcut(label: String, lines: Boolean, modifier: Modifier, onCl
         Canvas(Modifier.size(20.dp)) {
             val w = size.width
             if (lines) listOf(.23f, .5f, .77f).forEach { y ->
-                drawCircle(K.accent, w * .065f, Offset(w * .15f, w * y))
-                drawLine(K.accent, Offset(w * .35f, w * y), Offset(w * .86f, w * y), w * .08f, StrokeCap.Round)
+                drawCircle(K.accent, w * .065f, Offset(w * mirrorX(.15f), w * y))
+                drawLine(K.accent, Offset(w * mirrorX(.35f), w * y), Offset(w * mirrorX(.86f), w * y), w * .08f, StrokeCap.Round)
             } else {
                 drawCircle(K.accent, w * .22f, Offset(w * .5f, w * .32f), style = Stroke(w * .08f))
                 drawLine(K.accent, Offset(w * .5f, w * .56f), Offset(w * .5f, w * .88f), w * .08f, StrokeCap.Round)

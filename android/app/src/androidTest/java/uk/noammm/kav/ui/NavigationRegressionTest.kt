@@ -4,7 +4,6 @@ import org.junit.Test
 import org.junit.Assert.*
 import org.junit.runner.RunWith
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import uk.noammm.kav.data.Moovit
 
 @RunWith(AndroidJUnit4::class)

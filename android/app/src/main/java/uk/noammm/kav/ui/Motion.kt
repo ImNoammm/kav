@@ -7,6 +7,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
 import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
@@ -30,6 +32,47 @@ fun forward(): ContentTransform =
 fun backward(): ContentTransform =
     fadeIn(tween(MED)) togetherWith
         (slideOutHorizontally(tween(MED)) { it / 6 } + fadeOut(tween(FAST)))
+
+/**
+ * The language change, made watchable.
+ *
+ * Every word on screen reads [T.lang], and the layout direction is mirrored from it,
+ * so turning it over repaints and re-mirrors the entire app between two frames. The
+ * switch is made behind a short dip instead: the tree fades down, the language turns
+ * over while there is nothing on it to read, and it comes back up in the other one,
+ * drifting in from the side that language starts its reading on.
+ *
+ * A crossfade between two trees is the obvious way to do this and the wrong one: it
+ * re-keys the content, so the screen you were on, the list you had scrolled and the
+ * field you were typing in would all be rebuilt underneath the animation. Nothing is
+ * re-keyed here - only the alpha and the offset of the tree already composed.
+ */
+@Composable
+fun LanguageSwitch(content: @Composable () -> Unit) {
+    val dip = remember { Animatable(1f) }
+    LaunchedEffect(T.wanted) {
+        if (T.wanted == null) {
+            // a switch cancelled mid-dip still has to bring the tree back up
+            if (dip.value < 1f) dip.animateTo(1f, tween(MED, easing = LinearOutSlowInEasing))
+            return@LaunchedEffect
+        }
+        dip.animateTo(0f, tween(FAST / 2, easing = FastOutLinearInEasing))
+        T.commit()
+        dip.animateTo(1f, tween(MED, easing = LinearOutSlowInEasing))
+    }
+    // read after the commit as well as before it, so the old language leaves the way
+    // it was read and the new one arrives the way it will be
+    val drift = if (T.rtl) -1f else 1f
+    Box(
+        Modifier.fillMaxSize().graphicsLayer {
+            val p = dip.value
+            alpha = p
+            scaleX = 0.985f + 0.015f * p
+            scaleY = 0.985f + 0.015f * p
+            translationX = (1f - p) * 14.dp.toPx() * drift
+        },
+    ) { content() }
+}
 
 /** Read the returned state inside drawing code so a pulse does not recompose the map. */
 @Composable

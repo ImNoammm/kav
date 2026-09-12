@@ -17,8 +17,8 @@ import java.util.zip.GZIPInputStream
  * api_key (app constant), user_key, access-token (a 24h Login JWT). CreateUser returns
  * everything in one call, no Firebase, no separate token step.
  *
- * PRIVACY: this is the online mode. Unlike Kav's offline planner, every call here goes
- * to Moovit's servers with the trip/stop you are looking at. That is the honest cost of
+ * PRIVACY: trips are planned here and nowhere else, so every call goes to Moovit's
+ * servers with the trip or stop you are looking at. That is the honest cost of
  * Moovit's live data, and the UI must say so.
  */
 
@@ -91,7 +91,16 @@ object Moovit {
     private fun latlon(lat: Double, lon: Double) = TWriter()
         .i32Field(1, (lat * 1e6).toInt()).i32Field(2, (lon * 1e6).toInt())
 
-    private fun locale() = TWriter().strField(1, "en").strField(2, "GB").strField(3, "")
+    /**
+     * The language Moovit is asked to answer in. Stop and line names come back in
+     * Hebrew whatever this says, which is why it was left on English; the captions
+     * Moovit writes itself do not, and a Hebrew rider was reading "Taxi & Ride
+     * Hailing" over their own results. It rides on the session, so a language changed
+     * mid-run reaches the server on the next registration.
+     */
+    private fun locale() =
+        if (uk.noammm.kav.ui.T.rtl) TWriter().strField(1, "he").strField(2, "IL").strField(3, "")
+        else TWriter().strField(1, "en").strField(2, "GB").strField(3, "")
     private fun dpk() = TWriter().strField(1, "").strField(2, "").strField(3, "")
 
     private fun createUserBody(lat: Double, lon: Double): ByteArray = TWriter().apply {
@@ -396,7 +405,8 @@ object Moovit {
      * id 100 to about 25,000, with a straggler near 55,000). Throws on any failure, so
      * the caller retries the whole block and its cursor stays honest.
      */
-    fun stopPages(s: MoovitSession, fromId: Int, pages: Int): List<Stop> {
+    /** [onPage] is called once per page fetched, for a caller counting the walk out. */
+    fun stopPages(s: MoovitSession, fromId: Int, pages: Int, onPage: () -> Unit = {}): List<Stop> {
         val h = authHeaders(s)
         val out = ArrayList<Stop>()
         var frm = fromId - fromId % 100
@@ -407,6 +417,7 @@ object Moovit {
             if (code != 200) throw java.io.IOException("EntitiesPage HTTP $code")
             extractStops(TReader(raw).readStruct(), out)
             frm += 100
+            onPage()
         }
         return out.distinctBy { it.id }
     }
@@ -414,9 +425,28 @@ object Moovit {
     /** No stop id above this has been seen; the page walk stops here. */
     const val STOP_ID_CEILING = 60_000
 
-    fun nearbyStops(stops: List<Stop>, lat: Double, lon: Double, k: Int = 15): List<Stop> {
+    /**
+     * The stops around a point, nearest first.
+     *
+     * [radiusKm] is what decides and [k] is only a ceiling on the request. A flat
+     * "nearest N" means something different in every place it is asked: forty stops
+     * is a couple of blocks in central Tel Aviv and half a district in the Negev.
+     * Below [floor] the radius is ignored, because somewhere with nothing inside it
+     * still deserves the nearest handful rather than an empty screen.
+     */
+    fun nearbyStops(
+        stops: List<Stop>,
+        lat: Double,
+        lon: Double,
+        k: Int = 15,
+        radiusKm: Double = 0.0,
+        floor: Int = 12,
+    ): List<Stop> {
         fun d(s: Stop) = Math.hypot((s.lat - lat) * 111, (s.lon - lon) * 93)
-        return stops.sortedBy { d(it) }.take(k)
+        val sorted = stops.sortedBy { d(it) }
+        if (radiusKm <= 0.0) return sorted.take(k)
+        val within = sorted.takeWhile { d(it) <= radiusKm }
+        return (if (within.size >= floor) within else sorted.take(floor)).take(k)
     }
 
     // entity lookups (V5/Entities/Entity)
@@ -433,11 +463,6 @@ object Moovit {
         val origin: String,
         val destination: String,
         val caption: String,
-        /** The line group's own brand colour as ARGB, or 0 when the group has none.
-         *  MVLineGroupSummary field 4, the exact value Moovit paints under the number
-         *  on its badge (bus 11 in Rosh HaAyin: -8406771 = #7FB90D). Read from the
-         *  server, never guessed here. */
-        val color: Int = 0,
     )
 
     class StopInfo(
@@ -456,6 +481,7 @@ object Moovit {
     private val lineCache = java.util.concurrent.ConcurrentHashMap<Int, LineInfo>()
     private val stopCache = java.util.concurrent.ConcurrentHashMap<Int, StopInfo>()
     private val agencyMode = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+    private val agencyNames = java.util.concurrent.ConcurrentHashMap<Int, String>()
 
     @Suppress("UNCHECKED_CAST")
     private fun entity(s: MoovitSession, type: Int, id: Int): Map<Int, Any?>? {
@@ -482,7 +508,6 @@ object Moovit {
             origin = (mine?.get(2) as? String).orEmpty(),
             destination = (mine?.get(3) as? String).orEmpty(),
             caption = (g[9] as? String) ?: (g[8] as? String).orEmpty(),
-            color = (g[4] as? Int) ?: 0,
         )
         // Every line in the group came back in the same call; keep them all.
         for (e in summaries) {
@@ -491,7 +516,6 @@ object Moovit {
             lineCache[lid] = LineInfo(
                 info.groupId, info.number, info.agencyId,
                 (m[2] as? String).orEmpty(), (m[3] as? String).orEmpty(), info.caption,
-                info.color,
             )
         }
         lineCache[lineId] = info
@@ -550,6 +574,11 @@ object Moovit {
     /**
      * agencyId → GTFS route type, read once from the metro's own agency list, so a
      * badge can show a train rather than a bus without guessing from the name.
+     *
+     * MVAgency is (1 agencyId, 2 agencyName, 3 routeType, ...), so the operator's name
+     * arrives in the very same record. Keep it: it costs nothing here and is the only
+     * place it is served, and "who runs this line" is the question a rider standing at
+     * the pole is actually asking.
      */
     @Suppress("UNCHECKED_CAST")
     fun agencyRouteType(s: MoovitSession, agencyId: Int): Int {
@@ -560,9 +589,13 @@ object Moovit {
             val m = a as? Map<Int, Any?> ?: continue
             val id = m[1] as? Int ?: continue
             agencyMode[id] = (m[3] as? Int) ?: 3
+            (m[2] as? String)?.takeIf { it.isNotBlank() }?.let { agencyNames[id] = it }
         }
         return agencyMode[agencyId] ?: 3
     }
+
+    /** The operator's own name, once the agency list has been read for its route type. */
+    fun agencyName(agencyId: Int): String? = agencyNames[agencyId]
 
     // place search (V4/CloudSearch/FullSearch)
     // Moovit's OWN search, not a third-party geocoder: the same stations, streets and
@@ -1104,6 +1137,30 @@ object Moovit {
     const val TIME_DEPARTURE = 2
     const val TIME_LAST = 3
 
+    /**
+     * The planner declining to plan, which is not the planner failing to answer.
+     *
+     * A 424 carries a body, and the body is the whole answer: { 1: title, 2: message,
+     * 3: code }, worded for a rider and already in the session's language, Hebrew for
+     * a Hebrew session. Throwing away the body and reporting the status code is what
+     * turned "no lines are running right now" into "the planner did not answer".
+     */
+    class PlannerRefusal(
+        val code: Int,
+        val title: String,
+        val detail: String,
+    ) : RuntimeException("TripPlanner refused ($code): $title")
+
+    /* The codes seen on the wire, each reproduced against the live server. */
+    /** Start and destination are the same place, or within a few metres of it. */
+    const val PLAN_TOO_CLOSE = 10
+    /** Nothing runs between these two at the time asked for. The weekend answer. */
+    const val PLAN_NO_ROUTES = 11
+    /** Further apart than the planner will search. */
+    const val PLAN_TOO_FAR = 2
+    /** Moovit has no timetable for this part of the world. */
+    const val PLAN_NO_COVERAGE = 1032
+
     fun planItineraries(
         s: MoovitSession,
         from: Pair<Double, Double>,
@@ -1118,6 +1175,7 @@ object Moovit {
         val body = tripPlanRequest(from, to, whenMs, timeType, routeTypes, skipTaxi)
         val h = authHeaders(s) + mapOf("Accept" to "application/json")
         val (code, raw) = post(APP5, "V4/TripPlanner2/Search", body, h)
+        if (code == 424) throw refusal(raw)
         if (code != 200) throw RuntimeException("TripPlanner HTTP $code")
         val out = ArrayList<Itinerary>()
         var sections = emptyList<Section>()
@@ -1147,6 +1205,21 @@ object Moovit {
             }
         }
         return Plan(out, sections)
+    }
+
+    /**
+     * Read the 424 body. It is one flat struct, not the itinerary stream, so it is
+     * parsed straight rather than through the tokeniser. A body that cannot be read
+     * still refuses, with the code alone, because the one thing already known is that
+     * the server answered and said no.
+     */
+    private fun refusal(raw: ByteArray): PlannerRefusal {
+        val o = try { JSONObject(String(raw, Charsets.UTF_8)) } catch (e: Exception) { null }
+        return PlannerRefusal(
+            code = o?.let { jInt(it, "3") }?.toInt() ?: 0,
+            title = o?.let { jStr(it, "1") }.orEmpty(),
+            detail = o?.let { jStr(it, "2") }.orEmpty(),
+        )
     }
 
     /**
@@ -1207,6 +1280,8 @@ object Moovit {
         fun stop(id: Int): StopInfo? = stops[id]
         fun stopName(id: Int): String? = stops[id]?.name
         fun routeType(agencyId: Int): Int = routeTypes[agencyId] ?: 3
+        /** Who runs the line: filled by the same agency-list read routeType needed. */
+        fun agencyName(agencyId: Int): String? = Moovit.agencyName(agencyId)
 
 
     }

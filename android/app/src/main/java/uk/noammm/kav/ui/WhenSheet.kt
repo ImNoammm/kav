@@ -3,7 +3,6 @@ package uk.noammm.kav.ui
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,7 +13,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -41,7 +39,6 @@ import uk.noammm.kav.data.Moovit
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
-import java.util.Locale
 
 /**
  * When to plan for.
@@ -94,15 +91,15 @@ fun WhenSheet(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 when (chosen) {
-                    Moovit.TIME_ARRIVAL -> "Arrive by"
-                    Moovit.TIME_DEPARTURE -> "Depart at"
-                    else -> "When"
+                    Moovit.TIME_ARRIVAL -> T("Arrive by", "הגעה עד")
+                    Moovit.TIME_DEPARTURE -> T("Depart at", "יציאה בשעה")
+                    else -> T("When", "מתי")
                 },
                 fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
             Text(
-                if (chosen == null) "Close" else "Back",
+                if (chosen == null) T("Close", "סגירה") else T("Back", "חזרה"),
                 fontSize = 14.sp, color = K.accent,
                 modifier = Modifier.clip(RoundedCornerShape(K.rPill))
                     .clickable(role = Role.Button) { if (chosen == null) onDismiss() else mode = null }
@@ -112,17 +109,17 @@ fun WhenSheet(
         Spacer(Modifier.height(K.gap3))
 
         if (chosen == null) {
-            WhenRow("Set departure time") { mode = Moovit.TIME_DEPARTURE }
-            WhenRow("Set desired arrival time") { mode = Moovit.TIME_ARRIVAL }
+            WhenRow(T("Set departure time", "קביעת שעת יציאה")) { mode = Moovit.TIME_DEPARTURE }
+            WhenRow(T("Set desired arrival time", "קביעת שעת הגעה רצויה")) { mode = Moovit.TIME_ARRIVAL }
             // no picker: R1, not S1, the mode is the whole answer
-            WhenRow("Latest departure") { onPick(0L, Moovit.TIME_LAST) }
+            WhenRow(T("Latest departure", "היציאה האחרונה")) { onPick(0L, Moovit.TIME_LAST) }
             // nothing to reset while the plan is already "now": no row, and no rule
             // under the one above it either
             val resettable = departAt > 0L || timeType == Moovit.TIME_LAST
-            WhenRow("+15 min", last = !resettable) {
+            WhenRow(T("+15 min", "+15 דק'"), last = !resettable) {
                 onPick(System.currentTimeMillis() + 15 * 60_000L, Moovit.TIME_DEPARTURE)
             }
-            if (resettable) WhenRow("Leave now", tint = K.accent, last = true) { onNow() }
+            if (resettable) WhenRow(T("Leave now", "צאו עכשיו"), tint = K.accent, last = true) { onNow() }
         } else {
             TimeInput(picker)
             Spacer(Modifier.height(K.gap2))
@@ -131,19 +128,19 @@ fun WhenSheet(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl)).background(K.plate),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Step("‹", day > 0) { day-- }
+                Step(T.backward, day > 0) { day-- }
                 Text(
                     dayLabel(start, day),
                     fontSize = 15.sp, color = K.text,
                     modifier = Modifier.weight(1f),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
-                Step("›", day < 14) { day++ }
+                Step(T.onward, day < 14) { day++ }
             }
             Spacer(Modifier.height(K.gap3))
             val picked = chosenMillis(start, day, picker.hour, picker.minute)
             if (picked <= System.currentTimeMillis()) {
-                Text("That time has passed, this will depart now.", fontSize = 13.sp, color = K.dim)
+                Text(T("That time has passed, this will depart now.", "השעה הזו כבר עברה, הנסיעה תצא עכשיו."), fontSize = 13.sp, color = K.dim)
                 Spacer(Modifier.height(K.gap2))
             }
             Box(
@@ -155,7 +152,7 @@ fun WhenSheet(
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                Text("Done", fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium)
+                Text(T("Done", "סיום"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -245,10 +242,10 @@ private fun dayLabel(start: Calendar, offset: Int): String {
     val today = Calendar.getInstance()
     fun same(a: Calendar, b: Calendar) = a.get(Calendar.YEAR) == b.get(Calendar.YEAR) &&
         a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
-    if (same(c, today)) return "Today"
+    if (same(c, today)) return T("Today", "היום")
     today.add(Calendar.DAY_OF_YEAR, 1)
-    if (same(c, today)) return "Tomorrow"
-    return SimpleDateFormat("EEE d MMM", Locale.getDefault()).format(Date(c.timeInMillis))
+    if (same(c, today)) return T("Tomorrow", "מחר")
+    return SimpleDateFormat("EEE d MMM", T.locale).format(Date(c.timeInMillis))
 }
 
 /**

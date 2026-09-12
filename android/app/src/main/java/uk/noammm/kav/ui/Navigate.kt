@@ -159,7 +159,7 @@ fun StartButton(onClick: () -> Unit) {
             )
         }
         Spacer(Modifier.width(9.dp))
-        Text("Start", fontSize = 14.sp, color = K.bg, fontWeight = FontWeight.Medium)
+        Text(T("Start", "התחלה"), fontSize = 14.sp, color = K.bg, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -194,6 +194,13 @@ fun NavigateScreen(
     val currentStep = model.journeyStep.coerceIn(0, steps.lastIndex)
     val pager = rememberPagerState(initialPage = currentStep) { steps.size }
     LaunchedEffect(currentStep) { pager.animateScrollToPage(currentStep) }
+    // Start is a "leave at…" placeholder, not a step anyone travels, and it only stays
+    // live while the rider is still within 60 m of where the first step begins. So the
+    // card after it is what they are actually doing, walking off, and the map follows
+    // that one too, rather than making them cover 60 m before it comes alive. Nothing
+    // can be disrupted by following early here: there is no ride under way to leap over.
+    val following = pager.settledPage == currentStep ||
+        (steps.getOrNull(currentStep) is Step.Start && pager.settledPage == currentStep + 1)
     val scope = rememberCoroutineScope()
 
     val backdrop = remember { HazeState() }
@@ -205,6 +212,7 @@ fun NavigateScreen(
             val panelWidth = (maxWidth * .46f).coerceIn(240.dp, 340.dp).coerceAtMost(maxWidth * .60f)
             val cardHeight = (contentHeight * .30f).coerceIn(160.dp, 240.dp)
             NavigateMap(trip, r, steps.getOrNull(pager.settledPage), chosen, here, fix, model.heading, now,
+                following = following,
                 Modifier.fillMaxSize().haze(backdrop),
                 contentPadding = if (compact) PaddingValues(top = 96.dp, end = panelWidth, bottom = bottomInset + 12.dp)
                     else PaddingValues(top = 138.dp, bottom = cardHeight + 88.dp + bottomInset))
@@ -218,21 +226,21 @@ fun NavigateScreen(
                 ) {
                     Box(
                         Modifier.size(48.dp).clip(RoundedCornerShape(24.dp))
-                            .semantics { contentDescription = "Back to the plan" }
+                            .semantics { contentDescription = T("Back to the plan", "חזרה למסלול") }
                             .clickable(role = Role.Button, onClick = onExit),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("‹", fontSize = 28.sp, color = K.text)
+                        Text(T.backward, fontSize = 28.sp, color = K.text)
                     }
                     Column(Modifier.weight(1f)) {
-                        Text("Your trip", fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                        Text(T("Your trip", "הנסיעה שלכם"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
                         Text("${dur((trip.arr - now).toInt().coerceAtLeast(0))} · ${hm.format(Date(trip.arr * 1000))}",
                             fontSize = 12.sp, color = K.muted, maxLines = 1)
                     }
                     // the plan you read before starting, still reachable mid-trip
                     Box(
                         Modifier.size(48.dp).clip(RoundedCornerShape(24.dp))
-                            .semantics { contentDescription = "Show trip plan" }
+                            .semantics { contentDescription = T("Show trip plan", "הצגת המסלול") }
                             .clickable(role = Role.Button, onClick = onPlan),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -279,12 +287,12 @@ fun NavigateScreen(
                         .padding(horizontal = K.gap3, vertical = K.gap2),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("End trip", fontSize = 14.sp, color = K.text,
+                    Text(T("End trip", "סיום נסיעה"), fontSize = 14.sp, color = K.text,
                         modifier = Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(K.rControl))
                             .clickable(role = Role.Button, onClick = onStop)
                             .padding(horizontal = K.gap3, vertical = K.gap3))
                     Spacer(Modifier.weight(1f))
-                    Text("${pager.currentPage + 1} / ${steps.size}", fontSize = 12.sp, color = K.dim)
+                    Text(T.ltr("${pager.currentPage + 1} / ${steps.size}"), fontSize = 12.sp, color = K.dim)
                 }
             }
         }
@@ -309,7 +317,7 @@ private fun StepStrip(current: Int, count: Int, live: Int, goTo: (Int) -> Unit) 
                 val on = i == current
                 Box(
                     Modifier.weight(1f).height(44.dp)
-                        .semantics { contentDescription = "Step ${i + 1} of $count"; selected = on }
+                        .semantics { contentDescription = T("Step ${i + 1} of $count", "שלב ${i + 1} מתוך $count"); selected = on }
                         .clickable(role = Role.Button) { goTo(i) },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -327,14 +335,14 @@ private fun Arrow(back: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val tint = if (enabled) K.text else K.surface4
     Box(
         Modifier.size(44.dp).clip(RoundedCornerShape(999.dp))
-            .semantics { contentDescription = if (back) "Previous step" else "Next step" }
+            .semantics { contentDescription = if (back) T("Previous step", "שלב קודם") else T("Next step", "שלב הבא") }
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.size(14.dp)) {
             val w = size.width; val h = size.height
-            val x1 = if (back) .64f else .38f
-            val x2 = if (back) .34f else .68f
+            val x1 = mirrorX(if (back) .64f else .38f)
+            val x2 = mirrorX(if (back) .34f else .68f)
             drawLine(tint, Offset(w * x1, h * .18f), Offset(w * x2, h * .5f), w * .13f, StrokeCap.Round)
             drawLine(tint, Offset(w * x2, h * .5f), Offset(w * x1, h * .82f), w * .13f, StrokeCap.Round)
         }
@@ -354,12 +362,12 @@ internal fun StepCard(
     onChoose: (leg: Int, option: Int) -> Unit = { _, _ -> },
 ) {
     when (step) {
-        is Step.Start -> Card("Start from", active) {
+        is Step.Start -> Card(T("Start from", "התחלה מ-"), active) {
             Text(step.label, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("Leave at ${hm.format(Date(step.time * 1000))}", fontSize = 12.sp, color = K.dim)
+            Text(T("Leave at ${hm.format(Date(step.time * 1000))}", "יציאה בשעה ${hm.format(Date(step.time * 1000))}"), fontSize = 12.sp, color = K.dim)
         }
 
-        is Step.Arrive -> Card("Arrive", active) {
+        is Step.Arrive -> Card(T("Arrive", "הגעה"), active) {
             Text(step.label, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(hm.format(Date(step.time * 1000)), fontSize = 12.sp, color = K.dim)
         }
@@ -367,28 +375,28 @@ internal fun StepCard(
         is Step.Walk -> {
             val stop = r.stop(step.toStop)
             Card(
-                "Walk ${step.leg.minutes} min to".takeIf { step.leg.minutes >= 1 } ?: "Walk to",
+                T("Walk ${step.leg.minutes} min to", "הליכה ${step.leg.minutes} דק׳ אל").takeIf { step.leg.minutes >= 1 } ?: T("Walk to", "הליכה אל"),
                 active,
                 trailing = if (step.leg.meters > 0) distanceLabel(step.leg.meters.toDouble()) else null,
             ) {
-                StopLine(stop?.name ?: "your stop", stop?.code, step.toRide?.let { legMode(it, r) })
+                StopLine(stop?.name ?: T("your stop", "התחנה שלכם"), stop?.code, step.toRide?.let { legMode(it, r) })
             }
         }
 
-        is Step.Taxi -> Card("Take a taxi", active, trailing = "${step.leg.minutes} min") {
-            Text("Continue with Gett", fontSize = 15.sp, color = K.text)
+        is Step.Taxi -> Card(T("Take a taxi", "נסיעה במונית"), active, trailing = T("${step.leg.minutes} min", "${step.leg.minutes} דק׳")) {
+            Text(T("Continue with Gett", "המשיכו עם Gett"), fontSize = 15.sp, color = K.text)
             Spacer(Modifier.height(K.gap2))
             GettButton(step.leg)
         }
 
-        is Step.Cycle -> Card("Cycle ${step.leg.minutes} min", active) {
-            Text("Follow the route to your next stop", fontSize = 15.sp, color = K.text)
+        is Step.Cycle -> Card(T("Cycle ${step.leg.minutes} min", "אופניים ${step.leg.minutes} דק׳"), active) {
+            Text(T("Follow the route to your next stop", "המשיכו במסלול אל התחנה הבאה"), fontSize = 15.sp, color = K.text)
         }
 
         is Step.Wait -> {
             val options = Moovit.boardingOptions(step.ride, step.wait)
             val pick = (chosen[step.legIndex] ?: 0).coerceIn(0, options.lastIndex)
-            Card(if (options.size > 1) "Select a line" else "Wait for", active) {
+            Card(if (options.size > 1) T("Select a line", "בחרו קו") else T("Wait for", "המתנה ל-"), active) {
                 options.forEachIndexed { index, (ride, wait) ->
                     if (index > 0) Spacer(Modifier.height(K.gap2))
                     val picked = index == pick
@@ -435,13 +443,13 @@ internal fun StepCard(
             val alight = r.stop(ride.toStop) ?: names[ride.toStop]
             val arrival = r.arrival(ride)
             Card(
-                "Ride ${stops.size - 1} stops to".takeIf { stops.size > 1 } ?: "Ride to",
+                T("Ride ${stops.size - 1} stops to", "נסיעה ${stops.size - 1} תחנות אל").takeIf { stops.size > 1 } ?: T("Ride to", "נסיעה אל"),
                 active,
-                trailing = "${ride.minutes} min",
+                trailing = T("${ride.minutes} min", "${ride.minutes} דק׳"),
             ) {
                 LineRow(ride, r)
                 Spacer(Modifier.height(K.gap2))
-                StopLine(alight?.name ?: "your stop", alight?.code, legMode(ride, r))
+                StopLine(alight?.name ?: T("your stop", "התחנה שלכם"), alight?.code, legMode(ride, r))
                 if (stops.size > 1) {
                     Spacer(Modifier.height(K.gap2))
                     Box(Modifier.height(1.dp).fillMaxWidth().background(K.border))
@@ -468,7 +476,7 @@ private fun StopLine(name: String, code: String?, mode: Mode?) {
         }
         Column(Modifier.weight(1f)) {
             Text(name, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (!code.isNullOrBlank()) Text("Stop " + code, fontSize = 12.sp, color = K.dim)
+            if (!code.isNullOrBlank()) Text(T("Stop ", "תחנה ") + code, fontSize = 12.sp, color = K.dim)
         }
     }
 }
@@ -560,7 +568,7 @@ private fun LineRow(ride: Moovit.Leg, r: Moovit.Resolved) {
         }
         Spacer(Modifier.width(K.gap3))
         Text(
-            info?.destination?.ifBlank { null }?.let { "to $it" } ?: "",
+            info?.destination?.ifBlank { null }?.let { T("to $it", "לכיוון $it") } ?: "",
             fontSize = 13.sp, color = K.muted, maxLines = 2,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
         )
@@ -604,9 +612,9 @@ private fun Card(
 /* the map */
 
 /**
- * The camera for the card on screen. A walk and a ride are seen from where you are,
- * facing the way you are going, the compass for a walk, the road for a ride. The
- * other cards frame their ground and stay north-up.
+ * The camera for the card on screen. A ride, and a walk the rider is actually on, are
+ * seen from where they are, facing the way they are going: the compass for a walk, the
+ * road for a ride. Every other card frames its own ground and stays north-up.
  *
  * While riding, the vehicle leads when it is reporting where it is: it is on the road
  * the map is drawing, its fix is the operator's rather than a phone in a pocket on a
@@ -617,6 +625,12 @@ private fun Card(
  */
 private const val CAMERA_FIX_S = 15 * 60L
 
+/**
+ * How near its own path a rider must be for a walk card to become a windscreen. The
+ * same 45 m journeyProgress uses to decide someone is standing on a walk at all.
+ */
+private const val ON_WALK_M = 45.0
+
 private fun followFor(
     step: Step?, chosenRide: Moovit.Leg?, r: Moovit.Resolved, fix: Fix?, heading: Float?, now: Long,
 ): Follow? {
@@ -624,7 +638,20 @@ private fun followFor(
     return when (step) {
         is Step.Walk -> {
             val at = recent ?: return null
-            val along = bearingAlong(at.lat, at.lon, step.leg.shape)
+            // A windscreen is only worth having once the rider is on the walk. Standing
+            // off it, still aboard a stop short of getting off or reading the card
+            // early, z19 on the phone frames a street they are not walking and pushes
+            // the path they asked about off the screen. So the camera declines, and the
+            // fit frames the walk itself, which is the thing being asked about.
+            //
+            // Two problems this gate is not the cure for, both of which have cost it
+            // its life once already: reading ahead is `following`'s to refuse, and the
+            // premature card jump is journeyProgress's, which no longer advances over a
+            // ride still under way. Neither is a reason to follow a rider who is 400 m
+            // from the walk. Leave the distance to decide.
+            val path = step.leg.shape
+            if (path.isNotEmpty() && distanceToPath(at.lat, at.lon, path) > ON_WALK_M) return null
+            val along = bearingAlong(at.lat, at.lon, path)
             Follow(at.lat, at.lon, heading ?: along ?: 0f, zoom = 19.1f)
         }
         is Step.Ride -> {
@@ -651,6 +678,7 @@ private fun NavigateMap(
     fix: Fix?,
     heading: Float?,
     now: Long,
+    following: Boolean = true,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
 ) {
@@ -668,6 +696,13 @@ private fun NavigateMap(
         }
         .filter { it.size >= 2 }
     val vehicles = rideLegs.mapNotNull { r.arrival(it)?.takeIf { a -> a.hasLocation } }
+    // An arrival says where a vehicle is, not what kind it is; its leg's agency does.
+    val vehicleModes = remember(rideLegs, r) {
+        rideLegs.mapNotNull { leg ->
+            r.arrival(leg)?.takeIf { it.hasLocation }
+                ?.let { it.tripId to modeOf(r.routeType(r.line(leg.lineId)?.agencyId ?: -1)) }
+        }.toMap()
+    }
     // every stop on every ride, so the map shows the same circles the card does
     val stopNames = rememberStopNames(remember(rideLegs) { rideLegs.flatMap { it.stops } })
     val stopPoints = remember(rideLegs, r.stops, stopNames) { rideStopPoints(rideLegs, r.stops + stopNames) }
@@ -688,7 +723,11 @@ private fun NavigateMap(
     val framedPoints = focus + listOfNotNull(focusedVehicle?.let { it.lat to it.lon })
     val mePulse = animateFloatAsState(if (here == null) 0f else 1f, tween(350), label = "meReveal")
     val vehicleAlpha = animateFloatAsState(if (vehicles.isEmpty()) 0f else 1f, tween(350), label = "vehicleReveal")
-    val follow = followFor(step, chosenRide, r, fix, heading, now)
+    // Following is for the step being ridden. Swipe to another card and the map stops
+    // being a windscreen and becomes a plan of that step: a transfer walk read from the
+    // bus frames the path between the two stops, which is the thing being asked about,
+    // instead of a close-up of a rider who is still three stops away from it.
+    val follow = if (following) followFor(step, chosenRide, r, fix, heading, now) else null
     val fresh = fix?.takeIf { it.isFresh(now) }
 
     // The part of the current ride already behind you goes grey, from wherever the
@@ -709,15 +748,18 @@ private fun NavigateMap(
     // frame as the ground, they cannot slide against it while the camera is easing.
     val walkLegs = legs.filter { it.kind == Moovit.LegKind.WALK }
     val rideLegsShapes = legs.filter { it.kind != Moovit.LegKind.WALK }
-    val geometry = remember(lineRoutes, legs, behind, stopPoints) {
+    val geometry = remember(lineRoutes, legs, behind, stopPoints, K.accent) {
         MapGeometry(
             lines = lineRoutes.map { MapLine(it, K.routeIdle, 3f, casing = 6f) } +
                 walkLegs.map { MapLine(it.shape, K.muted, 2f, dashed = true) } +
-                rideLegsShapes.map { MapLine(it.shape, K.route, 4f, casing = 8f) } +
+                rideLegsShapes.mapIndexed { i, l -> MapLine(l.shape, routeShade(i), 4f, casing = 8f) } +
                 listOf(MapLine(behind, K.routeIdle, 4f, casing = 8f)),
+            // The stops the bus only calls at stay plain, the way they are plain in
+            // Moovit: in the line's own colour they compete with the two that matter,
+            // which are the one you board at and the one you get off at.
             dots = stopPoints.flatMap { (lat, lon) ->
-                listOf(MapDot(lat, lon, K.bg, 6f), MapDot(lat, lon, Color.Transparent, 3.5f, K.route, 2f))
-            } + listOfNotNull(
+                listOf(MapDot(lat, lon, K.bg, 6f), MapDot(lat, lon, Color.Transparent, 3.5f, K.routeIdle, 2f))
+            } + boardingMarkers(rideLegsShapes, r, r.stops + stopNames) + listOfNotNull(
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 7f) },
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, Color.Transparent, 5f, K.text, 2f) },
                 legs.last().shape.lastOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 8f) },
@@ -730,7 +772,11 @@ private fun NavigateMap(
     // on the Compose canvas they lag the ground by a frame and slide during gestures.
     // Only the pulse ring stays on the canvas: its radius animates every frame, and a
     // diffuse ring can tolerate the one-frame slide the crisp markers cannot.
-    val walkArrow = step is Step.Walk && heading != null
+    // The compass arrow is a walking instrument: it claims the rider is facing along
+    // this walk. That is only true when the walk camera has engaged, so it rides on
+    // exactly that: a card read ahead, or one whose walk is still streets away, gets
+    // the plain "you are here" dot back instead.
+    val walkArrow = follow != null && step is Step.Walk && heading != null
     val live = MapGeometry(
         dots = buildList {
             here?.let { (lat, lon) ->
@@ -742,14 +788,18 @@ private fun NavigateMap(
             }
             for (v in vehicles) {
                 val tint = if (v.vehicleStatus == 2) K.problem else K.live
-                add(MapDot(v.lat, v.lon, K.bg.copy(alpha = vehicleAlpha.value), 9f))
-                add(MapDot(v.lat, v.lon, tint.copy(alpha = vehicleAlpha.value), 6f))
+                add(MapDot(v.lat, v.lon, K.bg.copy(alpha = vehicleAlpha.value), 12f))
+                add(MapDot(v.lat, v.lon, tint.copy(alpha = vehicleAlpha.value), 10f))
             }
         },
-        markers = if (walkArrow) here?.let { (lat, lon) ->
-            // the compass arrow: which way you are facing, on the ground
-            listOf(MapMarker(lat, lon, MAP_ARROW_ICON, heading ?: 0f, mePulse.value))
-        }.orEmpty() else emptyList(),
+        markers = (
+            if (walkArrow) here?.let { (lat, lon) ->
+                // the compass arrow: which way you are facing, on the ground
+                listOf(MapMarker(lat, lon, MAP_ARROW_ICON, heading ?: 0f, mePulse.value))
+            }.orEmpty() else emptyList()
+        ) + vehicles.map { v ->
+            MapMarker(v.lat, v.lon, modeIconName(vehicleModes[v.tripId] ?: Mode.BUS), alpha = vehicleAlpha.value)
+        },
     )
 
     TileMap(framedPoints, modifier, focusKey = step to chosenRide?.tripId,
@@ -759,7 +809,7 @@ private fun NavigateMap(
             for (v in vehicles) {
                 val p = proj.point(v.lat, v.lon)
                 val tint = if (v.vehicleStatus == 2) K.problem else K.live
-                drawCircle(tint.copy(alpha = 0.20f * vehicleAlpha.value), 17.dp.toPx() * pulse.value, p)
+                drawCircle(tint.copy(alpha = 0.20f * vehicleAlpha.value), 20.dp.toPx() * pulse.value, p)
             }
         },
     )

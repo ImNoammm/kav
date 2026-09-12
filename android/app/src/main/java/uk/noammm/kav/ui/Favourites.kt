@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -16,10 +17,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -106,9 +115,30 @@ fun favouriteIcon(key: String): ImageVector =
     FavouriteIcons.firstOrNull { it.first == key }?.second ?: Icons.Rounded.Place
 
 /**
+ * What to call a favourite on screen. Home is the one name Kav chose rather than the
+ * rider, and it is the one that cannot be renamed, so it follows the language instead
+ * of being stored in it - a strip set up in Hebrew would otherwise still read "Home"
+ * after the language was switched back, and the other way round.
+ */
+val Favourite.label: String get() = if (id == Favourite.HOME) T("Home", "בית") else name
+
+/** One slot in the strip: the tile plus the gap that follows it. */
+private val SLOT = 72.dp + K.gap2
+
+/**
  * The strip above a search: Home first, then the rider's own places, then a plus.
  * A place not set yet opens the search to set it, the first tap on Home asks where
  * home is, every later tap goes there.
+ *
+ * With [onReorder] a pen sits over the strip, and tapping it turns the strip into an
+ * editor: every place that may go wears an X, a tap renames instead of travelling, and
+ * any tile can be dragged straight into a new order. Sorting behind a mode rather than
+ * behind a long press is what was asked for. A hold that silently became a drag was a
+ * gesture you had to be told about, it took the hold away from the editor it used to
+ * open, and there was nowhere to put a Remove that did not mean opening that editor
+ * first. The pen went above the places rather than after them because a tile at the end
+ * has to be scrolled to once the strip outgrows the screen, which is exactly the strip
+ * that needs sorting.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -118,54 +148,288 @@ fun FavouriteStrip(
     onAdd: () -> Unit,
     onEdit: (Favourite) -> Unit,
     horizontalPadding: androidx.compose.ui.unit.Dp = K.gap3,
+    onReorder: ((List<Favourite>) -> Unit)? = null,
+    onRemove: ((Favourite) -> Unit)? = null,
 ) {
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = horizontalPadding, vertical = K.gap2),
-        horizontalArrangement = Arrangement.spacedBy(K.gap2),
-    ) {
-        favourites.forEach { f ->
-            val set = f.place != null
-            Column(
-                Modifier.width(72.dp).clip(RoundedCornerShape(K.rControl))
-                    .combinedClickable(role = Role.Button, onClick = { onPick(f) }, onLongClick = { onEdit(f) })
-                    .padding(vertical = K.gap2),
-                horizontalAlignment = Alignment.CenterHorizontally,
+    val manage = onReorder != null
+    var editMode by remember { mutableStateOf(false) }
+    val inEdit = manage && editMode
+    val slotPx = with(LocalDensity.current) { SLOT.toPx() }
+    // A drag reports raw screen pixels whichever way the interface runs, but in Hebrew
+    // the tiles are laid out right to left, so travelling right is travelling towards
+    // the front of the list.
+    val dir = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
+    // The live order while a tile is in the air. Null the rest of the time, so the
+    // strip goes back to reading straight from the caller's list.
+    var order by remember(favourites) { mutableStateOf<List<Favourite>?>(null) }
+    var held by remember { mutableStateOf<String?>(null) }
+    var dx by remember { mutableFloatStateOf(0f) }
+    val shown = order ?: favourites
+
+    Column(Modifier.fillMaxWidth()) {
+        if (manage) Row(
+            Modifier.fillMaxWidth().padding(horizontal = horizontalPadding),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // A mode with no visible rules is a mode you have to be told about. Once
+            // the pen is on, both gestures change meaning at once, so both are named
+            // here rather than left to be discovered a tile at a time.
+            AnimatedVisibility(
+                visible = inEdit,
+                modifier = Modifier.weight(1f, fill = false),
+                // out of the pen's own edge and back into it, so the sentence and the
+                // button that turns it on read as one thing opening
+                enter = fadeIn(tween(180)) + expandHorizontally(tween(220), Alignment.End),
+                exit = fadeOut(tween(120)) + shrinkHorizontally(tween(180), Alignment.End),
             ) {
-                Box(
-                    Modifier.size(46.dp).clip(RoundedCornerShape(999.dp))
-                        .background(if (set) K.accent.copy(alpha = .16f) else K.plate)
-                        .border(1.dp, if (set) K.accent.copy(alpha = .5f) else K.border, RoundedCornerShape(999.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(favouriteIcon(f.icon), contentDescription = null, tint = if (set) K.accent else K.muted, modifier = Modifier.size(24.dp))
+                Text(
+                    T("Drag to reorder, tap to edit", "גררו לסידור, הקישו לעריכה"),
+                    fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(end = K.gap2),
+                )
+            }
+            // the pill and its glyph cross over rather than cut, so the mode looks
+            // turned on rather than swapped out from under the finger
+            val penPlate by animateColorAsState(
+                if (inEdit) K.accent.copy(alpha = .16f) else K.plate, tween(220), label = "penPlate",
+            )
+            val penTint by animateColorAsState(if (inEdit) K.accent else K.muted, tween(220), label = "penTint")
+            Box(
+                Modifier.size(38.dp).clip(RoundedCornerShape(999.dp))
+                    .background(penPlate)
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = if (inEdit) T("Finish editing favourites", "סיום עריכת המועדפים")
+                        else T("Sort and remove favourites", "סידור והסרה של מועדפים"),
+                    ) {
+                        editMode = !editMode
+                        // whatever was half-dragged when the mode closed is not an order
+                        order = null; held = null; dx = 0f
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                AnimatedContent(
+                    inEdit,
+                    transitionSpec = {
+                        (fadeIn(tween(160)) + scaleIn(tween(220), initialScale = .6f)) togetherWith
+                            (fadeOut(tween(120)) + scaleOut(tween(180), targetScale = .6f))
+                    },
+                    label = "penGlyph",
+                ) { editing ->
+                    Icon(
+                        if (editing) Icons.Rounded.Check else Icons.Rounded.Edit,
+                        contentDescription = null,
+                        tint = penTint,
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
-                Spacer(Modifier.height(5.dp))
-                Text(f.name, fontSize = 12.sp, color = if (set) K.text else K.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        Column(
-            Modifier.width(72.dp).clip(RoundedCornerShape(K.rControl)).clickable(role = Role.Button, onClick = onAdd)
-                .padding(vertical = K.gap2),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Row(
+            Modifier.fillMaxWidth()
+                // While a tile is in the air the strip itself has to hold still: the row
+                // and the tile want the same horizontal drag, and a strip sliding under the
+                // finger would carry the tile past neighbours it never passed.
+                .horizontalScroll(rememberScrollState(), enabled = held == null)
+                .padding(horizontal = horizontalPadding, vertical = K.gap2),
+            horizontalArrangement = Arrangement.spacedBy(K.gap2),
         ) {
-            Box(
-                Modifier.size(46.dp).clip(RoundedCornerShape(999.dp)).background(K.plate)
-                    .border(1.dp, K.border, RoundedCornerShape(999.dp)),
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Rounded.Add, contentDescription = "Add a favourite", tint = K.muted, modifier = Modifier.size(24.dp)) }
-            Spacer(Modifier.height(5.dp))
-            Text("Add", fontSize = 12.sp, color = K.muted)
+            shown.forEach { f ->
+                val set = f.place != null
+                val lifted = held == f.id
+                val lift by animateFloatAsState(
+                    if (lifted) 1.08f else 1f,
+                    spring(dampingRatio = .6f, stiffness = Spring.StiffnessMedium), label = "lift",
+                )
+                // Home is the one place always here: it can be moved and re-iconed, never
+                // deleted, so it is the one tile that wears no X.
+                val removable = onRemove != null && f.id != Favourite.HOME
+                Column(
+                    Modifier.width(72.dp)
+                        .zIndex(if (lifted) 1f else 0f)
+                        // A layer, not offset+scale: translationX is screen pixels and is
+                        // never mirrored, so the tile tracks the finger in Hebrew too.
+                        .graphicsLayer {
+                            // the finger's own travel goes in raw: a tile that eases
+                            // after the drag stops being the thing being moved. Only
+                            // the lift itself is sprung.
+                            translationX = if (lifted) dx else 0f
+                            scaleX = lift
+                            scaleY = lift
+                        }
+                        .clip(RoundedCornerShape(K.rControl))
+                        .then(
+                            if (!inEdit) Modifier
+                            else Modifier.pointerInput(favourites, dir) {
+                                detectDragGestures(
+                                    onDragStart = { held = f.id; dx = 0f },
+                                    onDragCancel = { held = null; dx = 0f; order = null },
+                                    onDragEnd = {
+                                        val moved = order
+                                        held = null; dx = 0f
+                                        if (moved != null) onReorder?.invoke(moved)
+                                    },
+                                    onDrag = { change, drag ->
+                                        change.consume()
+                                        dx += drag.x
+                                        val list = (order ?: favourites).toMutableList()
+                                        val at = list.indexOfFirst { it.id == f.id }
+                                        if (at < 0) return@detectDragGestures
+                                        // one neighbour per half-slot travelled, and the
+                                        // offset is repaid each time so the tile stays
+                                        // under the finger instead of running ahead of it
+                                        val travelled = dx * dir
+                                        if (travelled > slotPx / 2 && at < list.size - 1) {
+                                            list.add(at + 1, list.removeAt(at))
+                                            dx -= slotPx * dir
+                                            order = list
+                                        } else if (travelled < -slotPx / 2 && at > 0) {
+                                            list.add(at - 1, list.removeAt(at))
+                                            dx += slotPx * dir
+                                            order = list
+                                        }
+                                    },
+                                )
+                            },
+                        )
+                        .combinedClickable(
+                            role = Role.Button,
+                            // in the editor a tap is for renaming it, not for going there
+                            onClick = { if (inEdit) onEdit(f) else onPick(f) },
+                            // with no mode running, the hold is the editor it always was
+                            onLongClick = if (inEdit) null else ({ onEdit(f) }),
+                        )
+                        .padding(vertical = K.gap2),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    // Unclipped on purpose, so the X can sit on the circle's corner and
+                    // overhang it into the tile's own padding.
+                    Box(contentAlignment = Alignment.Center) {
+                        Box(
+                            Modifier.size(46.dp).clip(RoundedCornerShape(999.dp))
+                                .background(if (set) K.accent.copy(alpha = .16f) else K.plate)
+                                .border(
+                                    1.dp,
+                                    if (lifted) K.accent else if (set) K.accent.copy(alpha = .5f) else K.border,
+                                    RoundedCornerShape(999.dp),
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(favouriteIcon(f.icon), contentDescription = null, tint = if (set) K.accent else K.muted, modifier = Modifier.size(24.dp))
+                        }
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = inEdit && removable,
+                            modifier = Modifier.align(Alignment.TopEnd).offset(x = 7.dp, y = (-7).dp),
+                            // onto the corner and back into it, so a strip full of
+                            // tiles arms and disarms as one movement
+                            enter = scaleIn(
+                                spring(dampingRatio = .55f, stiffness = Spring.StiffnessMedium), initialScale = .5f,
+                            ) + fadeIn(tween(120)),
+                            exit = scaleOut(tween(140), targetScale = .5f) + fadeOut(tween(120)),
+                        ) {
+                            Box(
+                                Modifier.size(24.dp).clip(RoundedCornerShape(999.dp)).background(K.critical)
+                                    .clickable(
+                                        role = Role.Button,
+                                        onClickLabel = T("Remove ${f.label}", "הסרת ${f.label}"),
+                                    ) { onRemove?.invoke(f) },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Rounded.Close, contentDescription = null, tint = K.bg, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(5.dp))
+                    Text(f.label, fontSize = 12.sp, color = if (set) K.text else K.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            StripTile(
+                Icons.Rounded.Add,
+                T("Add", "הוספה"),
+                T("Add a favourite", "הוספת מועדף"),
+                on = false,
+                onClick = onAdd,
+            )
         }
     }
 }
 
-/** Name it and pick its icon; where it is comes next, from the search. */
+/** Where a favourite is, under its name, as the way to send it somewhere else. */
+@Composable
+private fun PlaceLine(f: Favourite, onChange: () -> Unit) {
+    val p = f.place
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(K.rControl))
+            .background(K.plate)
+            .clickable(
+                role = Role.Button,
+                onClickLabel = T("Change where ${f.label} is", "שינוי המיקום של ${f.label}"),
+                onClick = onChange,
+            )
+            .padding(horizontal = K.gap3, vertical = K.gap2),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(K.gap2),
+    ) {
+        Icon(Icons.Rounded.Place, contentDescription = null, tint = K.muted, modifier = Modifier.size(18.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                p?.name?.takeIf { it.isNotBlank() } ?: T("Not set yet", "עדיין לא נקבע"),
+                fontSize = 14.sp, color = if (p == null) K.muted else K.text,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            p?.detail?.takeIf { it.isNotBlank() }?.let {
+                Text(it, fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Text(T("Change", "שינוי"), fontSize = 13.sp, color = K.accent)
+    }
+}
+
+/** The tiles at the end of the strip: a favourite's shape with no place behind it. */
+@Composable
+private fun StripTile(
+    icon: ImageVector,
+    label: String,
+    description: String,
+    on: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(
+        Modifier.width(72.dp).clip(RoundedCornerShape(K.rControl))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(vertical = K.gap2),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(46.dp).clip(RoundedCornerShape(999.dp))
+                .background(if (on) K.accent.copy(alpha = .16f) else K.plate)
+                .border(1.dp, if (on) K.accent else K.border, RoundedCornerShape(999.dp)),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, contentDescription = description, tint = if (on) K.accent else K.muted, modifier = Modifier.size(24.dp)) }
+        Spacer(Modifier.height(5.dp))
+        Text(label, fontSize = 12.sp, color = if (on) K.accent else K.muted)
+    }
+}
+
+/**
+ * Name it and pick its icon; where it is comes next, from the search.
+ *
+ * For a favourite that already exists, where it is shows under the name and is a
+ * button back into that search. Without it a place could be set exactly once, on the
+ * first tap that asked where it was, and a rider who had moved house, or who had
+ * placed Home on the wrong side of the street, had nothing to press: the editor knew
+ * the place and would not show it, and every other route into it led to travelling
+ * there instead of changing it.
+ */
 @Composable
 fun FavouriteEditor(
     existing: Favourite?,
     onSave: (name: String, icon: String) -> Unit,
     onRemove: (() -> Unit)?,
     onDismiss: () -> Unit,
+    /** Hand the rider back to the search to re-place this one. Null hides the row. */
+    onChangePlace: (() -> Unit)? = null,
 ) {
     var name by remember { mutableStateOf(existing?.name.orEmpty()) }
     var icon by remember { mutableStateOf(existing?.icon ?: "star") }
@@ -175,10 +439,11 @@ fun FavouriteEditor(
             verticalArrangement = Arrangement.spacedBy(K.gap3),
         ) {
             Text(
-                if (existing == null) "New favourite" else existing.name,
+                if (existing == null) T("New favourite", "מועדף חדש") else existing.label,
                 fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold,
             )
-            if (existing?.id != Favourite.HOME) KavField(name, { name = it }, "Name", autoFocus = existing == null)
+            if (existing?.id != Favourite.HOME) KavField(name, { name = it }, T("Name", "שם"), autoFocus = existing == null)
+            if (existing != null && onChangePlace != null) PlaceLine(existing, onChangePlace)
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(52.dp), modifier = Modifier.heightIn(max = 280.dp),
                 horizontalArrangement = Arrangement.spacedBy(K.gap1), verticalArrangement = Arrangement.spacedBy(K.gap1),
@@ -201,13 +466,13 @@ fun FavouriteEditor(
                     Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(K.rPill)).background(K.plateStrong)
                         .clickable(role = Role.Button, onClick = onRemove).padding(horizontal = K.gap4),
                     contentAlignment = Alignment.Center,
-                ) { Text("Remove", fontSize = 14.sp, color = K.critical) }
+                ) { Text(T("Remove", "הסרה"), fontSize = 14.sp, color = K.critical) }
                 Spacer(Modifier.weight(1f))
                 Box(
                     Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(K.rPill)).background(K.plateStrong)
                         .clickable(role = Role.Button, onClick = onDismiss).padding(horizontal = K.gap4),
                     contentAlignment = Alignment.Center,
-                ) { Text("Cancel", fontSize = 14.sp, color = K.text) }
+                ) { Text(T("Cancel", "ביטול"), fontSize = 14.sp, color = K.text) }
                 val ready = name.isNotBlank() || existing?.id == Favourite.HOME
                 Box(
                     Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(K.rPill))
@@ -215,7 +480,7 @@ fun FavouriteEditor(
                         .clickable(enabled = ready, role = Role.Button) { onSave(name.trim().ifBlank { existing?.name ?: "" }, icon) }
                         .padding(horizontal = K.gap4),
                     contentAlignment = Alignment.Center,
-                ) { Text(if (existing == null) "Next" else "Save", fontSize = 14.sp, color = if (ready) K.bg else K.muted, fontWeight = FontWeight.Medium) }
+                ) { Text(if (existing == null) T("Next", "הבא") else T("Save", "שמירה"), fontSize = 14.sp, color = if (ready) K.bg else K.muted, fontWeight = FontWeight.Medium) }
             }
         }
     }

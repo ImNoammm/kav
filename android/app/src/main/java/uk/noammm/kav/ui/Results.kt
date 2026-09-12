@@ -49,8 +49,8 @@ private val hm = SimpleDateFormat("HH:mm", Locale.US)
 private fun Chevron(tint: Color = K.surface4, size: androidx.compose.ui.unit.Dp = 12.dp) {
     Canvas(Modifier.size(size)) {
         val w = this.size.width; val h = this.size.height
-        drawLine(tint, Offset(w * .36f, h * .22f), Offset(w * .66f, h * .5f), w * .12f, StrokeCap.Round)
-        drawLine(tint, Offset(w * .66f, h * .5f), Offset(w * .36f, h * .78f), w * .12f, StrokeCap.Round)
+        drawLine(tint, Offset(w * mirrorX(.36f), h * .22f), Offset(w * mirrorX(.66f), h * .5f), w * .12f, StrokeCap.Round)
+        drawLine(tint, Offset(w * mirrorX(.66f), h * .5f), Offset(w * mirrorX(.36f), h * .78f), w * .12f, StrokeCap.Round)
     }
 }
 
@@ -163,20 +163,6 @@ private fun PlusGlyph(tint: Color = K.muted) {
     }
 }
 
-/** Sliders, the way every transit app draws "filters". */
-@Composable
-private fun TuneGlyph(tint: Color = K.muted) {
-    Canvas(Modifier.size(16.dp)) {
-        val w = size.width; val h = size.height; val sw = w * .09f
-        listOf(.26f to .34f, .60f to .66f).forEach { (y, knob) ->
-            drawLine(tint, Offset(w * .12f, h * y), Offset(w * .88f, h * y), sw, StrokeCap.Round)
-            drawCircle(tint, w * .11f, Offset(w * knob, h * y))
-        }
-        drawLine(tint, Offset(w * .12f, h * .86f), Offset(w * .88f, h * .86f), sw, StrokeCap.Round)
-        drawCircle(tint, w * .11f, Offset(w * .52f, h * .86f))
-    }
-}
-
 @Composable
 private fun MapGlyph(tint: Color = K.muted) {
     Canvas(Modifier.size(15.dp)) {
@@ -213,18 +199,18 @@ private fun AccessibleGlyph(tint: Color = K.muted, size: androidx.compose.ui.uni
     }
 }
 
-/* the plan header: two endpoints, swap, add stop, filters */
+/* the plan header: two endpoints, swap, add stop */
 
 @Composable
 fun PlanHeader(
     from: String,
     to: String,
     fromIsHere: Boolean,
+    toIsHere: Boolean,
     onFrom: () -> Unit,
     onTo: () -> Unit,
     onSwap: () -> Unit,
     onAddStop: (() -> Unit)? = null,
-    onTune: (() -> Unit)? = null,
     onBack: (() -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3, vertical = K.gap2)) {
@@ -236,29 +222,34 @@ fun PlanHeader(
                 Column {
                     Endpoint(from, here = fromIsHere, dot = false, onClick = onFrom)
                     Spacer(Modifier.height(K.gap2))
-                    Endpoint(to, here = false, dot = true, onClick = onTo)
+                    Endpoint(to, here = toIsHere, dot = true, onClick = onTo)
                 }
-                Box(
-                    Modifier.align(Alignment.CenterEnd).padding(end = K.gap2)
-                        .size(44.dp).glassSurface(22.dp)
-                        .semantics { contentDescription = "Swap start and destination" }
-                        .clickable(role = Role.Button, onClick = onSwap),
-                    contentAlignment = Alignment.Center,
-                ) { SwapGlyph() }
+                SwapControl(Modifier.align(Alignment.CenterEnd).padding(end = K.gap2), onSwap)
             }
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                if (onTune != null) Box(
-                    Modifier.size(44.dp).semantics { contentDescription = "Settings" }
-                        .clickable(role = Role.Button, onClick = onTune), contentAlignment = Alignment.Center,
-                ) { TuneGlyph() }
                 if (onAddStop != null) Box(
-                    Modifier.size(44.dp).semantics { contentDescription = "Add stop" }
+                    Modifier.size(44.dp).semantics { contentDescription = T("Add stop", "הוספת תחנה") }
                         .clickable(role = Role.Button, onClick = onAddStop), contentAlignment = Alignment.Center,
                 ) { PlusGlyph() }
             }
         }
     }
+}
+
+/**
+ * The control that straddles the seam between a start and a destination. Home shows
+ * the same two ends as this header does, so it swaps them with the same button rather
+ * than a second one drawn to look like it.
+ */
+@Composable
+fun SwapControl(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Box(
+        modifier.size(44.dp).glassSurface(22.dp)
+            .semantics { contentDescription = T("Swap start and destination", "החלפת התחלה ויעד") }
+            .clickable(role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { SwapGlyph() }
 }
 
 @Composable
@@ -317,7 +308,7 @@ fun DepartRow(label: String, onWhen: () -> Unit, onMap: (() -> Unit)?) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             MapGlyph(); Spacer(Modifier.width(7.dp))
-            Text("View", fontSize = 13.sp, color = K.text)
+            Text(T("View", "תצוגה"), fontSize = 13.sp, color = K.text)
         }
     }
 }
@@ -336,7 +327,7 @@ private fun departLabels(deps: List<Moovit.Departure>, now: Long): Pair<List<Dep
         // absoluteTimeThresholdInMinutes (60 in its own resources), and never once
         // real-time was dropped, a stale estimate is not worth counting down.
         val relative = m in 0..60 && !d.rtDropped
-        val text = if (relative) (if (m <= 0) "now" else "$m")
+        val text = if (relative) (if (m <= 0) T("now", "עכשיו") else "$m")
                    else { allMinutes = false; hm.format(Date(d.timeUtc * 1000)) }
         DepLabel(text, d)
     }
@@ -363,7 +354,7 @@ internal fun DepartureTimes(deps: List<Moovit.Departure>, now: Long) {
                 )
             }
         }
-        if (allMinutes) Text("min", fontSize = 14.sp, color = K.dim)
+        if (allMinutes) Text(T("min", "דק׳"), fontSize = 14.sp, color = K.dim)
     }
 }
 
@@ -380,8 +371,8 @@ internal fun RouteChoices(ride: Moovit.Leg, r: Moovit.Resolved) {
 
 /**
  * Moovit's `TimePresentationType.primaryColorAttrId`, state for state. Its own dark
- * theme resolves colorLive to #04C876, colorProblem to #E7B35A, colorCritical to
- * #F76E86 and colorOnSurface to #D0DADC; Kav keeps its own quieter tokens for those
+ * theme resolves colorLive to a green, colorProblem to an amber, colorCritical to a
+ * pink and colorOnSurface to a pale grey; Kav keeps its own quieter tokens for those
  * four roles (D11) but assigns them to exactly the same states.
  */
 fun depColour(d: Moovit.Departure): Color = when (d.state) {
@@ -426,7 +417,12 @@ fun ItineraryCard(it: Moovit.Itinerary, r: Moovit.Resolved, onClick: (() -> Unit
     ) {
         // left: how long, and between which two clock times
         Column(
-            Modifier.width(108.dp).padding(7.dp)
+            // A floor, not a width. 108dp was measured against "2h 21m"; the same
+            // sentence in Hebrew is longer, and a fixed box clipped it silently, which
+            // in a right-to-left line takes the LAST word off the LEFT edge: the card
+            // read "2 hours 21" with the unit gone. English is unchanged, it never
+            // reaches the floor; Hebrew takes the few dp it needs and the strip reflows.
+            Modifier.widthIn(min = 108.dp).padding(7.dp)
                 .clip(RoundedCornerShape(13.dp)).background(K.sunken)
                 .padding(horizontal = 11.dp, vertical = K.gap3),
             verticalArrangement = Arrangement.Center,
@@ -474,9 +470,11 @@ fun ItineraryCard(it: Moovit.Itinerary, r: Moovit.Resolved, onClick: (() -> Unit
 }
 
 private fun durationValue(min: Int): String =
-    if (min >= 60) "${min / 60}h ${min % 60}m" else "$min"
+    // The unit is glued to its number in Hebrew too, the way "21m" glues it. The
+    // headline box is 108dp and the spaced-out form did not fit in it.
+    if (min >= 60) T("${min / 60}h ${min % 60}m", "${min / 60}ש׳ ${min % 60}דק׳") else "$min"
 
-private fun durationUnit(min: Int): String = if (min >= 60) "" else if (min == 1) "min" else "mins"
+private fun durationUnit(min: Int): String = if (min >= 60) "" else if (min == 1) T("min", "דק׳") else T("mins", "דק׳")
 
 /** One entry in the strip: consecutive walk legs read as a single walk. */
 private class StripItem(
@@ -591,12 +589,12 @@ private fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
 }
 
 /**
- * A neutral badge carrying the line's mark and number, sized so, a five-leg strip ("🚶 › 74 › 🚶 › 657 › 🚶") has to fit on one line there,
- * and Kav's wider badge was wrapping it onto two.
+ * A neutral badge carrying the line's mark and number, sized so that a five-leg strip
+ * ("🚶 › 74 › 🚶 › 657 › 🚶") still fits on one line: Kav's wider badge was wrapping it onto two.
  *
  * Until the line's group has been fetched there is no number to print, and an internal
  * id is not one: an unresolved badge shows its mode mark alone and fills in when the
- * name arrives, rather than flashing "#2781223" at you.
+ * name arrives, rather than flashing "2781223" at you.
  */
 @Composable
 private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) {
@@ -656,7 +654,13 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
     val taxi = it.legs.take(2).firstOrNull { l -> l.kind == Moovit.LegKind.TAXI }
     if (taxi != null) {
         val mins = (((taxi.dep - now) + 59) / 60).coerceAtLeast(0)
-        Text("Pickup in $mins ${if (mins == 1L) "min" else "mins"}", fontSize = 13.sp, color = K.dim)
+        Text(
+            T(
+                "Pickup in $mins ${if (mins == 1L) "min" else "mins"}",
+                "איסוף בעוד $mins דק׳",
+            ),
+            fontSize = 13.sp, color = K.dim,
+        )
         return
     }
     val rideIndex = it.legs.indexOfFirst { leg -> leg.kind == Moovit.LegKind.RIDE }
@@ -674,7 +678,7 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
     Text(
         buildAnnotatedString {
             if (labels.isNotEmpty()) {
-                withStyle(SpanStyle(color = K.dim)) { append("Leaves in ") }
+                withStyle(SpanStyle(color = K.dim)) { append(T("Leaves in ", "יציאה בעוד ")) }
                 // only the FIRST time carries a mark, and only when its state has one
                 if (lead != null && depMark(lead) != DepMark.NONE) appendInlineContent(MARK, "·")
             }
@@ -688,11 +692,11 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
                 }
             }
             if (labels.isNotEmpty() && allMinutes) {
-                withStyle(SpanStyle(color = K.dim)) { append(" mins") }
+                withStyle(SpanStyle(color = K.dim)) { append(T(" mins", " דק׳")) }
             }
             if (stop != null) {
                 withStyle(SpanStyle(color = K.dim)) {
-                    append(if (labels.isEmpty()) "From " else " from ")
+                    append(if (labels.isEmpty()) T("From ", "מ־") else T(" from ", " מ־"))
                     append(stop)
                 }
             }
@@ -722,7 +726,7 @@ private const val MARK = "mark"
  */
 private fun cardChips(it: Moovit.Itinerary): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>(2)
-    if (it.accessible) out.add("access" to "Step-free")
+    if (it.accessible) out.add("access" to T("Step-free", "נגיש לנכים"))
     if (it.co2g >= 0) out.add("co2" to co2(it.co2g))
     return out
 }

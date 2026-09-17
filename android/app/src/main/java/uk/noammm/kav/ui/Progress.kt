@@ -161,7 +161,7 @@ private fun departureOf(step: Step.Wait, r: Moovit.Resolved, chosen: Map<Int, In
 private fun onStep(step: Step, r: Moovit.Resolved, chosen: Map<Int, Int>, fix: Fix): Boolean = when (step) {
     is Step.Walk -> {
         val start = step.leg.shape.firstOrNull()
-        distanceToPath(fix.lat, fix.lon, step.leg.shape) < 45 && (start == null || fix.distanceTo(start) > 100)
+        distanceToPath(fix.lat, fix.lon, step.leg.shape) < ON_WALK_M && (start == null || fix.distanceTo(start) > 100)
     }
     is Step.Wait -> stepTarget(step, r, chosen)?.let { fix.distanceTo(it) < 40 } == true
     is Step.Ride -> {
@@ -194,11 +194,37 @@ private fun done(step: Step, r: Moovit.Resolved, chosen: Map<Int, Int>, now: Lon
                 dep.status != 3 && now >= dep.timeUtc
             }
         }
-        is Step.Ride -> if (fix != null && target != null) fix.distanceTo(target) < 45 else now >= rideOf(step, chosen).arr + 60
+        is Step.Ride -> {
+            val ride = rideOf(step, chosen)
+            // The stop's own point can sit across the road from where the driven path
+            // ends, so the path's end answers too: within 60 m of it the ride is over.
+            (fix != null && ride.shape.isNotEmpty() && fix.distanceTo(ride.shape.last()) < 60) ||
+                if (fix != null && target != null) fix.distanceTo(target) < 45 else now >= ride.arr + 60
+        }
         is Step.Taxi -> if (fix != null && target != null) fix.distanceTo(target) < 45 else now >= step.leg.arr
         is Step.Cycle -> if (fix != null && target != null) fix.distanceTo(target) < 45 else now >= step.leg.arr
         is Step.Arrive -> false
     }
+}
+
+/**
+ * The rider was aboard this ride and the ground says it is over: their fix projects
+ * onto the last stretch of its path. True both standing at the stop and blocks away
+ * down a side street, where the nearest point of the ride is still its end. A fix
+ * that projects mid-path, however far off the path it strays, keeps this false — a
+ * wild fix must not end a ride that may still be moving.
+ */
+private fun rideLeftBehind(step: Step.Ride, chosen: Map<Int, Int>, fix: Fix): Boolean {
+    val shape = rideOf(step, chosen).shape
+    if (shape.size < 2) return false
+    return alongPath(fix.lat, fix.lon, shape) > pathLength(shape) - 60
+}
+
+/** The polyline's whole length in metres. */
+private fun pathLength(path: List<Pair<Double, Double>>): Double {
+    var m = 0.0
+    for (i in 0 until path.lastIndex) m += metres(path[i].first, path[i].second, path[i + 1].first, path[i + 1].second)
+    return m
 }
 
 /**
@@ -225,7 +251,16 @@ internal fun journeyProgress(
             // on the bus a stop short of getting off, and the screen jumped to
             // "Walk 3 min to…" before they had arrived anywhere. A nearer step can
             // still catch up: only the ones on the far side of the ride are refused.
-            if ((i until k).any { steps[it] is Step.Ride && !done(steps[it], r, chosen, now, live) }) continue
+            // The ride the rider is on holds its veto only while they might still be
+            // aboard: once their fix projects onto the tail of its path they have
+            // plainly got off, even when the moment of standing at the stop fell
+            // between fixes and "done" never saw it. Rides further ahead stay strict —
+            // a fix near the end of a path never ridden proves nothing.
+            if ((i until k).any { j ->
+                    steps[j] is Step.Ride && !done(steps[j], r, chosen, now, live) &&
+                        !(j == i && rideLeftBehind(steps[j] as Step.Ride, chosen, live))
+                }
+            ) continue
             i = k
             break
         }
@@ -234,31 +269,92 @@ internal fun journeyProgress(
     return i
 }
 
+/** How near its own path a rider must be to count as standing on a walk. */
+internal const val ON_WALK_M = 45.0
+
 /**
- * How many of a ride's stops are behind the rider. The tracked vehicle knows best;
- * failing that, the phone's own place along the route; failing both, nothing is greyed.
+ * Within this of the walk's first point counts as on it too. The fixes that end a
+ * ride land where the bus put the rider, and the walk's own polyline can start
+ * across the junction from there: the stop's registered point is not the kerb, and
+ * a phone that has just left a bus scatters. Being at the walk's start IS being on
+ * the walk, however far the polyline's first segment sits.
  */
-internal fun stopsPassed(
+internal const val AT_WALK_START_M = 80.0
+
+/**
+ * A walk camera that has engaged lets go only past this. Urban fixes wander tens of
+ * metres off a pavement; without the slack the windscreen flaps in and out around
+ * [ON_WALK_M] the whole way. Past it the rider is plainly not walking this walk,
+ * and the map goes back to framing the walk itself.
+ */
+internal const val OFF_WALK_M = 120.0
+
+/**
+ * Should the walk camera hold this rider? Engaging takes standing on the walk
+ * ([ON_WALK_M] of its path) or at its start ([AT_WALK_START_M] of its first point,
+ * the just-alighted case); a camera already [held] keeps its grip to [OFF_WALK_M].
+ * Reading a walk card early is not this gate's problem: the pager refuses to follow
+ * a card that is not the current step at all, and the current step cannot become
+ * the walk while a ride is still under way.
+ */
+internal fun onWalkNow(lat: Double, lon: Double, path: List<Pair<Double, Double>>, held: Boolean): Boolean {
+    if (path.isEmpty()) return true
+    val d = distanceToPath(lat, lon, path)
+    if (held) return d <= OFF_WALK_M
+    if (d <= ON_WALK_M) return true
+    val s = path.first()
+    return metres(lat, lon, s.first, s.second) <= AT_WALK_START_M
+}
+
+/**
+ * How far the ride has come, in stops: the whole part is how many stops are behind,
+ * the fraction how much of the road to the next one is already covered. The rail
+ * greys with the ground, the way the route greys on the map, instead of flipping a
+ * whole segment on arrival. Sources, best first: the tracked vehicle's own position
+ * on the route; the phone's fresh fix on it; the operator's stop indices, which only
+ * know whole stops. Below zero, nobody knows.
+ */
+internal fun stopsProgress(
     ride: Moovit.Leg,
     stops: Map<Int, Moovit.StopInfo>,
     arrival: Moovit.Arrival?,
     fix: Fix?,
     now: Long,
-): Int {
+): Float {
+    val shape = ride.shape
+    if (shape.size >= 2) {
+        val vehicle = arrival?.takeIf {
+            it.hasLocation && it.stopIndex >= 0 && it.nextStopIndex > it.stopIndex &&
+                distanceToPath(it.lat, it.lon, shape) < 80
+        }
+        // a fix still standing at the boarding stop proves nothing about riding
+        val live = fix?.takeIf {
+            it.isFresh(now) && distanceToPath(it.lat, it.lon, shape) < 80 &&
+                alongPath(it.lat, it.lon, shape) >= 60
+        }
+        val at = when {
+            vehicle != null -> vehicle.lat to vehicle.lon
+            live != null -> live.lat to live.lon
+            else -> null
+        }
+        if (at != null) {
+            val along = alongPath(at.first, at.second, shape)
+            var passed = 0
+            var prev = 0.0
+            var next = Double.NaN
+            for (id in ride.stops) {
+                val p = stops[id]?.point ?: continue
+                val a = alongPath(p.first, p.second, shape)
+                if (a <= along) { passed++; prev = a } else { next = a; break }
+            }
+            val frac = if (!next.isNaN() && next > prev) ((along - prev) / (next - prev)).toFloat().coerceIn(0f, 1f) else 0f
+            return (passed + frac).coerceAtMost(ride.stops.size.toFloat())
+        }
+    }
     if (arrival != null && arrival.hasLocation && arrival.nextStopIndex >= 0 && arrival.stopIndex >= 0 &&
         arrival.nextStopIndex > arrival.stopIndex
     ) {
-        return (arrival.nextStopIndex - arrival.stopIndex).coerceIn(0, ride.stops.size)
+        return (arrival.nextStopIndex - arrival.stopIndex).coerceIn(0, ride.stops.size).toFloat()
     }
-    val live = fix?.takeIf { it.isFresh(now) } ?: return -1
-    val shape = ride.shape
-    if (shape.size < 2 || distanceToPath(live.lat, live.lon, shape) > 80) return -1
-    val along = alongPath(live.lat, live.lon, shape)
-    if (along < 60) return -1
-    var passed = 0
-    for (id in ride.stops) {
-        val p = stops[id]?.point ?: continue
-        if (alongPath(p.first, p.second, shape) <= along + 25) passed++ else break
-    }
-    return passed
+    return -1f
 }

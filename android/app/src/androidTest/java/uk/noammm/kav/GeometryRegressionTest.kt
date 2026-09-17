@@ -213,4 +213,90 @@ class GeometryRegressionTest {
         assertTrue(uk.noammm.kav.ui.metres(stop.first, stop.second, off.first, off.second) < 10.0)
         assertTrue(uk.noammm.kav.ui.metres(stop.first, stop.second, on.first, on.second) < 10.0)
     }
+
+    private fun trackedVehicleAt(lat: Double, lon: Double) = Moovit.Arrival(
+        stopId = 1, lineId = 1, tripId = 1L, staticUtc = 0L, rtUtc = 0L, statisticalUtc = 0L,
+        status = 0, certainty = 0, traffic = 0, frequency = false, rtDropped = false,
+        tracked = true, lat = lat, lon = lon, vehicleStatus = 1, nextStopIndex = 3, stopIndex = 0,
+    )
+
+    @Test
+    fun testStopRailProgressGreysWithTheGroundNotOnArrival() {
+        // a straight ~1 km ride north, stops at 0, ~249, ~498 and ~995 m along it
+        val shape = listOf(32.0000 to 34.8000, 32.0090 to 34.8000)
+        val ids = listOf(1, 2, 3, 4)
+        val stops = mapOf(
+            1 to Moovit.StopInfo(1, "a", "", 32.0000, 34.8000),
+            2 to Moovit.StopInfo(2, "b", "", 32.00225, 34.8000),
+            3 to Moovit.StopInfo(3, "c", "", 32.0045, 34.8000),
+            4 to Moovit.StopInfo(4, "d", "", 32.0090, 34.8000),
+        )
+        val ride = Moovit.Leg(Moovit.LegKind.RIDE, stops = ids, shape = shape)
+        // the phone, fresh and on the route, halfway between the second and third
+        // stop: two whole stops behind plus half the road to the next
+        val mid = uk.noammm.kav.ui.Fix(32.003375, 34.8000, at = 1_000L, speed = 8f)
+        val p = uk.noammm.kav.ui.stopsProgress(ride, stops, null, mid, 1_001L)
+        assertEquals(2.5f, p, 0.15f)
+        // the tracked vehicle's own position outranks the phone
+        val atThird = uk.noammm.kav.ui.stopsProgress(ride, stops, trackedVehicleAt(32.0045, 34.8000), mid, 1_001L)
+        assertEquals(3.0f, atThird, 0.15f)
+        // nobody reporting anything: nobody knows, nothing greys
+        assertEquals(-1f, uk.noammm.kav.ui.stopsProgress(ride, stops, null, null, 1_001L), 0f)
+    }
+
+    @Test
+    fun testWalkCameraEngagesFromTheAlightingKerbAndHoldsThroughScatter() {
+        // a ~300 m walk east; the fixes that ended the ride sit ~55 m south of its
+        // start, across the junction from the walk's own polyline
+        val path = listOf(32.0090 to 34.8000, 32.0090 to 34.8032)
+        assertTrue(uk.noammm.kav.ui.onWalkNow(32.0085, 34.8000, path, held = false))
+        // the same 55 m bias mid-path only HOLDS a camera, it must not newly engage
+        // one: reading the card while off the walk still frames the walk itself
+        assertFalse(uk.noammm.kav.ui.onWalkNow(32.0085, 34.8016, path, held = false))
+        assertTrue(uk.noammm.kav.ui.onWalkNow(32.0085, 34.8016, path, held = true))
+        // and ~130 m off, even a held camera lets go
+        assertFalse(uk.noammm.kav.ui.onWalkNow(32.0078, 34.8016, path, held = true))
+    }
+
+    @Test
+    fun testTheWalkAfterARideIsReachedWhenTheStopMomentFellBetweenFixes() {
+        // A ~1 km ride north, then a ~300 m walk east from the alighting stop.
+        val rideShape = listOf(32.0000 to 34.8000, 32.0090 to 34.8000)
+        val walkShape = listOf(32.0090 to 34.8000, 32.0090 to 34.8032)
+        val ride = Moovit.Leg(Moovit.LegKind.RIDE, shape = rideShape)
+        val walk = Moovit.Leg(Moovit.LegKind.WALK, shape = walkShape)
+        val steps = listOf(
+            uk.noammm.kav.ui.Step.Start("home", 0L, rideShape),
+            uk.noammm.kav.ui.Step.Wait(ride, null, 0, rideShape),
+            uk.noammm.kav.ui.Step.Ride(ride, null, 0, rideShape),
+            uk.noammm.kav.ui.Step.Walk(walk, -1, null, walkShape),
+            uk.noammm.kav.ui.Step.Arrive("work", 0L, walkShape),
+        )
+        // GPS slept through the stop itself: the first fresh fix lands 150 m down the
+        // walk, far outside the 45 m circle that used to be the only way off the ride.
+        val late = uk.noammm.kav.ui.Fix(32.0090, 34.80159, at = 1_000L, speed = 1.4f)
+        val next = uk.noammm.kav.ui.journeyProgress(steps, 2, Moovit.Resolved(), emptyMap(), 1_001L, late)
+        assertEquals(3, next)
+    }
+
+    @Test
+    fun testARideStillUnderWayKeepsItsVetoOverTheTransferWalk() {
+        // The transfer walk doubles back down the same corridor the bus drives, so the
+        // rider sits right on top of it 400 m before their stop. The screen must not
+        // jump to the walk while the bus is still carrying them.
+        val rideShape = listOf(32.0000 to 34.8000, 32.0090 to 34.8000)
+        val walkBack = listOf(32.0090 to 34.8000, 32.0050 to 34.8000)
+        val ride = Moovit.Leg(Moovit.LegKind.RIDE, shape = rideShape)
+        val walk = Moovit.Leg(Moovit.LegKind.WALK, shape = walkBack)
+        val steps = listOf(
+            uk.noammm.kav.ui.Step.Start("home", 0L, rideShape),
+            uk.noammm.kav.ui.Step.Wait(ride, null, 0, rideShape),
+            uk.noammm.kav.ui.Step.Ride(ride, null, 0, rideShape),
+            uk.noammm.kav.ui.Step.Walk(walk, -1, null, walkBack),
+            uk.noammm.kav.ui.Step.Arrive("work", 0L, walkBack),
+        )
+        val aboard = uk.noammm.kav.ui.Fix(32.0056, 34.8000, at = 1_000L, speed = 9f)
+        val next = uk.noammm.kav.ui.journeyProgress(steps, 2, Moovit.Resolved(), emptyMap(), 1_001L, aboard)
+        assertEquals(2, next)
+    }
 }

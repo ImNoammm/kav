@@ -14,8 +14,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -27,7 +30,6 @@ import androidx.compose.ui.unit.sp
 import uk.noammm.kav.ActiveJourney
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.RecentTrip
-import uk.noammm.kav.Tab
 import uk.noammm.kav.data.Moovit
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -138,9 +140,21 @@ internal fun HomeScreen(
                 }
             }
             item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
-                    HomeShortcut(T("Stations", "תחנות"), false, Modifier.weight(1f)) { model.tab = Tab.Stations }
-                    HomeShortcut(T("Lines", "קווים"), true, Modifier.weight(1f)) { model.tab = Tab.Lines }
+                Column(verticalArrangement = Arrangement.spacedBy(K.gap3)) {
+                    Row(
+                        Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(K.gap3),
+                    ) {
+                        HomeShortcut(T("Found a bug?", "מצאתם באג?"), { drawBug() }, Modifier.weight(1f).fillMaxHeight()) {
+                            openLink(ctx, "https://github.com/ImNoammm/kav/issues/new?labels=bug&title=bug%3A%20")
+                        }
+                        HomeShortcut(T("Request a feature?", "רוצים פיצ'ר חדש?"), { drawBulb() }, Modifier.weight(1f).fillMaxHeight()) {
+                            openLink(ctx, "https://github.com/ImNoammm/kav/issues/new?labels=enhancement&title=feature%3A%20")
+                        }
+                    }
+                    HomeShortcut(T("Buy me a coffee", "קנו לי קפה"), { drawCoffee() }, Modifier.fillMaxWidth()) {
+                        openLink(ctx, "https://www.buymeacoffee.com/Noamm")
+                    }
                 }
             }
         }
@@ -294,23 +308,44 @@ internal fun stepInstruction(step: Step, journey: ActiveJourney, lastLeg: Boolea
 }
 
 @Composable
-private fun HomeShortcut(label: String, lines: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun HomeShortcut(label: String, icon: DrawScope.() -> Unit, modifier: Modifier, onClick: () -> Unit) {
     Row(
         modifier.heightIn(min = 64.dp).clip(RoundedCornerShape(K.rCard)).background(K.surface1)
             .clickable(role = Role.Button, onClick = onClick).padding(K.gap4),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
-        Canvas(Modifier.size(20.dp)) {
-            val w = size.width
-            if (lines) listOf(.23f, .5f, .77f).forEach { y ->
-                drawCircle(K.accent, w * .065f, Offset(w * mirrorX(.15f), w * y))
-                drawLine(K.accent, Offset(w * mirrorX(.35f), w * y), Offset(w * mirrorX(.86f), w * y), w * .08f, StrokeCap.Round)
-            } else {
-                drawCircle(K.accent, w * .22f, Offset(w * .5f, w * .32f), style = Stroke(w * .08f))
-                drawLine(K.accent, Offset(w * .5f, w * .56f), Offset(w * .5f, w * .88f), w * .08f, StrokeCap.Round)
-            }
-        }
+        Canvas(Modifier.size(20.dp)) { icon() }
         Text(label, fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium)
+    }
+}
+
+private fun DrawScope.drawBug() {
+    val w = size.width
+    drawCircle(K.accent, w * .26f, Offset(w * .5f, w * .56f), style = Stroke(w * .08f))
+    drawLine(K.accent, Offset(w * .5f, w * .30f), Offset(w * .5f, w * .82f), w * .08f, StrokeCap.Round)
+    for (s in listOf(-1f, 1f)) {
+        drawLine(K.accent, Offset(w * (.5f + s * .19f), w * .38f), Offset(w * (.5f + s * .40f), w * .28f), w * .08f, StrokeCap.Round)
+        drawLine(K.accent, Offset(w * (.5f + s * .26f), w * .58f), Offset(w * (.5f + s * .45f), w * .58f), w * .08f, StrokeCap.Round)
+        drawLine(K.accent, Offset(w * (.5f + s * .19f), w * .76f), Offset(w * (.5f + s * .40f), w * .86f), w * .08f, StrokeCap.Round)
+    }
+}
+
+private fun DrawScope.drawBulb() {
+    val w = size.width
+    drawCircle(K.accent, w * .24f, Offset(w * .5f, w * .38f), style = Stroke(w * .08f))
+    drawLine(K.accent, Offset(w * .38f, w * .72f), Offset(w * .62f, w * .72f), w * .08f, StrokeCap.Round)
+    drawLine(K.accent, Offset(w * .42f, w * .86f), Offset(w * .58f, w * .86f), w * .08f, StrokeCap.Round)
+}
+
+private fun DrawScope.drawCoffee() {
+    val w = size.width
+    drawRoundRect(
+        K.accent, topLeft = Offset(w * minOf(mirrorX(.18f), mirrorX(.62f)), w * .42f),
+        size = Size(w * .44f, w * .40f), cornerRadius = CornerRadius(w * .10f), style = Stroke(w * .08f),
+    )
+    drawCircle(K.accent, w * .12f, Offset(w * mirrorX(.72f), w * .58f), style = Stroke(w * .08f))
+    for (x in listOf(.30f, .50f)) {
+        drawLine(K.accent, Offset(w * mirrorX(x), w * .14f), Offset(w * mirrorX(x), w * .30f), w * .08f, StrokeCap.Round)
     }
 }

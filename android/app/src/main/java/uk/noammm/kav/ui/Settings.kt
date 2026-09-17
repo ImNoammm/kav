@@ -37,9 +37,6 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         Group(T("updates", "עדכונים"))
         UpdateSection(model)
 
-        Group(T("found something wrong?", "מצאתם תקלה?"))
-        FeedbackRow()
-
         /* The point of the project, stated where it can be checked rather than
            only claimed in a README. Counts are class-path references measured in
            com.tranzmate 5.199.1.1804. */
@@ -88,29 +85,6 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
 }
 
 /**
- * Somewhere to send a bug or an idea that is not a comment under a forum post. The
- * tracker is the same GitHub the updates already come from, so this adds no service
- * and no account of Kav's own.
- */
-@Composable
-private fun FeedbackRow() {
-    val ctx = LocalContext.current
-    Column(Modifier.padding(horizontal = K.gap4)) {
-        Text(
-            T(
-                "Bugs and ideas go to the issue tracker, where they can be answered and " +
-                    "followed. Saying which phone and which Kav version helps.",
-                "תקלות ורעיונות נרשמים במעקב הבאגים, שם אפשר לענות עליהם ולעקוב אחריהם. " +
-                    "כדאי לציין איזה טלפון ואיזו גרסת Kav.",
-            ),
-            fontSize = 12.sp, color = K.dim, lineHeight = 17.sp,
-        )
-        Spacer(Modifier.height(K.gap3))
-        Chip(T("Report a bug", "דיווח על תקלה"), false) { openLink(ctx, "${Updates.ISSUES}/new") }
-    }
-}
-
-/**
  * Kav's own words, and only those. Moovit answers in Hebrew whatever the phone is
  * set to, so following the system language left a rider whose phone is in English
  * reading Hebrew stop names inside English sentences, with no way to settle either
@@ -129,7 +103,7 @@ private fun LanguageRow(ctx: android.content.Context) {
     }
 }
 
-private fun openLink(ctx: android.content.Context, url: String) {
+internal fun openLink(ctx: android.content.Context, url: String) {
     runCatching {
         ctx.startActivity(
             android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))

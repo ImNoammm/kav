@@ -21,8 +21,6 @@ object Updates {
     const val OWNER = "ImNoammm"
     const val REPO = "kav"
     const val PAGE = "https://github.com/$OWNER/$REPO/releases"
-    /** Where a bug or an idea goes. The alternative people had was a Reddit comment. */
-    const val ISSUES = "https://github.com/$OWNER/$REPO/issues"
 
     class Release(
         val version: String,

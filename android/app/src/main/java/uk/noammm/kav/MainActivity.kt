@@ -62,6 +62,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import uk.noammm.kav.data.JourneyFile
 import uk.noammm.kav.data.MapFile
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Net
@@ -390,12 +391,45 @@ private fun Shell(model: KavModel) {
         }
     }
 
+    // A trip being navigated is not the process's to lose. It is kept on disk as
+    // it changes, offered back at the next launch while it could still be under
+    // way, and forgotten when it is ended; the step comes back with it, so the
+    // journey resumes where the rider was, not at the first walk.
+    LaunchedEffect(model) {
+        withContext(Dispatchers.IO) { JourneyFile.load(ctx) }?.let { (journey, step) ->
+            if (model.activeJourney == null) {
+                val last = buildSteps(journey.trip, journey.fromLabel, journey.toLabel).size - 1
+                model.journeyStep = step.coerceIn(0, last.coerceAtLeast(0))
+                model.activeJourney = journey
+            }
+        }
+        snapshotFlow { model.activeJourney to model.journeyStep }.collect { (journey, step) ->
+            withContext(Dispatchers.IO) {
+                if (journey == null) JourneyFile.clear(ctx) else JourneyFile.save(ctx, journey, step)
+            }
+        }
+    }
+
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(model, model.activeJourney?.trip, lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 val journey = model.activeJourney ?: break
-                val session = Online.session ?: break
+                // A journey brought back into a fresh process has no session yet:
+                // make one the way planning would, and keep trying while the trip
+                // is on, because reopening happens in tunnels and basements too.
+                val session = Online.session ?: try {
+                    withContext(Dispatchers.IO) {
+                        val at = journey.trip.legs.firstOrNull { it.shape.isNotEmpty() }?.shape?.first()
+                            ?: model.here ?: (32.0759 to 34.7745)
+                        Moovit.register(at.first, at.second)
+                    }.also { Online.session = it }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+                if (session == null) { delay(15_000L); continue }
                 val needsNames = journey.trip.rides.flatMap { it.options }.any { ride ->
                     (ride.lineId > 0 && journey.resolved.line(ride.lineId) == null) ||
                         (ride.fromStop > 0 && journey.resolved.stop(ride.fromStop) == null) ||

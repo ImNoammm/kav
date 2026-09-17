@@ -72,7 +72,7 @@ import kotlin.math.sinh
 import kotlin.math.tan
 
 /**
- * A basemap under the route: pinch to zoom, drag to pan.
+ * A basemap under the route: pinch to zoom, drag to pan, twist to turn.
  *
  * The map is rendered by MapLibre from a PMTiles archive of Israel that lives on the
  * phone (data/MapFile.kt), vector, so it stays crisp at every zoom, and offline, so
@@ -319,7 +319,7 @@ private const val TILT_DEG = 40f
 /**
  * A screen point back into the space the overlays draw in. They are drawn through
  * `rotate(-rotation, anchor)`, so undoing a tap means turning it the other way about
- * the same pivot. A no-op on a map that is not following anything, which never turns.
+ * the same pivot. A no-op on a map that has not been turned.
  */
 private fun unrotate(at: Offset, anchor: Offset, rotation: Float): Offset {
     if (rotation == 0f) return at
@@ -495,34 +495,40 @@ private class MapCamera {
         }
     }
 
-    fun gesture(centroid: Offset, pan: Offset, zoomChange: Float, viewport: Viewport) {
+    fun gesture(centroid: Offset, pan: Offset, zoomChange: Float, twist: Float, viewport: Viewport) {
         val current = value ?: return
         animation?.cancel()
         destination = null
         manual = true
         val zoom = (current.zoom + ln(zoomChange.coerceAtLeast(0.01f)) / ln(2f))
             .coerceIn(Geo.MIN_Z.toFloat(), Geo.MAX_Z + Geo.OVER)
+        // The twist turns the drawn world with the fingers. The world is drawn at
+        // -rotation, so the bearing runs against the gesture's clockwise-positive
+        // degrees.
+        val rotation = (((current.rotation - twist) % 360f) + 360f) % 360f
         val before = current.pxPerWorld
         val after = Geo.SIZE * 2.0.pow(zoom.toDouble())
         // Fingers act in screen directions; the drawn world is turned about the
         // anchor. Undo that turn to find what the fingers are actually holding, or a
-        // pinch on a turned map zooms about a point off to one side and drifts.
-        val rad = Math.toRadians(current.rotation.toDouble())
+        // pinch on a turned map zooms about a point off to one side and drifts. The
+        // grip is read out under the old turn and put back under the new one, and
+        // that difference is what keeps the streets under the fingers as they twist.
         val anchor = viewport.anchor
-        fun world(s: Offset): Pair<Double, Double> {
+        fun flat(s: Offset, degrees: Float): Pair<Double, Double> {
+            val rad = Math.toRadians(degrees.toDouble())
             val dx = s.x - anchor.x
             val dy = s.y - anchor.y
             val ux = anchor.x + dx * cos(rad) - dy * sin(rad)
             val uy = anchor.y + dx * sin(rad) + dy * cos(rad)
             return (ux - viewport.w / 2) to (uy - viewport.h / 2)
         }
-        val (cx, cy) = world(centroid)
-        val (px, py) = world(centroid + pan)
+        val (cx, cy) = flat(centroid, current.rotation)
+        val (px, py) = flat(centroid + pan, rotation)
         value = Camera(
             current.worldX + cx / before - px / after,
             current.worldY + cy / before - py / after,
             zoom,
-            current.rotation,
+            rotation,
         )
     }
 }
@@ -747,8 +753,10 @@ fun TileMap(
                     }
                 })
                 .pointerInput(camera) {
-                    detectTransformGestures { centroid, panChange, zoomChange, _ ->
-                        camera.gesture(centroid, panChange, zoomChange, liveViewport)
+                    // panZoomLock: a pinch that begins as a pinch stays one; only a
+                    // gesture that leads with the turn rotates the map.
+                    detectTransformGestures(panZoomLock = true) { centroid, panChange, zoomChange, twist ->
+                        camera.gesture(centroid, panChange, zoomChange, twist, liveViewport)
                     }
                 },
         ) {

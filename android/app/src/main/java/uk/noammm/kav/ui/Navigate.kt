@@ -25,7 +25,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -200,6 +203,10 @@ fun NavigateScreen(
     // that one too, rather than making them cover 60 m before it comes alive. Nothing
     // can be disrupted by following early here: there is no ride under way to leap over.
     val following = pager.settledPage == currentStep ||
+        // an auto-advance in flight: while the card is still sliding into place the
+        // settled page is the old step, and without this the camera fell out of its
+        // windscreen to the overview for that half second, then yanked back in
+        pager.targetPage == currentStep ||
         (steps.getOrNull(currentStep) is Step.Start && pager.settledPage == currentStep + 1)
     val scope = rememberCoroutineScope()
 
@@ -454,7 +461,7 @@ internal fun StepCard(
                     Spacer(Modifier.height(K.gap2))
                     Box(Modifier.height(1.dp).fillMaxWidth().background(K.border))
                     Spacer(Modifier.height(K.gap2))
-                    StopRail(stops, names, stopsPassed(ride, names, arrival, fix, now), ride.arr)
+                    StopRail(stops, names, stopsProgress(ride, names, arrival, fix, now), ride.arr)
                 }
             }
         }
@@ -496,48 +503,72 @@ private fun PlanGlyph() {
 }
 
 /**
- * The stops of a ride, each a circle on the line's rail, and the ones already behind
- * the rider filled in, so the circle you are watching moves down the list as you go.
- * [passed] is how many are behind; below zero, nobody knows yet.
+ * The stops of a ride, each a circle on the line's rail, and the road already
+ * ridden greyed out. [progress] is continuous, in stops: its whole part is how many
+ * circles are behind, its fraction how much of the rung to the next circle the ride
+ * has covered — so the grey creeps down the rail with the ground, the way the route
+ * greys on the map, instead of flipping a rung whole on arrival at its stop. Below
+ * zero, nobody knows yet. Rows report where their circles sit; the canvas behind
+ * them draws the rail through those points.
  */
 @Composable
 private fun StopRail(
     stops: List<Int>,
     names: Map<Int, Moovit.StopInfo>,
-    passed: Int,
+    progress: Float,
     arriveUtc: Long,
 ) {
-    Column(Modifier.fillMaxWidth()) {
-        stops.forEachIndexed { i, id ->
-            val first = i == 0
-            val last = i == stops.lastIndex
-            val done = passed >= 0 && i < passed
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-                Canvas(Modifier.width(20.dp).fillMaxHeight()) {
-                    val x = size.width * .5f
-                    val cy = 11.dp.toPx().coerceAtMost(size.height * .5f)
-                    val rail = if (done) K.routeIdle else K.route
-                    if (!first) drawLine(rail, Offset(x, 0f), Offset(x, cy), 3.dp.toPx())
-                    if (!last) drawLine(rail, Offset(x, cy), Offset(x, size.height), 3.dp.toPx())
-                    // the circle: hollow for a stop still ahead, filled once passed,
-                    // and larger at the two ends of the ride
-                    val rad = if (first || last) 5.dp.toPx() else 3.5.dp.toPx()
-                    drawCircle(K.bg, rad + 2.dp.toPx(), Offset(x, cy))
-                    if (done) drawCircle(K.routeIdle, rad, Offset(x, cy))
-                    else drawCircle(K.route, rad, Offset(x, cy), style = Stroke(2.dp.toPx()))
+    val centres = remember(stops) { mutableStateListOf<Float>().also { c -> repeat(stops.size) { c.add(Float.NaN) } } }
+    val density = LocalDensity.current
+    val cap = with(density) { 11.dp.toPx() }
+    Box(Modifier.fillMaxWidth()) {
+        Canvas(Modifier.matchParentSize()) {
+            val x = if (layoutDirection == LayoutDirection.Rtl) size.width - 10.dp.toPx() else 10.dp.toPx()
+            val wide = 3.dp.toPx()
+            for (i in 0 until stops.lastIndex) {
+                val y0 = centres.getOrElse(i) { Float.NaN }
+                val y1 = centres.getOrElse(i + 1) { Float.NaN }
+                if (y0.isNaN() || y1.isNaN() || y1 <= y0) continue
+                // this rung greys from its top, exactly as far as the ride has come
+                val f = (progress - (i + 1)).coerceIn(0f, 1f)
+                val split = y0 + (y1 - y0) * f
+                if (f > 0f) drawLine(K.routeIdle, Offset(x, y0), Offset(x, split), wide)
+                if (f < 1f) drawLine(K.route, Offset(x, split), Offset(x, y1), wide)
+            }
+            stops.forEachIndexed { i, _ ->
+                val cy = centres.getOrElse(i) { Float.NaN }
+                if (cy.isNaN()) return@forEachIndexed
+                val done = progress >= i + 1
+                // the circle: hollow for a stop still ahead, filled once passed,
+                // and larger at the two ends of the ride
+                val rad = if (i == 0 || i == stops.lastIndex) 5.dp.toPx() else 3.5.dp.toPx()
+                drawCircle(K.bg, rad + 2.dp.toPx(), Offset(x, cy))
+                if (done) drawCircle(K.routeIdle, rad, Offset(x, cy))
+                else drawCircle(K.route, rad, Offset(x, cy), style = Stroke(2.dp.toPx()))
+            }
+        }
+        Column(Modifier.fillMaxWidth()) {
+            stops.forEachIndexed { i, id ->
+                val last = i == stops.lastIndex
+                val done = progress >= i + 1
+                Row(
+                    Modifier.fillMaxWidth().onGloballyPositioned {
+                        centres[i] = it.positionInParent().y + cap.coerceAtMost(it.size.height * .5f)
+                    },
+                ) {
+                    Spacer(Modifier.width(20.dp + K.gap2))
+                    Text(
+                        names[id]?.name ?: "#$id",
+                        fontSize = 13.sp,
+                        color = if (done) K.dim else K.text,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(vertical = 3.dp),
+                    )
+                    if (last) Text(
+                        hm.format(Date(arriveUtc * 1000)),
+                        fontSize = 12.sp, color = K.dim, modifier = Modifier.padding(vertical = 3.dp),
+                    )
                 }
-                Spacer(Modifier.width(K.gap2))
-                Text(
-                    names[id]?.name ?: "#$id",
-                    fontSize = 13.sp,
-                    color = if (done) K.dim else K.text,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(vertical = 3.dp),
-                )
-                if (last) Text(
-                    hm.format(Date(arriveUtc * 1000)),
-                    fontSize = 12.sp, color = K.dim, modifier = Modifier.padding(vertical = 3.dp),
-                )
             }
         }
     }
@@ -625,32 +656,30 @@ private fun Card(
  */
 private const val CAMERA_FIX_S = 15 * 60L
 
-/**
- * How near its own path a rider must be for a walk card to become a windscreen. The
- * same 45 m journeyProgress uses to decide someone is standing on a walk at all.
- */
-private const val ON_WALK_M = 45.0
-
 private fun followFor(
     step: Step?, chosenRide: Moovit.Leg?, r: Moovit.Resolved, fix: Fix?, heading: Float?, now: Long,
+    heldWalk: Boolean = false,
 ): Follow? {
     val recent = fix?.takeIf { now - it.at <= CAMERA_FIX_S }
     return when (step) {
         is Step.Walk -> {
             val at = recent ?: return null
-            // A windscreen is only worth having once the rider is on the walk. Standing
-            // off it, still aboard a stop short of getting off or reading the card
-            // early, z19 on the phone frames a street they are not walking and pushes
-            // the path they asked about off the screen. So the camera declines, and the
-            // fit frames the walk itself, which is the thing being asked about.
+            // A windscreen is only worth having once the rider is on the walk — off
+            // it, z19 on the phone frames a street they are not walking and pushes
+            // the path they asked about off the screen. So the camera declines, and
+            // the fit frames the walk itself. onWalkNow is the whole judgment: on
+            // the walk's path, or standing at its start — the fixes that just ended
+            // a ride land across the junction from the walk's own polyline more
+            // often than on it — and a camera that engaged holds its grip through
+            // urban scatter instead of flapping in and out around the engage line.
             //
-            // Two problems this gate is not the cure for, both of which have cost it
-            // its life once already: reading ahead is `following`'s to refuse, and the
-            // premature card jump is journeyProgress's, which no longer advances over a
-            // ride still under way. Neither is a reason to follow a rider who is 400 m
-            // from the walk. Leave the distance to decide.
+            // Two problems that gate is deliberately NOT curing, both of which have
+            // cost it its life once already: reading ahead is `following`'s to
+            // refuse, and the premature card jump is journeyProgress's, which never
+            // advances over a ride still under way. Neither is a reason to follow a
+            // rider who is 400 m from the walk. Leave the distances to decide.
             val path = step.leg.shape
-            if (path.isNotEmpty() && distanceToPath(at.lat, at.lon, path) > ON_WALK_M) return null
+            if (!onWalkNow(at.lat, at.lon, path, heldWalk)) return null
             val along = bearingAlong(at.lat, at.lon, path)
             Follow(at.lat, at.lon, heading ?: along ?: 0f, zoom = 19.1f)
         }
@@ -693,7 +722,12 @@ private fun NavigateMap(
     val lineRoutes = rideLegs
         .map { l ->
             val a = r.arrival(l)
-            lineRoute(a, r).ifEmpty { fetched[a?.tripShapeId ?: -1].orEmpty() }
+            val route = lineRoute(a, r).ifEmpty { fetched[a?.tripShapeId ?: -1].orEmpty() }
+            // The grey is the line's own journey, but only up to where you get off:
+            // where it carries on afterwards is the bus's business, not the trip's.
+            val off = l.shape.lastOrNull() ?: r.stop(l.toStop)?.point
+            if (route.size < 2 || off == null) route
+            else splitPath(route, off.first, off.second).first
         }
         .filter { it.size >= 2 }
     val vehicles = rideLegs.mapNotNull { r.arrival(it)?.takeIf { a -> a.hasLocation } }
@@ -730,7 +764,12 @@ private fun NavigateMap(
     // being a windscreen and becomes a plan of that step: a transfer walk read from the
     // bus frames the path between the two stops, which is the thing being asked about,
     // instead of a close-up of a rider who is still three stops away from it.
-    val follow = if (following) followFor(step, chosenRide, r, fix, heading, now) else null
+    // The walk camera's grip, per card: engaged by onWalkNow's gate inside followFor,
+    // and once held it survives fixes that stray as far as OFF_WALK_M. Keyed on the
+    // step so the grip drops the moment the card changes.
+    val heldWalk = remember(step) { mutableStateOf(false) }
+    val follow = if (following) followFor(step, chosenRide, r, fix, heading, now, heldWalk.value) else null
+    SideEffect { heldWalk.value = follow != null && step is Step.Walk }
     val fresh = fix?.takeIf { it.isFresh(now) }
 
     // The part of the current ride already behind you goes grey, from wherever the

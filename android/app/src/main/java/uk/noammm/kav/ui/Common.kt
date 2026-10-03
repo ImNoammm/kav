@@ -49,12 +49,12 @@ val LocalServiceAlertOpener = staticCompositionLocalOf<(Int, String) -> Unit> { 
 
 fun hhmm(s: Int): String = "%02d:%02d".format((s / 3600) % 24, (s / 60) % 60)
 
-fun dur(s: Int): String =
-    if (s >= 3600) T(
-        "${s / 3600}h ${((s % 3600) / 60.0).roundToInt()}m",
-        "${s / 3600} שע' ${((s % 3600) / 60.0).roundToInt()} דק'",
-    )
-    else T("${(s / 60.0).roundToInt()} min", "${(s / 60.0).roundToInt()} דק'")
+// Rounded to the minute once, so 1:59:30 is "2h 0m" and 59:45 is "1h 0m", never "1h 60m" or "60 min".
+fun dur(s: Int): String {
+    val m = (s / 60.0).roundToInt()
+    return if (m >= 60) T("${m / 60}h ${m % 60}m", "${m / 60} שע' ${m % 60} דק'")
+    else T("$m min", "$m דק'")
+}
 
 fun nowSec(): Int {
     val c = Calendar.getInstance()

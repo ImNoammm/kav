@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.data.Net
+import uk.noammm.kav.data.departuresAt
 import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.searchStops
 import uk.noammm.kav.hasLocationPermission
@@ -152,22 +153,9 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
     val t0 = remember(stop) { nowSec() }
     var moovitId by remember(stop) { mutableStateOf(StopPhotos.idNow(net, stop) ?: -1) }
     LaunchedEffect(stop) { if (moovitId <= 0) moovitId = StopPhotos.idOf(net, stop) ?: -1 }
-    // Trips past midnight are written as 24:00 and later, on the day they set out.
     val rows = remember(stop, t0) {
         val today = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_WEEK) - 1
-        val yesterday = (today + 6) % 7
-        val out = ArrayList<Pair<Int, Int>>()
-        var i = net.dStart[stop]
-        while (i < net.dStart[stop + 1]) {
-            val c = net.dConn[i]
-            val st = net.cST[c]
-            val dep = net.stDep[st]
-            val t = net.tripOf(st)
-            if (dep >= t0 && net.runsOn(t, today)) out.add(c to dep)
-            else if (dep >= t0 + 86_400 && net.runsOn(t, yesterday)) out.add(c to dep - 86_400)
-            i++
-        }
-        out.sortedBy { it.second }.take(60)
+        net.departuresAt(stop, t0, today)
     }
 
     Column(Modifier.fillMaxSize().background(K.bg)) {

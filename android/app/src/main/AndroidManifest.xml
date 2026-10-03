@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Both, and FINE is not optional: from Android 12 a coarse-only app is handed a

@@ -25,3 +25,6 @@ tools/thrift_from_jadx.py
 
 # Tests
 android/app/src/androidTest/
+
+# Gradle wrapper directory
+.gradle-dist/

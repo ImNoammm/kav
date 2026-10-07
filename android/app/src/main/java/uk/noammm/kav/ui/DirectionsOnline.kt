@@ -3,6 +3,8 @@
 package uk.noammm.kav.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
@@ -215,7 +217,7 @@ fun DirectionsOnline(model: KavModel) {
                 }
             }
             StopPhotos.prefetchIds(raw.flatMap { t -> t.rides.flatMap { r -> r.options.flatMap { listOf(it.fromStop, it.toStop) } } })
-            val toHydrate = (raw + res.itineraries.filter { candidate -> autoOpen?.let { sameRoute(candidate, it) } == true }).distinct()
+            val toHydrate = (raw + listOfNotNull(res.schedule()) + res.itineraries.filter { candidate -> autoOpen?.let { sameRoute(candidate, it) } == true }).distinct()
             resolved = withContext(Dispatchers.IO) { Moovit.hydrate(s, toHydrate) }
             model.activeJourney?.takeIf { active -> raw.any { it === active.trip } }?.let {
                 model.activeJourney = it.copy(resolved = Moovit.Resolved(
@@ -524,6 +526,23 @@ fun DirectionsOnline(model: KavModel) {
                             T("No public transport found for this time.", "לא נמצאה תחבורה ציבורית לשעה הזו."),
                             Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
                         )
+                    }
+                    // Moovit's "View schedules": the train between the two stations, opened for its departures.
+                    plan.schedule()?.takeIf { sort == Sort.RECOMMENDED && via.isEmpty() }?.let { sched ->
+                        val ride = sched.rides.firstOrNull()
+                        val from = ride?.let { resolved.stopName(it.fromStop) }
+                        val to = ride?.let { resolved.stopName(it.toStop) }
+                        if (from != null && to != null) item(key = "schedule") {
+                            Column(
+                                Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard)
+                                    .clickable(role = Role.Button) { open = OpenTrip(sched, resolved, from, to) }
+                                    .padding(K.gap4),
+                                verticalArrangement = Arrangement.spacedBy(K.gap1),
+                            ) {
+                                Text(T("View schedules", "לוחות זמנים"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                                Text(T("From $from to $to", "מ$from אל $to"), fontSize = 14.sp, color = K.muted)
+                            }
+                        }
                     }
                     items(shown.size) { i ->
                         Column(Modifier.padding(horizontal = K.gap3)) {

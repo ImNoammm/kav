@@ -966,7 +966,14 @@ object Moovit {
     ) {
         private val byId = sections.associateBy { it.id }
 
+        // NO_GROUPING sections hold a station-to-station timetable, not a way there: Moovit's app shows them as a
+        // "View schedules" card, never among the routes.
+        private fun isSchedule(it: Itinerary) = byId[it.sectionId]?.type == SECTION_NO_GROUPING
+
+        fun schedule(): Itinerary? = itineraries.firstOrNull(::isSchedule)
+
         fun laidOut(): List<Itinerary> {
+            val itineraries = itineraries.filterNot(::isSchedule)
             if (sections.isEmpty()) return itineraries
             val seen = HashMap<Int, Int>()
             return itineraries
@@ -982,6 +989,7 @@ object Moovit {
         fun heading(it: Itinerary): String = byId[it.sectionId]?.name.orEmpty()
     }
 
+    const val SECTION_NO_GROUPING = 15
     const val TIME_ARRIVAL = 1
     const val TIME_DEPARTURE = 2
     const val TIME_LAST = 3

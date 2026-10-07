@@ -36,6 +36,8 @@ you're on the way.
   floating window.
 - Shows where your bus actually is. The trip stays in the notification shade
   while you're on the way, and on Android 16 it shows up as a live update.
+- Live bus locations on the map, free. Moovit now charges for them in its own
+  app (Moovit+), but in Kav they stay free.
 - A live screen with every stop around you and the buses reporting their
   position.
 - Departure boards for every station, and a page for every line with its route
@@ -84,6 +86,9 @@ KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
   License 2.0).
 - Timetables from the Israel Ministry of Transport. Trip plans and live
   positions from Moovit.
+- Thanks to the amazing team at [HTTP Toolkit](https://httptoolkit.com), who
+  kindly gave Kav a free Pro licence. It's what Kav uses to study how Moovit's
+  app talks to its servers.
 
 ## License
 

@@ -34,6 +34,7 @@ import uk.noammm.kav.KavModel
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.representativeTrip
+import uk.noammm.kav.data.lineTimesAt
 import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.searchRoutes
 
@@ -65,7 +66,7 @@ private fun LinesBody(model: KavModel, net: Net) {
     androidx.activity.compose.BackHandler(model.lineRoute >= 0 || model.moovitLine != null) {
         model.lineRoute = -1; model.moovitLine = null
     }
-    val list = remember(net) { LineListState() }
+    val list = remember(net) { lineListFor(net) }
     androidx.compose.animation.AnimatedContent(
         targetState = model.lineRoute to model.moovitLine,
         modifier = Modifier.fillMaxSize(),
@@ -80,6 +81,25 @@ private fun LinesBody(model: KavModel, net: Net) {
     }
 }
 
+// Kept across tab switches, and filled as soon as the timetable loads, so Recent is there the moment Lines opens.
+private var kept: Pair<Net, LineListState>? = null
+
+private fun lineListFor(net: Net): LineListState =
+    kept?.takeIf { it.first === net }?.second ?: LineListState().also { kept = net to it }
+
+suspend fun warmLines(ctx: android.content.Context, net: Net, here: Pair<Double, Double>?) {
+    val list = lineListFor(net)
+    if (list.leadReady) return
+    withContext(Dispatchers.Default) {
+        val ends = lineEndpoints(net)
+        val sections = foldLines(net, "", FILTERS[0].second, ends)
+        val lead = leadSections(ctx, net, here, ends)
+        withContext(Dispatchers.Main) {
+            list.endpoints = ends; list.sections = sections; list.lead = lead; list.leadReady = true
+        }
+    }
+}
+
 // Kept while a line is open, so coming back lands where the list was.
 private class LineListState {
     var types by mutableStateOf(FILTERS[0].second)
@@ -88,6 +108,7 @@ private class LineListState {
     var sections by mutableStateOf(emptyList<Pair<String, List<LineRow>>>())
     var endpoints by mutableStateOf(emptyMap<Int, Pair<Int, Int>>())
     var lead by mutableStateOf(emptyList<Pair<String, List<LineRow>>>())
+    var leadReady by mutableStateOf(false)
 }
 
 @Composable
@@ -99,7 +120,7 @@ private fun LineList(model: KavModel, net: Net, list: LineListState) {
     var sections by list::sections
     var endpoints by list::endpoints
     LaunchedEffect(net) {
-        endpoints = withContext(Dispatchers.Default) { lineEndpoints(net) }
+        if (endpoints.isEmpty()) endpoints = withContext(Dispatchers.Default) { lineEndpoints(net) }
     }
     LaunchedEffect(net, q, types, endpoints) {
         sections = withContext(Dispatchers.Default) { foldLines(net, q, types, endpoints) }
@@ -119,7 +140,10 @@ private fun LineList(model: KavModel, net: Net, list: LineListState) {
     LaunchedEffect(net, endpoints, model.here, q, types) {
         lead = if (q.isNotBlank() || types.isNotEmpty()) emptyList()
         else withContext(Dispatchers.Default) { leadSections(ctx, net, model.here, endpoints) }
+        list.leadReady = true
     }
+    // The full list waits for Recent and Nearby, so it doesn't flash up first and then get pushed down.
+    val listReady = list.leadReady || q.isNotBlank() || types.isNotEmpty()
 
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(T("Browse the", "עיינו"), T("lines", "בקווים"))
@@ -160,13 +184,13 @@ private fun LineList(model: KavModel, net: Net, list: LineListState) {
                 item(key = "lead-$label") { SectionLabel(label) }
                 items(rows, key = { "lead-$label-${it.route}" }) { row -> LineRowCard(model, net, row) }
             }
-            sections.forEach { (operator, rows) ->
+            if (listReady) sections.forEach { (operator, rows) ->
                 if (operator.isNotBlank()) item(key = "op-$operator") {
                     SectionLabel(operatorLabel(operator))
                 }
                 items(rows, key = { it.route }) { row -> LineRowCard(model, net, row) }
             }
-            extra.forEach { (operator, lines) ->
+            if (listReady) extra.forEach { (operator, lines) ->
                 item(key = "online-op-$operator") { SectionLabel(operator) }
                 items(lines, key = { "online-${it.id}" }) { g -> OnlineLineCard(g) { model.moovitLine = g } }
             }
@@ -418,40 +442,78 @@ internal fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Uni
             fontSize = 11.sp, color = K.dim,
             modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
         )
+        // The stop tapped on this line opens under it with the line's next buses there, like Moovit's line view.
+        var open by remember(route) { mutableIntStateOf(-1) }
         if (list != null) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
                 start = K.gap2, end = K.gap2, bottom = LocalBottomBarInset.current,
             )) {
                 items(list.size) { i ->
                     val s = list[i]
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { model.stationStop = s; model.tab = uk.noammm.kav.Tab.Stations }
-                            .padding(horizontal = K.gap3, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(Modifier.width(18.dp), contentAlignment = Alignment.Center) {
-                            Box(
-                                Modifier.size(7.dp)
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(if (i == 0 || i == list.lastIndex) K.text else K.surface4),
-                            )
+                    Column {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { open = if (open == i) -1 else i }
+                                .padding(horizontal = K.gap3, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(Modifier.width(18.dp), contentAlignment = Alignment.Center) {
+                                Box(
+                                    Modifier.size(7.dp)
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(if (i == 0 || i == list.lastIndex) K.text else K.surface4),
+                                )
+                            }
+                            Spacer(Modifier.width(K.gap3))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    net.name[s], fontSize = 16.sp,
+                                    color = if (i == 0 || i == list.lastIndex) K.text else K.muted,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                )
+                                val c = net.cityOf(s)
+                                if (c.isNotBlank()) Text(c, fontSize = 13.sp, color = K.dim, maxLines = 1)
+                            }
                         }
-                        Spacer(Modifier.width(K.gap3))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                net.name[s], fontSize = 13.sp,
-                                color = if (i == 0 || i == list.lastIndex) K.text else K.muted,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
-                            val c = net.cityOf(s)
-                            if (c.isNotBlank()) Text(c, fontSize = 11.sp, color = K.dim, maxLines = 1)
+                        if (open == i) LineAtStop(net, route, s, last = i == list.lastIndex) {
+                            model.stationStop = s; model.tab = uk.noammm.kav.Tab.Stations
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun LineAtStop(net: Net, route: Int, stop: Int, last: Boolean, onBoard: () -> Unit) {
+    val now = nowSec()
+    val times = remember(route, stop) {
+        if (last) emptyList()
+        else net.lineTimesAt(stop, route, java.util.Calendar.getInstance(ISRAEL).get(java.util.Calendar.DAY_OF_WEEK) - 1)
+    }
+    var all by remember(route, stop) { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().padding(start = K.gap3 + 18.dp + K.gap3, end = K.gap3, bottom = K.gap3),
+        verticalArrangement = Arrangement.spacedBy(K.gap2),
+    ) {
+        val next = times.filter { it >= now }.take(3)
+        Text(
+            when {
+                last -> T("This line ends here.", "הקו מסתיים כאן.")
+                next.isEmpty() -> T("No more buses on this line today.", "אין עוד יציאות בקו הזה היום.")
+                else -> T("Next: ", "הבאים: ") + next.joinToString(" · ") { relative(it, now) ?: hhmm(it) }
+            },
+            fontSize = 15.sp, color = K.text,
+        )
+        if (all) Text(times.joinToString("   ") { hhmm(it) }, style = Mono, fontSize = 14.sp, lineHeight = 22.sp, color = K.muted)
+        Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+            if (times.isNotEmpty()) Chip(
+                if (all) T("Hide schedule", "הסתרת לוח הזמנים") else T("Today's schedule", "לוח הזמנים להיום"), all,
+            ) { all = !all }
+            Chip(T("Stop board", "לוח התחנה"), false, onClick = onBoard)
         }
     }
 }

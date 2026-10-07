@@ -580,8 +580,8 @@ fun TileMap(
         }
     }
     val mapReady = MapFile.state is MapFile.State.Ready
-    LaunchedEffect(map, mapReady, K.light) {
-        if (mapReady) map?.setStyle(Style.Builder().fromJson(MapFile.styleJson(ctx, K.light))) { style = it }
+    LaunchedEffect(map, mapReady, K.look) {
+        if (mapReady) map?.setStyle(Style.Builder().fromJson(MapFile.styleJson(ctx, K.light, K.look == Look.OLED))) { style = it }
     }
     fun Style.ensureKavIcons() {
         val px = with(density) { 1.dp.toPx() }

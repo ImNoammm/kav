@@ -125,12 +125,15 @@ internal fun HomeScreen(
                         Note(T("Choose a destination to see your route and what to do next.", "בחרו יעד כדי לראות את המסלול ואת הצעד הבא."))
                     }
                 }
+                // Paying, the tickets still running and the history, in one card.
                 item {
-                    HomeShortcut(T("Pay for a ride", "תשלום על נסיעה"), { drawQr() }, Modifier.fillMaxWidth()) {
-                        model.payOpen = true
+                    Column(Modifier.fillMaxWidth().panel(K.rCard)) {
+                        HomeShortcut(T("Pay for a ride", "תשלום על נסיעה"), { drawQr() }, Modifier.fillMaxWidth(), framed = false) {
+                            model.payOpen = true
+                        }
+                        if (Payer.signedIn) PayTicketsCard(model)
                     }
                 }
-                if (Payer.signedIn) item { PayTicketsCard(model) }
                 if (recentTrips.isNotEmpty()) item {
                     Column(verticalArrangement = Arrangement.spacedBy(K.gap3)) {
                         Text(T("Recent trips", "נסיעות אחרונות"), fontSize = 15.sp, color = K.muted, fontWeight = FontWeight.Medium)
@@ -222,7 +225,7 @@ private fun tripWhen(at: Long): String {
     val then = java.util.Calendar.getInstance().apply { timeInMillis = at }
     fun sameDay() = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&
         now.get(java.util.Calendar.DAY_OF_YEAR) == then.get(java.util.Calendar.DAY_OF_YEAR)
-    if (sameDay()) return SimpleDateFormat("HH:mm", Locale.US).format(Date(at))
+    if (sameDay()) return SimpleDateFormat(CLOCK, Locale.US).format(Date(at))
     now.add(java.util.Calendar.DAY_OF_YEAR, -1)
     if (sameDay()) return T("Yesterday", "אתמול")
     return SimpleDateFormat("d MMM", T.locale).format(Date(at))
@@ -298,9 +301,9 @@ private fun JourneyCard(model: KavModel, journey: ActiveJourney, onResume: () ->
 }
 
 @Composable
-private fun HomeShortcut(label: String, icon: DrawScope.() -> Unit, modifier: Modifier, onClick: () -> Unit) {
+private fun HomeShortcut(label: String, icon: DrawScope.() -> Unit, modifier: Modifier, framed: Boolean = true, onClick: () -> Unit) {
     Row(
-        modifier.heightIn(min = 64.dp).panel(K.rCard)
+        modifier.heightIn(min = 64.dp).then(if (framed) Modifier.panel(K.rCard) else Modifier)
             .clickable(role = Role.Button, onClick = onClick).padding(K.gap4),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),

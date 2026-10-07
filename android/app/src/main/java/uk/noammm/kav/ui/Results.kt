@@ -2,6 +2,8 @@
 
 package uk.noammm.kav.ui
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,11 +37,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import uk.noammm.kav.data.Moovit
-import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val hm = SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = ISRAEL }
+private val hm get() = clockFormat()
 
 @Composable
 private fun Chevron(tint: Color = K.surface4, size: androidx.compose.ui.unit.Dp = 12.dp) {
@@ -171,20 +172,53 @@ fun PlanHeader(
     onTo: () -> Unit,
     onSwap: () -> Unit,
     onBack: (() -> Unit)? = null,
+    stops: List<String> = emptyList(),
+    onAddStop: (() -> Unit)? = null,
+    onRemoveStop: (Int) -> Unit = {},
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3, vertical = K.gap2)) {
+    Column(Modifier.fillMaxWidth().animateContentSize(tween(260)).padding(horizontal = K.gap3, vertical = K.gap2)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) { BackButton(onBack); Spacer(Modifier.width(K.gap2)) }
 
             Box(Modifier.weight(1f)) {
                 Column {
                     Endpoint(from, here = fromIsHere, dot = false, onClick = onFrom)
+                    stops.forEachIndexed { i, name ->
+                        Spacer(Modifier.height(K.gap2))
+                        StopoverRow(name) { onRemoveStop(i) }
+                    }
                     Spacer(Modifier.height(K.gap2))
                     Endpoint(to, here = toIsHere, dot = true, onClick = onTo)
                 }
-                SwapControl(Modifier.align(Alignment.CenterEnd).padding(end = K.gap2), onSwap)
+                if (stops.isEmpty()) SwapControl(Modifier.align(Alignment.CenterEnd).padding(end = K.gap2), onSwap)
             }
         }
+        // Up to three stops on the way, like Moovit's own planner.
+        if (onAddStop != null && stops.size < MAX_STOPOVERS) Text(
+            T("+ Add a stop", "+ הוספת עצירה"), fontSize = 14.sp, color = K.accent,
+            modifier = Modifier.padding(start = if (onBack != null) 52.dp else 0.dp, top = K.gap2)
+                .clip(RoundedCornerShape(K.rPill)).clickable(role = Role.Button, onClick = onAddStop)
+                .padding(horizontal = K.gap2, vertical = 6.dp),
+        )
+    }
+}
+
+const val MAX_STOPOVERS = 3
+
+@Composable
+private fun StopoverRow(label: String, onRemove: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).glassSurface(K.rControl).padding(start = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(Modifier.size(10.dp)) { drawCircle(K.muted, size.width * .30f) }
+        Spacer(Modifier.width(10.dp))
+        Text(label, fontSize = 14.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Box(
+            Modifier.size(48.dp).semantics { contentDescription = T("Remove stop", "הסרת עצירה") }
+                .clickable(role = Role.Button, onClick = onRemove),
+            contentAlignment = Alignment.Center,
+        ) { Text("✕", fontSize = 14.sp, color = K.dim) }
     }
 }
 
@@ -246,7 +280,7 @@ fun DepartRow(label: String, onWhen: () -> Unit, order: String, onOrder: () -> U
 @Composable
 private fun MenuPill(label: String, onClick: () -> Unit) {
     Row(
-        Modifier.heightIn(min = 44.dp).glassSurface(K.rPill)
+        Modifier.heightIn(min = 44.dp).glassSurface(K.rControl)
             .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

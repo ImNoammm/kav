@@ -230,7 +230,7 @@ private fun ChargeRow(c: MoovitPay.Charge, now: Long, onTicket: (String) -> Unit
     val wallet = Payer.wallet
     val ticket = currentChargeTicket(c, wallet)
     val cancelled = ticket?.let { Payer.cancelled(it) } ?: Payer.cancelledAt(c.atUtc)
-    val time = SimpleDateFormat("d.M  HH:mm", Locale.US).apply { timeZone = ISRAEL }
+    val time = SimpleDateFormat("d.M  $CLOCK", Locale.US).apply { timeZone = ISRAEL }
     Row(
         Modifier.fillMaxWidth().panel(K.rControl)
             .clickable(enabled = ticket != null, role = Role.Button) { ticket?.let { onTicket(Payer.rideKey(it)) } }

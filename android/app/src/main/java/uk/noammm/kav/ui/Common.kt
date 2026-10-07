@@ -61,7 +61,16 @@ val LocalServiceAlertOpener = staticCompositionLocalOf<(Int, String) -> Unit> { 
 // Timetables and departures are in Israel's time, whatever zone the phone is set to.
 val ISRAEL: TimeZone = TimeZone.getTimeZone("Asia/Jerusalem")
 
-fun hhmm(s: Int): String = "%02d:%02d".format(Locale.US, (s / 3600) % 24, (s / 60) % 60)
+// Times read "14:05", or "2:05 PM" for anyone who asked for AM/PM.
+val CLOCK get() = if (Shown.twelveHour) "h:mm a" else "HH:mm"
+
+fun clockFormat() = java.text.SimpleDateFormat(CLOCK, Locale.US).apply { timeZone = ISRAEL }
+
+fun hhmm(s: Int): String {
+    val h = (s / 3600) % 24; val m = (s / 60) % 60
+    return if (!Shown.twelveHour) "%02d:%02d".format(Locale.US, h, m)
+    else "%d:%02d %s".format(Locale.US, (h + 11) % 12 + 1, m, if (h < 12) "AM" else "PM")
+}
 
 fun dur(s: Int): String {
     val m = (s / 60.0).roundToInt()

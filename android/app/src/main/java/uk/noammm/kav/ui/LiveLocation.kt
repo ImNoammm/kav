@@ -24,11 +24,9 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.MoovitSession
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
-private val hm = SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = ISRAEL }
+private val hm get() = clockFormat()
 
 fun whenLabel(t: Long, now: Long = System.currentTimeMillis() / 1000): String {
     val m = ((t - now) / 60).toInt()
@@ -85,7 +83,7 @@ fun rememberLineRoutes(shapeIds: List<Int>): Map<Int, List<Pair<Double, Double>>
 @Composable
 fun LiveLocationButton(live: Boolean, onClick: () -> Unit) {
     Row(
-        Modifier.heightIn(min = 44.dp).glassSurface(22.dp)
+        Modifier.heightIn(min = 44.dp).glassSurface(K.rControl)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = K.gap4, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,

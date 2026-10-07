@@ -95,6 +95,28 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="moovit.onelink.me" />
             </intent-filter>
+            <!-- Lines and stops shared from Moovit. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="moovit" android:host="line" />
+                <data android:scheme="moovit" android:host="station" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="moovitapp.com" android:path="/line" />
+                <data android:scheme="https" android:host="moovitapp.com" android:pathPrefix="/station/" />
+            </intent-filter>
+            <!-- geo: points and place names, so Kav is offered as a navigation app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="geo" />
+            </intent-filter>
             <!-- A .kav backup tapped in a file manager. Matched by the name's ending
                  rather than a type, because .kav has no registered MIME and claiming
                  application/octet-stream would put Kav in the chooser for every

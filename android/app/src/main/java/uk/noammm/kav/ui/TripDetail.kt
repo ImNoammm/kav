@@ -27,7 +27,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
-import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
@@ -43,7 +42,7 @@ private suspend fun shareTrip(ctx: android.content.Context, trip: Moovit.Itinera
     ctx.startActivity(android.content.Intent.createChooser(send, T("Share trip", "שיתוף נסיעה")))
 }
 
-private val hm = SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = ISRAEL }
+private val hm get() = clockFormat()
 
 
 @Composable

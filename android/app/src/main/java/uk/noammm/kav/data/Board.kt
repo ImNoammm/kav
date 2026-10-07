@@ -19,3 +19,18 @@ fun Net.departuresAt(stop: Int, now: Int, today: Int, limit: Int = 60): List<Pai
     }
     return out.sortedBy { it.second }.take(limit)
 }
+
+// When one line leaves a stop today, in order: today's trips, and yesterday's still running after midnight.
+fun Net.lineTimesAt(stop: Int, route: Int, today: Int): List<Int> {
+    val yesterday = (today + 6) % 7
+    val out = ArrayList<Int>()
+    for (i in dStart[stop] until dStart[stop + 1]) {
+        val st = cST[dConn[i]]
+        val t = tripOf(st)
+        if (tripRoute[t] != route) continue
+        val dep = stDep[st]
+        if (runsOn(t, today)) out.add(dep)
+        if (dep >= 86_400 && runsOn(t, yesterday)) out.add(dep - 86_400)
+    }
+    return out.distinct().sorted()
+}

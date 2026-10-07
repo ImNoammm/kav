@@ -20,10 +20,12 @@ import uk.noammm.kav.ui.K
 import uk.noammm.kav.ui.Mode
 import uk.noammm.kav.ui.Step
 import uk.noammm.kav.ui.T
+import uk.noammm.kav.ui.aboard
 import uk.noammm.kav.ui.alongPath
 import uk.noammm.kav.ui.boardingChoice
 import uk.noammm.kav.ui.buildSteps
 import uk.noammm.kav.ui.chosenLegs
+import uk.noammm.kav.ui.clockFormat
 import uk.noammm.kav.ui.distanceLabel
 import uk.noammm.kav.ui.distanceTo
 import uk.noammm.kav.ui.distanceToPath
@@ -37,9 +39,7 @@ import uk.noammm.kav.ui.ISRAEL
 import uk.noammm.kav.ui.routeTints
 import uk.noammm.kav.ui.stopsProgress
 import uk.noammm.kav.ui.whenLabel
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -150,7 +150,7 @@ internal fun tripNotice(journey: ActiveJourney, current: Int, fix: Fix?, now: Lo
     }
     if (parts.isEmpty()) add(1, accent)
 
-    val hm = SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = ISRAEL }
+    val hm = clockFormat()
     fun time(utc: Long) = hm.format(Date(utc * 1000))
     fun lineName(ride: Moovit.Leg): String {
         val number = ride.shortName.ifBlank { r.line(ride.lineId)?.number.orEmpty() }
@@ -203,10 +203,15 @@ internal fun tripNotice(journey: ActiveJourney, current: Int, fix: Fix?, now: Lo
         }
         is Step.Ride -> {
             val ride = pick(step.ride, step.wait, step.legIndex).first
+            // The chip says how long until getting off: the share of the route still ahead of the ride's planned time.
+            val length = runs.getOrNull(runAt)?.metres ?: 0.0
+            val mins = if (length > 0) kotlin.math.ceil(left / length * (ride.arr - ride.dep) / 60.0).toLong()
+            else (ride.arr - now) / 60
             Say(
                 "$togo · ${place(ride.toStop)}",
                 T("On ${lineName(ride)}", "ב${lineName(ride)}"),
-                togo, Glyph(legMode(ride, r)), colourOf(ride),
+                if (mins <= 0L) T("now", "עכשיו") else T("$mins min", "$mins דק׳"),
+                Glyph(legMode(ride, r)), colourOf(ride),
             )
         }
         is Step.Taxi -> Say(
@@ -287,8 +292,18 @@ internal fun tripAlert(journey: ActiveJourney, current: Int, fix: Fix?, now: Lon
             val ride = boardingChoice(step.ride, step.wait, journey.chosen[step.legIndex] ?: 0).first
             val total = ride.stops.size
             val progress = stopsProgress(ride, r.stops, r.arrival(ride), fix, now)
-            val nearEnd = (progress >= 0 && total >= 2 && progress >= total - 1f) ||
-                (progress < 0 && ride.arr - now in 0..120)
+            // Counting stops needs every stop's position, and a saved trip often knows only a few of them: then the
+            // last stop is near when less than an average gap between stops is left along the route.
+            val located = ride.stops.all { r.stops[it]?.point != null }
+            val left = fix?.takeIf { !located && total >= 2 && it.isFresh(now) && it.aboard(ride.shape) }?.let {
+                val length = pathLength(ride.shape)
+                (length - alongPath(it.lat, it.lon, ride.shape)) to length / (total - 1)
+            }
+            val nearEnd = when {
+                left != null -> left.first <= left.second
+                progress >= 0 -> total >= 2 && progress >= total - 1f
+                else -> ride.arr - now in 0..120
+            }
             if (!nearEnd) null else TripAlert(
                 "ride-${step.legIndex}", T("Get off at the next stop", "רדו בתחנה הבאה"),
                 r.stopName(ride.toStop) ?: journey.toLabel,

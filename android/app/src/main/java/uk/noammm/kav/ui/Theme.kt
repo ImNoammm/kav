@@ -40,7 +40,7 @@ object K {
 
     val rCard = 22.dp
     val rControl = 16.dp
-    val rPill = 999.dp
+    val rPill = 16.dp
 
     var accent by mutableStateOf(DefaultAccent)
     // Accents are always pale, so text on them stays dark in every look.
@@ -62,7 +62,7 @@ object K {
             Look.DARK -> {
                 bg = Color(0xFF101012); surface1 = Color(0xFF202023)
                 surface2 = Color(0xFF2B2B30); surface3 = Color(0xFF343439)
-                surface4 = Color(0xFF44444A); border = Color(0xFF343439)
+                surface4 = Color(0xFF44444A); border = Color.White
                 borderStrong = Color(0xFF74747D); dim = Color(0xFF9C9CA5)
                 muted = Color(0xFFC7C7CE); text = Color(0xFFF5F5F7)
                 plate = Color(0x0FFFFFFF); plateStrong = Color(0x1FFFFFFF)
@@ -70,13 +70,13 @@ object K {
                 problem = Color(0xFFE7C17A); critical = Color(0xFFEE929A)
             }
             Look.OLED -> {
-                bg = Color(0xFF000000); surface1 = Color(0xFF151517)
-                surface2 = Color(0xFF1E1E21); surface3 = Color(0xFF28282C)
-                surface4 = Color(0xFF38383E); border = Color(0xFF222226)
+                bg = Color(0xFF000000); surface1 = Color(0xFF000000)
+                surface2 = Color(0xFF000000); surface3 = Color(0xFF000000)
+                surface4 = Color(0xFF38383E); border = Color.White
                 borderStrong = Color(0xFF6C6C75); dim = Color(0xFF9C9CA5)
                 muted = Color(0xFFC7C7CE); text = Color(0xFFF5F5F7)
                 plate = Color(0x14FFFFFF); plateStrong = Color(0x24FFFFFF)
-                sunken = Color(0xFF0A0A0C); routeIdle = Color(0xFF7E7E87)
+                sunken = Color(0xFF000000); routeIdle = Color(0xFF7E7E87)
                 problem = Color(0xFFE7C17A); critical = Color(0xFFEE929A)
             }
             Look.LIGHT -> {
@@ -95,6 +95,7 @@ object K {
 
 object Shown {
     var co2 by mutableStateOf(false)
+    var twelveHour by mutableStateOf(false)
 }
 
 val Display get() = TextStyle(

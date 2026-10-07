@@ -62,6 +62,9 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         .padding(bottom = LocalBottomBarInset.current)) {
         ScreenHeader(T("Your", "ההגדרות"), T("settings", "שלכם"), back = onClose)
 
+        Group(T("time format", "תבנית שעה"))
+        ClockChoice(ctx)
+
         if (Payer.signedIn) {
             Group(T("payments", "תשלומים"))
             PaymentsSection(model)
@@ -177,7 +180,7 @@ internal fun LookChoices(inset: Dp = 0.dp, heading: @Composable (String) -> Unit
     if (!liquidGlassReady) return
     heading(T("glass", "זכוכית"))
     Row(Modifier.padding(horizontal = inset).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-        Chip(T("Liquid glass", "זכוכית נוזלית"), K.liquid, Modifier.border(1.5.dp, K.accent, RoundedCornerShape(22.dp))) {
+        Chip(T("Liquid glass", "זכוכית נוזלית"), K.liquid, Modifier.border(1.5.dp, K.accent, RoundedCornerShape(K.rControl))) {
             K.liquid = true; Prefs.setLiquidGlass(ctx, true)
         }
         Chip(T("Solid", "אחיד"), !K.liquid) { K.liquid = false; Prefs.setLiquidGlass(ctx, false) }
@@ -370,3 +373,32 @@ private fun Absent(title: String, desc: String) {
     }
 }
 
+@Composable
+private fun ClockChoice(ctx: android.content.Context) {
+    var open by remember { mutableStateOf(false) }
+    fun label(twelve: Boolean) = if (twelve) T("12-hour (2:05 PM)", "12 שעות (2:05 PM)") else T("24-hour (14:05)", "24 שעות (14:05)")
+    Box(Modifier.padding(horizontal = K.gap4)) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 52.dp).panel(K.rControl)
+                .clickable(role = androidx.compose.ui.semantics.Role.Button) { open = true }.padding(horizontal = K.gap4),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label(Shown.twelveHour), fontSize = 15.sp, color = K.text, modifier = Modifier.weight(1f))
+            Text("▾", fontSize = 15.sp, color = K.dim)
+        }
+        androidx.compose.material3.DropdownMenu(
+            open, onDismissRequest = { open = false },
+            modifier = Modifier.background(K.bg),
+            containerColor = K.bg, tonalElevation = 0.dp, shadowElevation = 8.dp,
+            shape = RoundedCornerShape(K.rControl),
+            border = androidx.compose.foundation.BorderStroke(1.dp, if (K.light) K.borderStrong else Color.White),
+        ) {
+            listOf(false, true).forEach { twelve ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(label(twelve), color = if (twelve == Shown.twelveHour) K.accent else K.text) },
+                    onClick = { Shown.twelveHour = twelve; Prefs.setTwelveHour(ctx, twelve); open = false },
+                )
+            }
+        }
+    }
+}

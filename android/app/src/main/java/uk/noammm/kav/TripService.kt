@@ -38,6 +38,7 @@ class TripService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
+            alertIfDue()
             advance()
             post()
             handler.postDelayed(this, TICK_MS)
@@ -59,6 +60,7 @@ class TripService : Service() {
     override fun onCreate() {
         super.onCreate()
         T.lang = Prefs.lang(this)
+        uk.noammm.kav.ui.Shown.twelveHour = Prefs.twelveHour(this)
         ensureChannel(this)
         Payer.init(this)
         running = this
@@ -119,6 +121,9 @@ class TripService : Service() {
     private fun onFix(location: Location) {
         val f = Fix(location.latitude, location.longitude, location.fixTime(), location.speed)
         fix = f
+        // The watch timer stops while the screen sleeps, and the fix can carry the trip past the last stop's
+        // window before it runs again: every fix checks first, so "get off" isn't skipped.
+        alertIfDue()
         val shell = TripBridge.fix
         if (shell != null) shell(f) else advance()
         post()

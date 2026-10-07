@@ -44,7 +44,10 @@ fun Modifier.glassBackdrop(liquid: LiquidBackdrop?): Modifier =
 
 private fun liquidRim(floating: Boolean) =
     if (K.light) K.text.copy(alpha = if (floating) .16f else .1f)
-    else Color.White.copy(alpha = if (floating) .3f else .14f)
+    else Color.White
+
+// OLED's white rims are thinner, so the black screen isn't boxed in.
+private val rimWidth get() = if (K.look == Look.OLED) 0.6.dp else 1.dp
 
 private val paneFill get() = K.surface1.copy(alpha = .62f)
 
@@ -54,14 +57,15 @@ fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier {
     val shape = RoundedCornerShape(radius)
     val liquid = LocalLiquidBackdrop.current
     val pane = if (liquid != null) liquidPane(liquid, radius) else clip(shape).background(paneFill)
-    return pane.border(1.dp, liquidRim(floating = true), shape)
+    return pane.border(rimWidth, liquidRim(floating = true), shape)
 }
 
 fun Modifier.panel(radius: Dp = K.rCard, solid: Boolean = false): Modifier {
     val shape = RoundedCornerShape(radius)
     val body = clip(shape).background(if (solid) paneFill.compositeOver(K.bg) else paneFill)
-    return if (K.liquid) body.border(1.dp, liquidRim(floating = solid), shape)
-        else body.border(0.5.dp, K.text.copy(alpha = .14f), shape)
+    return if (K.liquid) body.border(rimWidth, liquidRim(floating = solid), shape)
+        else if (K.light) body.border(0.5.dp, K.text.copy(alpha = .14f), shape)
+        else body.border(rimWidth, Color.White, shape)
 }
 
 @Composable

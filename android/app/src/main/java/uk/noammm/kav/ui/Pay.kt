@@ -491,7 +491,8 @@ private val endTrainRide get() = T("To avoid being charged the maximum daily rat
     "כדי לא לחויב בתעריף היומי המרבי, סיימו את הנסיעה ברכבת.")
 
 internal fun failure(e: Throwable): String = when (e) {
-    is MoovitPay.Refused -> e.message ?: e.title
+    // Moovit's title says what went wrong; its message is often only "Please try again."
+    is MoovitPay.Refused -> listOf(e.title, e.message).filterNotNull().filter { it.isNotBlank() }.distinct().joinToString(" ")
     is PayPurchase.Unconfirmed -> T("Couldn't confirm the payment. Check your tickets before trying again.",
         "לא ניתן לאשר אם התשלום בוצע. בדקו את הכרטיסים לפני ניסיון נוסף.")
     else -> T("Couldn't reach Moovit. Try again.", "אין חיבור ל-Moovit. נסו שוב.")
@@ -530,7 +531,6 @@ private fun SignIn() {
     var busy by remember { mutableStateOf(false) }
     var phone by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
-    var elsewhere by remember { mutableStateOf(false) }
     var cvv by remember { mutableStateOf("") }
 
     fun run(work: suspend () -> Unit) {
@@ -554,6 +554,9 @@ private fun SignIn() {
     var attempt by remember { mutableIntStateOf(0) }
     LaunchedEffect(attempt) {
         try {
+            // Moovit's own app signs in as a brand new user, and so does Kav.
+            if (!Payer.signedIn) Payer.signOut()
+            MoovitPay.newFlow()
             val s = Payer.call { MoovitPay.steps(it) }
             if (MoovitPay.STEP_PHONE !in s.missing) finish(s.missing, s.card)
             else step = s.terms?.takeIf { MoovitPay.STEP_TERMS in s.missing }?.let { SignInStep.Terms(it) } ?: SignInStep.Phone
@@ -607,7 +610,8 @@ private fun SignIn() {
                         // Kav can't add a card, so a number without an account is registered in Moovit's app first. The
                         // paying user that asked is dropped, and trying again starts afresh.
                         if (!v.exists) { Payer.signOut(); step = SignInStep.NoAccount }
-                        else if (v.elsewhere) elsewhere = true else finish(v.missing, v.card)
+                        else if (v.moved) finish(v.missing, v.card)
+                        else Payer.call { MoovitPay.verify(it, code, takeOver = true) }.let { finish(it.missing, it.card) }
                     }
                 }
                 Text(T("Send it again", "שליחה מחדש"), fontSize = 14.sp, color = K.accent,
@@ -656,29 +660,6 @@ private fun SignIn() {
             }
         }
         error?.let { Note(it, color = K.critical) }
-    }
-
-    if (elsewhere) Dialog(onDismissRequest = { elsewhere = false }) {
-        Column(Modifier.fillMaxWidth().panel(K.rCard, solid = true).padding(K.gap5), verticalArrangement = Arrangement.spacedBy(K.gap4)) {
-            Text(T("This phone number is connected to another device", "מספר הטלפון הזה מחובר למכשיר אחר"),
-                fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-            Note(T(
-                "A payment account can only be connected to one device. If you continue, it moves to Kav and " +
-                    "is disconnected from the other one, such as Moovit's app.",
-                "חשבון תשלום יכול להיות מחובר למכשיר אחד בלבד. אם תמשיכו, הוא יעבור ל-Kav וינותק מהמכשיר " +
-                    "האחר, למשל מהאפליקציה של Moovit.",
-            ), color = K.muted)
-            PayButton(T("Connect to Kav", "חיבור ל-Kav"), busy) {
-                run {
-                    val v = Payer.call { MoovitPay.verify(it, code, takeOver = true) }
-                    elsewhere = false
-                    finish(v.missing, v.card)
-                }
-            }
-            Text(T("Cancel", "ביטול"), fontSize = 15.sp, color = K.muted,
-                modifier = Modifier.align(Alignment.CenterHorizontally).clickable(role = Role.Button) { elsewhere = false }
-                    .padding(K.gap2))
-        }
     }
 }
 
@@ -750,6 +731,7 @@ private fun Paying(model: KavModel) {
     }
     var cameraAsked by remember { mutableStateOf(false) }
     var scanFailed by remember { mutableStateOf(false) }
+    var cameraBroken by remember { mutableStateOf(false) }
     var scanned by remember { mutableStateOf<String?>(null) }
     var offer by remember { mutableStateOf<MoovitPay.Offer?>(null) }
     var chosen by remember { mutableStateOf<MoovitPay.Fare?>(null) }
@@ -835,6 +817,14 @@ private fun Paying(model: KavModel) {
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         cameraAllowed = ok
+        // Refused twice, Android stops asking and the button would do nothing: Kav's settings page is the way back.
+        val activity = ctx as? android.app.Activity
+        if (!ok && activity != null && !activity.shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+            runCatching {
+                ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.fromParts("package", ctx.packageName, null)))
+            }
+        }
     }
 
     fun scan() {
@@ -1255,7 +1245,13 @@ private fun Paying(model: KavModel) {
                                     scanFailed -> AddButton(T("Scan again", "סריקה מחדש"), modifier = Modifier.padding(K.gap4)) {
                                         scanFailed = false; error = null
                                     }
-                                    else -> QrScanner(Modifier.matchParentSize()) { qr -> beforeNew { onScanned(qr) } }
+                                    cameraBroken -> Note(T(
+                                        "The camera wouldn't start. Close other apps using it and open this page again.",
+                                        "המצלמה לא נפתחה. סגרו אפליקציות אחרות שמשתמשות בה ופתחו את הדף שוב.",
+                                    ), modifier = Modifier.padding(K.gap4))
+                                    else -> QrScanner(Modifier.matchParentSize(), onFail = { cameraBroken = true }) { qr ->
+                                        beforeNew { onScanned(qr) }
+                                    }
                                 }
                             }
                         }
@@ -1616,7 +1612,7 @@ private fun FareDropdown(fares: List<MoovitPay.Fare>, chosen: MoovitPay.Fare?, o
 }
 
 internal fun ticketTime(t: MoovitPay.Ticket): String {
-    val f = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).apply { timeZone = ISRAEL }
+    val f = clockFormat()
     return T("Bought ", "נקנה ב-") + f.format(java.util.Date(t.boughtUtc))
 }
 
@@ -1743,13 +1739,11 @@ internal fun PayTicketsCard(model: KavModel) {
     val wallet = Payer.wallet
     val now = rememberNow()
     val live = ridesOf(wallet?.tickets.orEmpty()).filter { it.live() }
-    Column(Modifier.fillMaxWidth().panel(K.rCard).animateContentSize()) {
+    Column(Modifier.fillMaxWidth().animateContentSize()) {
         TransferWindow(wallet?.window, now)
         live.forEachIndexed { i, r ->
             Box(Modifier.popIn(i, r.key)) { RideRow(r, wallet?.window, now) { Payer.showRef = r.key; model.payOpen = true } }
         }
-        if (live.isEmpty()) Note(T("No tickets running right now.", "אין כרטיסים פעילים כרגע."),
-            Modifier.padding(horizontal = K.gap4, vertical = K.gap3))
         Text(T("More", "עוד"), fontSize = 15.sp, color = K.accent,
             modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { model.payHistoryOpen = true }
                 .padding(horizontal = K.gap4, vertical = K.gap3))

@@ -26,9 +26,9 @@ object MoovitPay {
 
     class Steps(val missing: List<Int>, val terms: Terms?, val card: Card?)
 
-    // exists: the number has a payment account (isAccountExist). elsewhere: it is tied to another phone, and asking again
-    // with takeOver moves it here.
-    class Verified(val exists: Boolean, val elsewhere: Boolean, val missing: List<Int>, val card: Card?)
+    // exists: the number has a payment account (isAccountExist). moved: this user now holds it (isMigratedUser); until
+    // then the same code is sent again with takeOver, as Moovit's app does without asking.
+    class Verified(val exists: Boolean, val moved: Boolean, val missing: List<Int>, val card: Card?)
 
     class Account(val name: String, val phone: String, val connected: Boolean)
 
@@ -113,8 +113,15 @@ object MoovitPay {
     class Exit(val stopId: Int, val name: String, val price: Price?, val full: Price?, val pick: List<Int>, val title: String)
 
     // Binary Thrift both ways, as Moovit's app sends these. Null for an empty answer.
+    // Moovit's app numbers each screen flow and sends the number with every call in it, so the SMS and the code
+    // that answers it arrive as one flow. A new sign-in starts a new one.
+    private val flows = java.util.concurrent.atomic.AtomicInteger((1..200).random())
+    @Volatile private var flow = flows.incrementAndGet()
+    fun newFlow() { flow = flows.incrementAndGet() }
+
     private fun call(user: MoovitSession, path: String, body: TWriter): Map<Int, Any?>? {
-        val (code, raw) = Moovit.post(Moovit.APP4, path, body.stop().bytes(), Moovit.authHeaders(user))
+        val headers = Moovit.authHeaders(user) + mapOf("flow-sequence-id" to flow.toString(), "analytics-flow-key-id" to flow.toString())
+        val (code, raw) = Moovit.post(Moovit.APP4, path, body.stop().bytes(), headers)
         if (code == 204 || (code == 200 && raw.isEmpty())) return null
         val s = runCatching { TReader(raw).readStruct() }.getOrNull()
         // Calls with nothing to say (accepting the terms, sending the SMS) answer 200 with a body that
@@ -175,13 +182,12 @@ object MoovitPay {
             TWriter().strField(1, shown).strField(2, "+972").strField(3, CONTEXT))
     }
 
-    // The SMS code. Asked first without takeOver; when the account is on another phone, Moovit's app asks
-    // the rider and sends the same code again with it.
+    // The SMS code. Asked first without takeOver, then again with it when the account exists.
     fun verify(user: MoovitSession, code: String, takeOver: Boolean): Verified {
         val body = TWriter().strField(1, CONTEXT).strField(2, code).boolField(3, !takeOver)
         val root = call(user, "PaymentContext/RegistrationVerification", body) ?: return Verified(true, false, emptyList(), null)
         val steps = root.rec(2)
-        return Verified(exists = root.bool(3), elsewhere = root.bool(3) && !root.bool(1), missing = steps?.ints(2).orEmpty(),
+        return Verified(exists = root.bool(3), moved = root.bool(1), missing = steps?.ints(2).orEmpty(),
             card = cardOf(steps))
     }
 

@@ -95,7 +95,7 @@ fun Chip(text: String, lit: Boolean, modifier: Modifier = Modifier, onClick: () 
     Box(
         modifier
             .heightIn(min = 44.dp)
-            .glassSurface(22.dp)
+            .glassSurface(K.rControl)
             .then(if (lit) Modifier.background(K.plateStrong) else Modifier)
             .semantics { selected = lit }
             .clickable(role = Role.Button, onClick = onClick)

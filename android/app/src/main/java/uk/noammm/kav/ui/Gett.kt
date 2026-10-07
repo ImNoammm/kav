@@ -37,7 +37,7 @@ fun GettButton(leg: Moovit.Leg, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val uri = gettUri(leg)
     Row(
-        modifier.heightIn(min = 48.dp).glassSurface(24.dp)
+        modifier.heightIn(min = 48.dp).glassSurface(K.rControl)
             .clickable(enabled = uri != null, role = Role.Button) {
                 try {
                     context.startActivity(Intent(Intent.ACTION_VIEW, uri).setPackage("com.gettaxi.android"))

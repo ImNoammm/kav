@@ -72,7 +72,7 @@ fun KavField(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .glassSurface(24.dp)
+            .glassSurface(K.rControl)
             .focusRequester(focus)
             .semantics { contentDescription = placeholder }
             .padding(horizontal = K.gap4, vertical = 12.dp),
@@ -292,7 +292,7 @@ fun PlacePicker(
             val ready = here != null && !locating && !locateFailed
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = K.gap3, vertical = K.gap2).heightIn(min = 48.dp)
-                    .glassSurface(24.dp)
+                    .glassSurface(K.rControl)
                     .clickable(enabled = !locating, role = Role.Button) {
                         if (hasLocationPermission(ctx)) startLocating()
                         else askHere.launch(LOCATION_PERMISSIONS)
@@ -384,7 +384,7 @@ fun PlacePicker(
 internal fun SelectOnMapRow(sides: androidx.compose.ui.unit.Dp = K.gap3, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = sides)
-            .heightIn(min = 48.dp).glassSurface(24.dp)
+            .heightIn(min = 48.dp).glassSurface(K.rControl)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = K.gap4, vertical = K.gap3),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2),
@@ -398,6 +398,7 @@ internal fun SelectOnMapRow(sides: androidx.compose.ui.unit.Dp = K.gap3, onClick
     }
 }
 
+// Rises in like search does, wherever it opens from.
 @Composable
 fun StopMapPicker(
     net: Net?,
@@ -407,6 +408,23 @@ fun StopMapPicker(
     onLocate: (Pair<Double, Double>) -> Unit = {},
     allowPin: Boolean = false,
     onStop: ((Int) -> Unit)? = null,
+) {
+    val rise = with(androidx.compose.ui.platform.LocalDensity.current) { 76.dp.roundToPx() }
+    val shown = remember { androidx.compose.animation.core.MutableTransitionState(false).apply { targetState = true } }
+    androidx.compose.animation.AnimatedVisibility(shown, enter = searchIn(rise).targetContentEnter) {
+        MapPickerScreen(net, here, onPick, onDismiss, onLocate, allowPin, onStop)
+    }
+}
+
+@Composable
+private fun MapPickerScreen(
+    net: Net?,
+    here: Pair<Double, Double>?,
+    onPick: (Moovit.Place) -> Unit,
+    onDismiss: () -> Unit,
+    onLocate: (Pair<Double, Double>) -> Unit,
+    allowPin: Boolean,
+    onStop: ((Int) -> Unit)?,
 ) {
     androidx.activity.compose.BackHandler { onDismiss() }
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -451,7 +469,7 @@ private fun StopMapHeader(pin: Boolean, onDismiss: () -> Unit) {
     ) {
         BackButton(onDismiss)
         Box(
-            Modifier.heightIn(min = 48.dp).glassSurface(24.dp).padding(horizontal = K.gap4),
+            Modifier.heightIn(min = 48.dp).glassSurface(K.rControl).padding(horizontal = K.gap4),
             contentAlignment = Alignment.Center,
         ) {
             Text(

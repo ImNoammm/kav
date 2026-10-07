@@ -43,8 +43,10 @@ object MapFile {
         }
     }
 
-    fun styleJson(ctx: Context, light: Boolean = false): String =
-        ctx.assets.open(if (light) "map/style-light.json" else "map/style.json").reader().use { it.readText() }
+    // OLED draws the map like a battery saver: black ground, grey roads, no buildings or land colours.
+    fun styleJson(ctx: Context, light: Boolean = false, oled: Boolean = false): String =
+        ctx.assets.open(when { light -> "map/style-light.json"; oled -> "map/style-oled.json"; else -> "map/style.json" })
+            .reader().use { it.readText() }
             .replace("__MAP__", "pmtiles://file://" + file(ctx).absolutePath)
 
     fun startDownload(ctx: Context) {

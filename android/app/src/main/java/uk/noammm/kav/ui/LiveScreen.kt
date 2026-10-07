@@ -54,9 +54,7 @@ import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.hasLocationPermission
 import uk.noammm.kav.loadNet
 import uk.noammm.kav.requestLocationOnce
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.coroutines.coroutineContext
 
@@ -158,7 +156,7 @@ object Online {
     }
 }
 
-private val hm = SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = ISRAEL }
+private val hm get() = clockFormat()
 
 private const val LOOK_REACH_KM = 3.5
 

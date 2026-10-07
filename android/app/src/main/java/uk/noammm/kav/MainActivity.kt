@@ -136,6 +136,7 @@ class MainActivity : ComponentActivity() {
         K.applyTheme(Prefs.look(this))
         K.liquid = Prefs.liquidGlass(this)
         Shown.co2 = Prefs.showCo2(this)
+        Shown.twelveHour = Prefs.twelveHour(this)
         Moovit.shareLocation = !Prefs.privateSearch(this)
         MapFile.init(this)
         StopPhotos.init(this)
@@ -285,6 +286,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         K.applyTheme(Prefs.look(ctx))
         K.liquid = Prefs.liquidGlass(ctx)
         Shown.co2 = Prefs.showCo2(ctx)
+        Shown.twelveHour = Prefs.twelveHour(ctx)
         Moovit.shareLocation = !Prefs.privateSearch(ctx)
         seen = Prefs.seen(ctx)
         seenPlace = Prefs.seenPlace(ctx)
@@ -502,7 +504,7 @@ private fun Shell(model: KavModel) {
             if (model.net != null || model.netLoading || model.netError != null) return@collect
             model.netLoading = true
             try {
-                model.net = loadNet(ctx)
+                model.net = loadNet(ctx).also { net -> launch { uk.noammm.kav.ui.warmLines(ctx, net, model.here) } }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -533,7 +535,12 @@ private fun Shell(model: KavModel) {
         snapshotFlow { PendingLink.plan }.collect { plan ->
             if (plan == null) return@collect
             PendingLink.plan = null
-            if (plan.toLat == null || plan.toLon == null) return@collect
+            if (plan.lineGroup != null || plan.stopId != null) {
+                openMoovitEntity(ctx, model, plan)
+                return@collect
+            }
+            val somewhere = plan.toLat != null && plan.toLon != null
+            if (!somewhere && plan.sharedId == null && plan.shortUrl == null && plan.toName == null) return@collect
             model.pendingLink = plan
             model.settingsOpen = false
             model.tab = Tab.Directions
@@ -1028,6 +1035,11 @@ fun requestLocationOnce(
     }
     if (!requireFresh) {
         lastKnown(ctx)?.takeIf { System.currentTimeMillis() / 1000 - it.fixTime() in 0..120 }?.let { offer(it, false) }
+    } else {
+        // A precise fix from the last half minute is as good as a new one, and plans without waiting for the GPS.
+        lastKnown(ctx)?.takeIf {
+            System.currentTimeMillis() / 1000 - it.fixTime() in 0..30 && it.hasAccuracy() && it.accuracy in 0f..GOOD_FIX_M
+        }?.let { onResult(it.latitude to it.longitude); return {} }
     }
 
     var done = false
@@ -1302,6 +1314,9 @@ object Prefs {
     fun showCo2(ctx: Context): Boolean = store(ctx).getBoolean("showCo2", false)
     fun setShowCo2(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showCo2", on).apply()
 
+    fun twelveHour(ctx: Context): Boolean = store(ctx).getBoolean("twelveHour", false)
+    fun setTwelveHour(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("twelveHour", on).apply()
+
     private val looks = Look.entries.map { it.name.lowercase() }
 
     fun look(ctx: Context): Look =
@@ -1395,6 +1410,7 @@ object Prefs {
             .put("filters", org.json.JSONObject().apply { ResultFilter.entries.forEach { put(it.name, it in on) } })
             .put("filtersOff", org.json.JSONArray(off))
             .put("showCo2", showCo2(ctx))
+            .put("twelveHour", twelveHour(ctx))
     }
 
     // Only what the file holds is restored, so settings an older backup lacks stay as they are.
@@ -1412,6 +1428,7 @@ object Prefs {
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }
         if (o.has("showCo2")) e.putBoolean("showCo2", o.optBoolean("showCo2"))
+        if (o.has("twelveHour")) e.putBoolean("twelveHour", o.optBoolean("twelveHour"))
         val chosen = o.optJSONObject("filters")
         val oldOff = o.optJSONArray("filtersOff")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }
         val off = ResultFilter.entries.filter { f ->
@@ -1447,4 +1464,22 @@ object Prefs {
         }
         store(ctx).edit().putString("favourites", arr.toString()).apply()
     }
+}
+
+// A Moovit line link opens that line's page; a stop link opens the stop's board, found by its public code.
+private suspend fun openMoovitEntity(ctx: Context, model: KavModel, plan: MoovitLink.Plan) {
+    try {
+        val session = Online.open(model.here ?: (32.0759 to 34.7745))
+        plan.lineGroup?.let { id ->
+            val line = withContext(Dispatchers.IO) { Moovit.lineCatalogue(session) }.firstOrNull { it.id == id } ?: return
+            model.settingsOpen = false; model.lineRoute = -1; model.moovitLine = line; model.tab = Tab.Lines
+        }
+        plan.stopId?.let { id ->
+            val code = withContext(Dispatchers.IO) { Moovit.stopInfo(session, id) }?.code?.toIntOrNull() ?: return
+            // A link that starts Kav arrives before any screen has loaded the timetable.
+            val net = model.net ?: withContext(Dispatchers.Default) { loadNet(ctx) }
+            val stop = net.code.indexOfFirst { it == code }.takeIf { it >= 0 } ?: return
+            model.settingsOpen = false; model.stationStop = stop; model.tab = Tab.Stations
+        }
+    } catch (e: CancellationException) { throw e } catch (e: Exception) { }
 }

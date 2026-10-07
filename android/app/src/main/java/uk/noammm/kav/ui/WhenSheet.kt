@@ -63,7 +63,7 @@ fun WhenSheet(
     val picker = rememberTimePickerState(
         initialHour = start.get(Calendar.HOUR_OF_DAY),
         initialMinute = start.get(Calendar.MINUTE),
-        is24Hour = true,
+        is24Hour = !Shown.twelveHour,
     )
 
     BottomSheet(onDismiss, scrolls = true) { close ->

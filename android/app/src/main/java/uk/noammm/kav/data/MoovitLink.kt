@@ -16,6 +16,8 @@ object MoovitLink {
         val rides: List<Ride> = emptyList(),
         val sharedId: String? = null,
         val shortUrl: String? = null,
+        val lineGroup: Int? = null,
+        val stopId: Int? = null,
     )
 
     fun parse(url: String?): Plan? = parse(url, 0)
@@ -24,6 +26,7 @@ object MoovitLink {
         if (url.isNullOrBlank()) return null
         if (depth > 4 || url.length > 16_384) return null
         val trimmed = url.trim()
+        if (trimmed.startsWith("geo:", ignoreCase = true)) return geo(trimmed.substring(4))
         val uri = runCatching { URI(trimmed) }.getOrNull() ?: return null
         if (uri.userInfo != null || uri.port != -1) return null
         val scheme = trimmed.substringBefore("://", "").lowercase(Locale.US)
@@ -36,6 +39,15 @@ object MoovitLink {
             web && path.startsWith("/i/") -> path.removePrefix("/i/")
             scheme == "moovit" && host == "i" -> path.removePrefix("/")
             else -> null
+        }
+        // A line or a stop opened from Moovit, the way its own app reads them: moovit://line?lgi=, moovit://station/<id>.
+        val line = (scheme == "moovit" && host == "line") || (web && path == "/line")
+        if (line) return parameters(uri.rawQuery.orEmpty())["lgi"]?.toIntOrNull()?.takeIf { it > 0 }?.let {
+            Plan(null, null, null, null, null, null, 0L, false, lineGroup = it)
+        }
+        val station = (scheme == "moovit" && host == "station") || (web && path.startsWith("/station/"))
+        if (station) return path.substringAfterLast('/').toIntOrNull()?.takeIf { it > 0 }?.let {
+            Plan(null, null, null, null, null, null, 0L, false, stopId = it)
         }
         if (shared != null) return shared.takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,160}")) }?.let {
             Plan(null, null, null, null, null, null, 0L, true, sharedId = it)
@@ -78,6 +90,26 @@ object MoovitLink {
             autoRun = autoRun,
             rides = ridesOf(params["kav_trip"]),
         )
+    }
+
+    // geo: links (RFC 5870, plus Android's ?q=): a point, a point with "(label)", or a place name to search for.
+    // Kav plans the way there from where you are, as apps like GeoShare expect of a navigation app.
+    private fun geo(body: String): Plan? {
+        fun point(text: String): Pair<Double, Double>? {
+            val parts = text.split(',')
+            if (parts.size < 2) return null
+            val lat = parts[0].trim().toDoubleOrNull() ?: return null
+            val lon = parts[1].trim().toDoubleOrNull() ?: return null
+            if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return null
+            return (lat to lon).takeIf { lat != 0.0 || lon != 0.0 }
+        }
+        val q = parameters(body.substringAfter('?', "").substringBefore('#'))["q"]?.trim().orEmpty()
+        val labelled = Regex("^(-?[\\d.]+)\\s*,\\s*(-?[\\d.]+)\\s*(?:\\((.*)\\))?$").find(q)
+        val at = labelled?.let { point("${it.groupValues[1]},${it.groupValues[2]}") }
+            ?: point(body.substringBefore('?').substringBefore(';'))
+        val name = if (labelled != null) labelled.groupValues[3].takeIf { it.isNotBlank() } else q.takeIf { it.isNotBlank() }
+        if (at == null && name == null) return null
+        return Plan(null, null, null, name, at?.first, at?.second, 0L, autoRun = true)
     }
 
     private fun parameters(query: String): Map<String, String> = buildMap {

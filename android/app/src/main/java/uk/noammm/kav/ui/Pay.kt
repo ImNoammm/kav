@@ -1762,6 +1762,13 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
         delay(5_000)
         if (Payer.paidLater == paid) Payer.paidLater = null
     }
+    var dropping by remember { mutableStateOf(false) }
+    if (dropping && p != null) MoovitDialog(
+        T("Close quick pay?", "לסגור את התשלום המהיר?"),
+        T("To pay for this ride after closing it, you'll have to scan the bus's code again.",
+            "כדי לשלם על הנסיעה אחרי הסגירה, תצטרכו לסרוק שוב את הקוד של האוטובוס."),
+        T("Yes, close", "כן, לסגור"), no = T("No, keep it", "לא, להשאיר"), onDismiss = { dropping = false },
+    ) { dropping = false; Payer.dropPending() }
     var moved by remember { mutableStateOf(Offset.Zero) }
     var box by remember { mutableStateOf(Rect.Zero) }
     var room by remember { mutableStateOf(Size.Zero) }
@@ -1812,7 +1819,7 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
                 }
                 Box(
                     Modifier.align(Alignment.TopEnd).padding(4.dp).size(26.dp).clip(RoundedCornerShape(K.rPill))
-                        .background(K.critical).clickable(enabled = !Payer.payingLater, role = Role.Button) { Payer.dropPending() },
+                        .background(K.critical).clickable(enabled = !Payer.payingLater, role = Role.Button) { dropping = true },
                     contentAlignment = Alignment.Center,
                 ) { Text("✕", fontSize = 13.sp, color = Color.White, fontWeight = FontWeight.SemiBold) }
             } else if (paid != null) {

@@ -134,7 +134,7 @@ internal fun stationMarks(
     return out.distinctBy { Triple(it.lat, it.lon, it.point) }
 }
 
-internal class MapMarks(val dots: List<MapDot>, val markers: List<MapMarker>, val images: Map<String, ImageBitmap>)
+internal class MapMarks(val markers: List<MapMarker>, val images: Map<String, ImageBitmap>)
 
 // Station doors, platforms and the pin where the trip ends, drawn by the map itself.
 internal fun tripMarks(
@@ -145,16 +145,15 @@ internal fun tripMarks(
     density: Density,
     dir: LayoutDirection,
 ): MapMarks {
-    val dots = ArrayList<MapDot>()
     val markers = ArrayList<MapMarker>()
     // Doors come after the platforms, so a door sharing a station with the next ride's platform stays in front of it.
     val doors = ArrayList<MapMarker>()
     val images = HashMap<String, ImageBitmap>()
     for (m in marks) {
         if (m.point == StationPoint.PLATFORM) {
-            dots += MapDot(m.lat, m.lon, K.bg, 11f)
-            dots += MapDot(m.lat, m.lon, m.tint, 9f)
-            markers += MapMarker(m.lat, m.lon, modeIconName(m.mode))
+            val (name, image) = ringedMark(m.mode, m.tint, 11f, 9f, density)
+            images[name] = image
+            markers += MapMarker(m.lat, m.lon, name)
             continue
         }
         val out = m.point == StationPoint.EXIT
@@ -168,7 +167,7 @@ internal fun tripMarks(
         images[name] = image
         markers += MapMarker(lat, lon, name, bottom = true)
     }
-    return MapMarks(dots, markers, images)
+    return MapMarks(markers, images)
 }
 
 private val iconCache = HashMap<String, ImageBitmap>()
@@ -214,21 +213,38 @@ private fun pinIcon(density: Density, dir: LayoutDirection) = with(density) {
     }
 }
 
+// A mode on its ring as one image, so marks that overlap stack whole instead of one's ring cutting through another's
+// icon. The radii are in dp.
+internal fun ringedMark(mode: Mode, fill: Color, outer: Float, inner: Float, density: Density): Pair<String, ImageBitmap> =
+    with(density) {
+        val o = outer.dp.toPx()
+        val name = "kav-ringed-${mode.name}-${fill.toArgb()}-${K.bg.toArgb()}-$outer-$inner"
+        icon(name, 2 * o, 2 * o, density, LayoutDirection.Ltr) {
+            drawCircle(K.bg, o, Offset(o, o))
+            drawCircle(fill, inner.dp.toPx(), Offset(o, o))
+            drawModeMark(mode, Offset(o, o), 12.dp.toPx())
+        }
+    }
+
 // Vehicles as the Live tab draws them. alpha fades one out.
-internal fun vehicleGeometry(vehicles: List<Pair<Moovit.Arrival, Mode>>, alpha: (Moovit.Arrival) -> Float = { 1f }): MapGeometry {
+internal fun vehicleGeometry(
+    vehicles: List<Pair<Moovit.Arrival, Mode>>,
+    density: Density,
+    alpha: (Moovit.Arrival) -> Float = { 1f },
+): MapGeometry {
     val halos = ArrayList<MapDot>()
-    val dots = ArrayList<MapDot>()
     val markers = ArrayList<MapMarker>()
+    val images = HashMap<String, ImageBitmap>()
     for ((a, mode) in vehicles) {
         val k = alpha(a)
         if (k <= .01f) continue
         val tint = if (a.vehicleStatus == 2) K.problem else K.realtime
         halos += MapDot(a.lat, a.lon, tint.copy(alpha = .2f * k), 18f)
-        dots += MapDot(a.lat, a.lon, K.bg.copy(alpha = k), 11f)
-        dots += MapDot(a.lat, a.lon, tint.copy(alpha = k), 9f)
-        if (k > .5f) markers += MapMarker(a.lat, a.lon, modeIconName(mode), alpha = k)
+        val (name, image) = ringedMark(mode, tint, 11f, 9f, density)
+        images[name] = image
+        markers += MapMarker(a.lat, a.lon, name, alpha = k)
     }
-    return MapGeometry(dots = dots, markers = markers, halos = halos)
+    return MapGeometry(markers = markers, halos = halos, images = images)
 }
 
 private fun between(a: Pair<Double, Double>, b: Pair<Double, Double>) =
@@ -263,7 +279,7 @@ fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), hei
             dots = boardingMarkers(rides, tints, r) + listOfNotNull(
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 6f) },
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, Color.Transparent, 5f, K.text, 2f) },
-            ) + station.dots,
+            ),
             markers = station.markers,
             images = station.images,
         )
@@ -272,6 +288,6 @@ fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), hei
         points,
         modifier.fillMaxWidth().height(height).panel(12.dp),
         geometry = geometry,
-        live = vehicleGeometry(vehicles) { vehicleAlpha.value },
+        live = vehicleGeometry(vehicles, density) { vehicleAlpha.value },
     )
 }

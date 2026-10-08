@@ -82,8 +82,6 @@ fun modeMark(mode: Mode, px: Int, ink: Color = K.bg): ImageBitmap =
         image
     }
 
-fun modeIconName(mode: Mode): String = "kav-mode-${mode.name.lowercase(java.util.Locale.US)}"
-
 fun DrawScope.drawModeMark(mode: Mode, centre: Offset, span: Float, ink: Color = K.bg) {
     val px = span.toInt().coerceAtLeast(4)
     drawImage(modeMark(mode, px, ink), topLeft = Offset(centre.x - px / 2f, centre.y - px / 2f))

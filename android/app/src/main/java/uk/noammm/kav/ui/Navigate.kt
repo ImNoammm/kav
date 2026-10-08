@@ -572,7 +572,7 @@ private fun StopRail(
                 ) {
                     Spacer(Modifier.width(20.dp + K.gap2))
                     Text(
-                        names[id]?.name ?: "#$id",
+                        names[id]?.name ?: "…",
                         fontSize = 13.sp,
                         color = if (done) K.dim else K.text,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -788,13 +788,17 @@ private fun NavigateMap(
             } + boardingMarkers(rideLegsShapes, tints, r, r.stops + stopNames) + listOfNotNull(
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 7f) },
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, Color.Transparent, 5f, K.text, 2f) },
-            ) + station.dots,
+            ),
             markers = station.markers,
             images = station.images,
         )
     }
 
     val walkArrow = follow != null && heading != null
+    val vehicleMarks = vehicles.map { v ->
+        val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
+        v to ringedMark(vehicleModes[v.tripId] ?: Mode.BUS, tint, 12f, 10f, density)
+    }
     val live = MapGeometry(
         dots = buildList {
             here?.let { (lat, lon) ->
@@ -804,23 +808,17 @@ private fun NavigateMap(
                     add(MapDot(lat, lon, K.text.copy(alpha = mePulse.value), 5f))
                 }
             }
-            for (v in vehicles) {
-                val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
-                add(MapDot(v.lat, v.lon, K.bg.copy(alpha = vehicleAlpha.value), 12f))
-                add(MapDot(v.lat, v.lon, tint.copy(alpha = vehicleAlpha.value), 10f))
-            }
         },
         markers = (
             if (walkArrow) here?.let { (lat, lon) ->
                 listOf(MapMarker(lat, lon, MAP_ARROW_ICON, heading ?: 0f, mePulse.value, turns = true))
             }.orEmpty() else emptyList()
-        ) + vehicles.map { v ->
-            MapMarker(v.lat, v.lon, modeIconName(vehicleModes[v.tripId] ?: Mode.BUS), alpha = vehicleAlpha.value)
-        },
+        ) + vehicleMarks.map { (v, mark) -> MapMarker(v.lat, v.lon, mark.first, alpha = vehicleAlpha.value) },
         halos = vehicles.map { v ->
             val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
             MapDot(v.lat, v.lon, tint.copy(alpha = 0.20f * vehicleAlpha.value), 20f)
         },
+        images = vehicleMarks.associate { it.second },
     )
 
     val reach = with(LocalDensity.current) { 36.dp.toPx() }

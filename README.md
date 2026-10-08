@@ -57,6 +57,13 @@ you're on the way.
 Grab the APK from [Releases](https://github.com/ImNoammm/kav/releases) and open
 it. It updates itself from the same page. No store, no update service.
 
+GitHub builds every APK there from the code in this repo, and you can check the
+one you downloaded with the [GitHub CLI](https://cli.github.com):
+
+```sh
+gh attestation verify kav-2.4.1.apk --repo ImNoammm/kav
+```
+
 First launch fetches the map, about 176 MB once. It lives on the phone from then
 on, so the map works offline and no tile server sees where you look.
 

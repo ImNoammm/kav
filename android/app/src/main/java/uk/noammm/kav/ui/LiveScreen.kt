@@ -628,7 +628,7 @@ private fun LiveMap(
         geometry = geometry,
         onLook = onLook,
         moved = !following,
-        live = vehicleGeometry(shown.map { it.arrival to modeOf(it.routeType) }) { a ->
+        live = vehicleGeometry(shown.map { it.arrival to modeOf(it.routeType) }, LocalDensity.current) { a ->
             if (a.tripId == (chosen ?: look?.tripId)) 1f else 1f - step
         },
         onTap = { at, proj ->
@@ -696,7 +696,7 @@ private fun LinePlate(v: Tracked) {
     }
 }
 
-private fun stopName(stop: Moovit.Stop?, id: Int) = stop?.name?.ifBlank { null } ?: T("stop $id", "תחנה $id")
+private fun stopName(name: String?) = name?.ifBlank { null } ?: "…"
 
 @Composable
 private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onSelect: (Tracked) -> Unit) {
@@ -711,6 +711,7 @@ private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onS
         )
         return
     }
+    val named = rememberStopNames(vehicles.filter { it.stop == null }.map { it.arrival.stopId })
     LazyColumn(modifier, contentPadding = PaddingValues(
         start = K.gap1, top = K.gap1, end = K.gap1, bottom = K.gap1 + LocalBottomBarInset.current,
     )) {
@@ -732,7 +733,7 @@ private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onS
                         fontSize = 14.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        "${stopName(v.stop, a.stopId)} · ${whenLabel(v.eta, now)}",
+                        "${stopName(v.stop?.name ?: named[a.stopId]?.name)} · ${whenLabel(v.eta, now)}",
                         fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -820,6 +821,7 @@ private fun LiveStopCard(
     onVehicle: (Tracked) -> Unit,
     onClose: () -> Unit,
 ) {
+    val named = rememberStopNames(if (stop == null) listOf(stopId) else emptyList())
     val due = remember(arrivals, stopId) {
         arrivals.values.filter { it.stopId == stopId }
             .sortedBy { a -> a.rtUtc.takeIf { it > 0 } ?: a.staticUtc }
@@ -872,7 +874,7 @@ private fun LiveStopCard(
             StopGlyphOrPhoto(stopId, null, thumb = 44.dp)
             Column(Modifier.weight(1f)) {
                 Text(
-                    stopName(stop, stopId), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+                    stopName(stop?.name ?: named[stopId]?.name), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 Text(

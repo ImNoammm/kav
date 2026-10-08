@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -608,7 +609,7 @@ private fun LineRouteMap(
     val mode = modeOf(rt)
     TileMap(
         path, modifier, geometry = geometry,
-        live = vehicleGeometry(vehicles.map { it to mode }),
+        live = vehicleGeometry(vehicles.map { it to mode }, LocalDensity.current),
     )
 }
 

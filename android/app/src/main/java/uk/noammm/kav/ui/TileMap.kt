@@ -590,11 +590,6 @@ fun TileMap(
     fun Style.ensureKavIcons() {
         val px = with(density) { 1.dp.toPx() }
         if (getImage(MAP_ARROW_ICON) == null) addImage(MAP_ARROW_ICON, arrowBitmap(px))
-        val span = (12f * px).toInt().coerceAtLeast(8)
-        for (m in Mode.entries) {
-            val name = modeIconName(m)
-            if (getImage(name) == null) addImage(name, modeMark(m, span).asAndroidBitmap())
-        }
     }
     LaunchedEffect(style, geometry) {
         val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect

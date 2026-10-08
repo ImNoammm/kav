@@ -380,20 +380,13 @@ private fun walkLabel(metres: Int, mins: Int): String {
 private fun RideStops(l: Moovit.Leg, r: Moovit.Resolved, label: @Composable () -> Unit) {
     var open by remember(l) { mutableStateOf(false) }
     val between = l.stops.drop(1).dropLast(1)
-    var names by remember(l) { mutableStateOf(between.associateWith { r.stopName(it) }) }
-    LaunchedEffect(open) {
-        if (!open || names.values.all { it != null }) return@LaunchedEffect
-        val s = runCatching { uk.noammm.kav.ui.Online.open() }.getOrNull() ?: return@LaunchedEffect
-        names = withContext(Dispatchers.IO) {
-            names.mapValues { (id, n) -> n ?: runCatching { Moovit.stopInfo(s, id)?.name }.getOrNull() }
-        }
-    }
+    val asked = rememberStopNames(if (open) between.filter { r.stopName(it) == null } else emptyList())
     Column(Modifier.fillMaxWidth().animateContentSize()
         .then(if (between.isEmpty()) Modifier else Modifier.clickable(role = Role.Button) { open = !open })) {
         label()
         if (open) Column(Modifier.padding(start = 23.dp, top = K.gap2), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             between.forEach { id ->
-                Text(names[id] ?: "…", fontSize = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(r.stopName(id) ?: asked[id]?.name ?: "…", fontSize = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }

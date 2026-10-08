@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -22,6 +23,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.MoovitSession
 import java.util.Date
@@ -40,21 +42,31 @@ fun whenLabel(t: Long, now: Long = System.currentTimeMillis() / 1000): String {
 
 private suspend fun onlineSession(): MoovitSession? = runCatching { Online.open() }.getOrNull()
 
+// Moovit names stops one lookup at a time, and on a weak connection some fail: those are asked again, less and less
+// often, for as long as they're on screen.
 @Composable
 fun rememberStopNames(ids: List<Int>): Map<Int, Moovit.StopInfo> {
     val wanted = ids.filter { it > 0 }.distinct()
     val key = wanted.sorted().joinToString(",")
     var out by remember(key) { mutableStateOf(emptyMap<Int, Moovit.StopInfo>()) }
     LaunchedEffect(key) {
-        if (wanted.isEmpty()) return@LaunchedEffect
-        val s = onlineSession() ?: return@LaunchedEffect
-        for (batch in wanted.chunked(6)) {
-            val resolved = coroutineScope {
-                batch.map { id -> async(Dispatchers.IO) {
-                    Moovit.stopInfo(s, id)?.let { id to it }
-                } }.awaitAll().filterNotNull().toMap()
+        var wait = 2_000L
+        while (true) {
+            val missing = wanted.filter { it !in out }
+            if (missing.isEmpty()) break
+            onlineSession()?.let { s ->
+                for (batch in missing.chunked(6)) {
+                    val resolved = coroutineScope {
+                        batch.map { id -> async(Dispatchers.IO) {
+                            runCatching { Moovit.stopInfo(s, id) }.getOrNull()?.let { id to it }
+                        } }.awaitAll().filterNotNull().toMap()
+                    }
+                    out = out + resolved
+                }
             }
-            out = out + resolved
+            if (wanted.all { it in out }) break
+            delay(wait)
+            wait = (wait * 2).coerceAtMost(60_000L)
         }
     }
     return out
@@ -198,7 +210,7 @@ private fun VehicleMap(
         points,
         modifier.fillMaxWidth().height(260.dp).panel(K.rCard),
         geometry = geometry,
-        live = vehicleGeometry(listOfNotNull(bus?.let { it to mode })),
+        live = vehicleGeometry(listOfNotNull(bus?.let { it to mode }), LocalDensity.current),
     )
 }
 
@@ -243,8 +255,10 @@ private fun StatusBlock(
 
         Spacer(Modifier.height(K.gap4))
         val nextStop = nextStopOnLeg(leg, a)
+        // The trip only carries the names of the stops it boards and leaves at.
+        val asked = rememberStopNames(listOfNotNull(nextStop?.takeIf { r.stopName(it) == null }))
         if (nextStop != null) {
-            Fact(T("Next stop", "התחנה הבאה"), r.stopName(nextStop) ?: "#$nextStop")
+            Fact(T("Next stop", "התחנה הבאה"), r.stopName(nextStop) ?: asked[nextStop]?.name ?: "…")
         }
         val away = a?.stopsAway ?: -1
         if (away >= 0) Fact(if (away == 1) T("1 stop away", "תחנה אחת") else T("Stops away", "תחנות"), if (away == 1) "" else "$away")

@@ -1,28 +1,64 @@
+name: Release
+
+# A version tag builds the APK on GitHub from that exact commit, signs it with Kav's key so installed copies take the
+# update, and attaches it to the tag's draft release with an attestation anyone can check:
+#   gh attestation verify kav-2.4.1.apk --repo ImNoammm/kav
 on:
   push:
-    tags:
-      - '*'
+    tags: ['v*']
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: gradle/actions/wrapper-validation@v6
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: 17
-      - run: |
-          sh tools/fetch.sh
+          java-version: 21
+
+      - name: Timetable
+        run: |
+          tools/fetch.sh
           KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
-          cd android
-          sh gradlew assembleRelease
-      - uses: actions/upload-artifact@v7
+          rm -f android/app/src/main/assets/il.kav.gz
+
+      # Without ANDROID_USER_HOME, Gradle on GitHub's runners signs with a debug key of its own instead of this one.
+      - name: Build
+        env:
+          KAV_SIGNING_KEY: ${{ secrets.KAV_SIGNING_KEY }}
+        run: |
+          export ANDROID_USER_HOME="$HOME/.android"
+          mkdir -p "$ANDROID_USER_HOME"
+          printf '%s' "$KAV_SIGNING_KEY" | base64 -d > "$ANDROID_USER_HOME/debug.keystore"
+          cd android && ./gradlew --no-daemon assembleRelease
+
+      # Every release so far is signed with this certificate. Any other key and Android refuses the update.
+      - name: Check
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APK="kav-$VERSION.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+          TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          "$TOOLS/aapt2" dump badging "$APK" | head -1
+          "$TOOLS/apksigner" verify --print-certs "$APK" | grep "SHA-256 digest"
+          "$TOOLS/aapt2" dump badging "$APK" | grep -q "versionName='$VERSION'"
+          "$TOOLS/apksigner" verify --print-certs "$APK" | grep -q 'SHA-256 digest: 9d183d4386584059f53376987ce0a5de4960cd7a9bf4495e2cf0e120f0580f44'
+          echo "APK=$APK" >> "$GITHUB_ENV"
+
+      - uses: actions/attest-build-provenance@v4
         with:
-          path: android/app/build/outputs/apk/*/*.apk
-      - uses: softprops/action-gh-release@v3
-        with:
-          files: android/app/build/outputs/apk/*/*.apk
+          subject-path: ${{ env.APK }}
+
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --title "Kav ${GITHUB_REF_NAME#v}" --notes ''
+          gh release upload "$GITHUB_REF_NAME" "$APK" --clobber

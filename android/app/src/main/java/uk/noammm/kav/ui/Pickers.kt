@@ -13,6 +13,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
@@ -77,9 +81,16 @@ fun KavField(
             .semantics { contentDescription = placeholder }
             .padding(horizontal = K.gap4, vertical = 12.dp),
         decorationBox = { innerTextField ->
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-                if (value.isEmpty()) Text(placeholder, fontSize = 15.sp, color = K.dim)
-                innerTextField()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                    if (value.isEmpty()) Text(placeholder, fontSize = 15.sp, color = K.dim)
+                    innerTextField()
+                }
+                if (value.isNotEmpty() && !secret) Icon(
+                    Icons.Rounded.Close, contentDescription = T("Clear", "ניקוי"), tint = K.dim,
+                    modifier = Modifier.padding(start = K.gap2).size(20.dp).clip(CircleShape)
+                        .clickable(role = Role.Button) { onValue("") },
+                )
             }
         },
     )

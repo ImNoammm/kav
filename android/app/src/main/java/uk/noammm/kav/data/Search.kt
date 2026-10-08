@@ -36,9 +36,13 @@ internal fun searchWords(s: String): List<String> {
 
 internal fun spacedWords(s: String) = searchWords(s).joinToString(" ", " ", " ")
 
+// Words that just say "stop" or "station": stop names rarely carry them, so they'd sink every match.
+private val generic = setOf("תחנת", "תחנה", "תחנות", "station", "stop")
+
 // Like Moovit's own stop search: every typed word has to start a word of the name, code or mode.
 fun Net.stopsMatching(q: String, at: Pair<Double, Double>?, modeName: (Int) -> String): List<Int> {
-    val need = searchWords(q).map { " $it" }
+    val typed = searchWords(q)
+    val need = typed.filter { it !in generic }.ifEmpty { typed }.map { " $it" }
     if (need.isEmpty()) return emptyList()
     val words = stopWords
     val types = stopType

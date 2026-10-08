@@ -86,11 +86,19 @@ fun KavField(
                     if (value.isEmpty()) Text(placeholder, fontSize = 15.sp, color = K.dim)
                     innerTextField()
                 }
-                if (value.isNotEmpty() && !secret) Icon(
-                    Icons.Rounded.Close, contentDescription = T("Clear", "ניקוי"), tint = K.dim,
-                    modifier = Modifier.padding(start = K.gap2).size(20.dp).clip(CircleShape)
-                        .clickable(role = Role.Button) { onValue("") },
-                )
+                // The same pop as the favourites' remove badge.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = value.isNotEmpty() && !secret,
+                    enter = scaleIn(spring(dampingRatio = .55f, stiffness = Spring.StiffnessMedium), initialScale = .5f) +
+                        fadeIn(tween(120)),
+                    exit = scaleOut(tween(140), targetScale = .5f) + fadeOut(tween(120)),
+                ) {
+                    Icon(
+                        Icons.Rounded.Close, contentDescription = T("Clear", "ניקוי"), tint = K.dim,
+                        modifier = Modifier.padding(start = K.gap2).size(20.dp).clip(CircleShape)
+                            .clickable(role = Role.Button) { onValue("") },
+                    )
+                }
             }
         },
     )
@@ -220,12 +228,54 @@ fun PlacePicker(
                 Result.failure(e)
             }
         }
+        val address = async(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                uk.noammm.kav.data.Addresses.find(q, at)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+        val google = async(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                uk.noammm.kav.data.GoogleMaps.suggest(q, at)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+        }
         val waited = kotlinx.coroutines.withTimeoutOrNull(3000) { online.await() }
         stations = near.await()
         busy = waited == null && stations.isEmpty()
         val answer = waited ?: online.await()
-        places = answer.getOrDefault(emptyList())
-        error = answer.exceptionOrNull()?.takeIf { stations.isEmpty() }?.let { it.message ?: it.javaClass.simpleName }
+        val typed = kotlinx.coroutines.withTimeoutOrNull(3000) { google.await() }
+        // A typo gets no places from Google, only the text it would correct it to, so its places come from that text.
+        val suggested = typed?.queries?.firstOrNull()?.takeIf { typed.places.isEmpty() }?.let { fixed ->
+            kotlinx.coroutines.withTimeoutOrNull(3000) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { uk.noammm.kav.data.GoogleMaps.suggest(fixed, at) }.getOrNull()
+                }
+            }?.let { again -> uk.noammm.kav.data.GoogleMaps.Suggestions(again.places, typed.queries) }
+        } ?: typed
+        // A typo Google corrects ("תחנת רכת חדרה") still finds the station, under the first correction that names one.
+        val fixes = suggested?.queries.orEmpty().take(3)
+        if (stations.isEmpty() && fixes.isNotEmpty()) stations = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            runCatching {
+                val n = net ?: uk.noammm.kav.loadNet(ctx)
+                fixes.asSequence().map { fixed -> n.stopsMatching(fixed, at) { modeName(modeOf(it)) } }
+                    .firstOrNull { it.isNotEmpty() }.orEmpty().map { placeOf(n, it) }
+            }.getOrDefault(emptyList())
+        }
+        val exact = kotlinx.coroutines.withTimeoutOrNull(3000) { address.await() }.orEmpty()
+        // Moovit's app lists Google's places, so Kav does too, with Moovit's own search standing in when Google has
+        // none. A suggested address only knows its street's position, so it gives way to the house itself.
+        val number = uk.noammm.kav.data.searchWords(q).firstOrNull { it.first().isDigit() }
+        val fromGoogle = suggested?.places.orEmpty()
+            .filter { p -> number == null || uk.noammm.kav.data.searchWords(p.name).none { it == number } }
+        places = (exact + fromGoogle.ifEmpty { answer.getOrDefault(emptyList()) }).take(5)
+        error = answer.exceptionOrNull()?.takeIf { stations.isEmpty() && places.isEmpty() }?.let { it.message ?: it.javaClass.simpleName }
         busy = false
     }
 

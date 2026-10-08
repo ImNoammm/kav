@@ -147,6 +147,8 @@ internal fun tripMarks(
 ): MapMarks {
     val dots = ArrayList<MapDot>()
     val markers = ArrayList<MapMarker>()
+    // Doors come after the platforms, so a door sharing a station with the next ride's platform stays in front of it.
+    val doors = ArrayList<MapMarker>()
     val images = HashMap<String, ImageBitmap>()
     for (m in marks) {
         if (m.point == StationPoint.PLATFORM) {
@@ -158,8 +160,9 @@ internal fun tripMarks(
         val out = m.point == StationPoint.EXIT
         val (name, image) = doorIcon(if (out) exit else entrance, out, density, dir)
         images[name] = image
-        markers += MapMarker(m.lat, m.lon, name)
+        doors += MapMarker(m.lat, m.lon, name)
     }
+    markers += doors
     end?.let { (lat, lon) ->
         val (name, image) = pinIcon(density, dir)
         images[name] = image
@@ -219,7 +222,7 @@ internal fun vehicleGeometry(vehicles: List<Pair<Moovit.Arrival, Mode>>, alpha: 
     for ((a, mode) in vehicles) {
         val k = alpha(a)
         if (k <= .01f) continue
-        val tint = if (a.vehicleStatus == 2) K.problem else K.live
+        val tint = if (a.vehicleStatus == 2) K.problem else K.realtime
         halos += MapDot(a.lat, a.lon, tint.copy(alpha = .2f * k), 18f)
         dots += MapDot(a.lat, a.lon, K.bg.copy(alpha = k), 11f)
         dots += MapDot(a.lat, a.lon, tint.copy(alpha = k), 9f)

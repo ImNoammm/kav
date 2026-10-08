@@ -46,7 +46,8 @@ you're on the way.
 - Favourite places on the home screen, and backups of your places and settings
   to a `.kav` file.
 - Private search, on by default, keeps your exact location out of searches:
-  Moovit only sees the centre of the town you're in, or a place you pick.
+  Moovit and Google only see the centre of the town you're in, or a place you
+  pick.
 - Pays for bus, train, light rail and Carmelit rides, if you want it to. That
   needs your own Moovit payment account, and only payments use it. Everything
   else stays anonymous.
@@ -86,9 +87,21 @@ KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
   License 2.0).
 - Timetables from the Israel Ministry of Transport. Trip plans and live
   positions from Moovit.
+- Places and exact addresses from Google Maps' public web search, asked the way
+  a logged-out browser asks it: no key, no account, no cookies. It gets the typed
+  text and the area above. The request recipe is
+  [Vela Maps](https://github.com/PimpinPumpkin/Vela)' (GPL-3.0). Once a day Kav
+  reads Vela's signed recipe and its own (`recipe/kav.json`, for Moovit) from
+  GitHub, so a fix for Google or Moovit reaches it without an update. A file
+  without the right signature, or pointing anywhere but Google or Moovit, is
+  ignored. See [recipe/README.md](recipe/README.md).
+- Addresses Google doesn't have from GovMap, the Survey of Israel's map, sent
+  just the typed text.
 - Thanks to the amazing team at [HTTP Toolkit](https://httptoolkit.com), who
   kindly gave Kav a free Pro licence. It's what Kav uses to study how Moovit's
   app talks to its servers.
+- A huge thanks to [@yair-654](https://github.com/yair-654) for all the support
+  for Kav, and for the bug reports and ideas behind a lot of it.
 
 ## License
 

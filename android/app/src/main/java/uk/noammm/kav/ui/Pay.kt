@@ -550,6 +550,14 @@ private fun SignIn() {
         else step = SignInStep.Unfinished(missing)
     }
 
+    // Signed in: what paying still needs, the terms and then the card, the way Moovit's app asks them.
+    suspend fun next() {
+        val s = Payer.call { MoovitPay.steps(it) }
+        val terms = s.terms
+        if (MoovitPay.STEP_TERMS in s.missing && terms != null) step = SignInStep.Terms(terms)
+        else finish(s.missing, s.card)
+    }
+
     // Tried again after registering in Moovit's app: from the start, as a new paying user.
     var attempt by remember { mutableIntStateOf(0) }
     LaunchedEffect(attempt) {
@@ -557,9 +565,8 @@ private fun SignIn() {
             // Moovit's own app signs in as a brand new user, and so does Kav.
             if (!Payer.signedIn) Payer.signOut()
             MoovitPay.newFlow()
-            val s = Payer.call { MoovitPay.steps(it) }
-            if (MoovitPay.STEP_PHONE !in s.missing) finish(s.missing, s.card)
-            else step = s.terms?.takeIf { MoovitPay.STEP_TERMS in s.missing }?.let { SignInStep.Terms(it) } ?: SignInStep.Phone
+            val login = Payer.call { MoovitPay.steps(it, login = true) }
+            if (MoovitPay.STEP_PHONE in login.missing) step = SignInStep.Phone else next()
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             error = failure(e); step = SignInStep.Phone
         }
@@ -586,7 +593,7 @@ private fun SignIn() {
                     }
                 }
                 PayButton(t.button.ifBlank { T("Let's begin", "בואו נתחיל") }, busy) {
-                    run { Payer.call { MoovitPay.acceptTerms(it, t.version) }; step = SignInStep.Phone }
+                    run { Payer.call { MoovitPay.acceptTerms(it, t.version) }; next() }
                 }
             }
             SignInStep.Phone -> {
@@ -610,8 +617,10 @@ private fun SignIn() {
                         // Kav can't add a card, so a number without an account is registered in Moovit's app first. The
                         // paying user that asked is dropped, and trying again starts afresh.
                         if (!v.exists) { Payer.signOut(); step = SignInStep.NoAccount }
-                        else if (v.moved) finish(v.missing, v.card)
-                        else Payer.call { MoovitPay.verify(it, code, takeOver = true) }.let { finish(it.missing, it.card) }
+                        else {
+                            if (!v.moved) Payer.call { MoovitPay.verify(it, code, takeOver = true) }
+                            next()
+                        }
                     }
                 }
                 Text(T("Send it again", "שליחה מחדש"), fontSize = 14.sp, color = K.accent,
@@ -1864,16 +1873,18 @@ internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit
     val now = rememberNow()
     val bought = key?.let { k -> ridesOf(wallet?.tickets.orEmpty()).firstOrNull { it.key == k } }?.takeIf { !it.cancelled }
     LaunchedEffect(key) { if (key != null) runCatching { Payer.refresh() } }
-    Spacer(Modifier.height(K.gap2))
-    Box(Modifier.height(1.dp).fillMaxWidth().background(K.border))
-    if (bought != null) RideRow(bought, wallet?.window, now, inset = 0.dp) { Payer.showRef = bought.key; model.payOpen = true }
+    // Paying gets a card of its own under the ride's line.
+    Spacer(Modifier.height(K.gap3))
+    Column(Modifier.fillMaxWidth().panel(K.rControl)) {
+    if (bought != null) RideRow(bought, wallet?.window, now, inset = K.gap3) { Payer.showRef = bought.key; model.payOpen = true }
     if (bought == null || bought.canPayAgain(wallet?.window, now)) Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp)
+        Modifier.fillMaxWidth()
             .clickable(role = Role.Button) {
                 model.payFor = PayFor(legIndex, station, if (station != null) board?.point else null, model.activeJourney?.paymentKey)
                 model.payOpen = true
             }
-            .padding(vertical = K.gap2),
+            // The title's font keeps room above its capitals, so half a dp less on top centres the text you see.
+            .padding(start = K.gap3, end = K.gap3, top = 11.5.dp, bottom = 12.5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
@@ -1889,6 +1900,7 @@ internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit
                 else board?.name ?: T("Kav finds the station you're at", "Kav מאתרת את התחנה שבה אתם נמצאים"),
                 fontSize = 12.sp, color = K.dim)
         }
+    }
     }
 }
 

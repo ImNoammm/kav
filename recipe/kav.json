@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "moovit": {
+    "apiKey": "moovit_2751703405",
+    "clientVersion": "5.201.5.1810",
+    "storeAppId": "com.tranzmate",
+    "payContext": "IsraelMot",
+    "payLoginContext": "Login@Default",
+    "hosts": {
+      "app4": "https://app4.moovitapp.com/services-app/services/",
+      "app5": "https://app5.moovitapp.com/services-app/services/",
+      "app4cdn": "https://app4cdn.moovitapp.com/services-app/services/",
+      "static": "https://static.moovitapp.com/v4/"
+    },
+    "userHeaders": {},
+    "headers": {}
+  },
+  "google": {}
+}

@@ -10,6 +10,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -76,9 +79,27 @@ fun TripDetailScreen(
             else -> leavePlan()
         }
     }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    // The timetable route with this ride's number that leaves its boarding stop, matched by the stop's public code.
+    val openLine: (Moovit.Leg, Moovit.Resolved) -> Unit = { ride, res ->
+        scope.launch {
+            val code = res.stop(ride.fromStop)?.code?.toIntOrNull() ?: return@launch
+            val number = ride.shortName.ifBlank { res.line(ride.lineId)?.number.orEmpty() }
+            val net = model.net ?: withContext(Dispatchers.Default) { uk.noammm.kav.loadNet(ctx) }.also { model.net = it }
+            val found = withContext(Dispatchers.Default) {
+                val stop = net.code.indexOfFirst { it == code }.takeIf { it >= 0 } ?: return@withContext null
+                val route = (net.dStart[stop] until net.dStart[stop + 1]).asSequence()
+                    .map { net.tripRoute[net.tripOf(net.cST[net.dConn[it]])] }
+                    .firstOrNull { net.rShort[it] == number } ?: return@withContext null
+                route to stop
+            } ?: return@launch
+            model.lineFocusStop = found.second; model.lineRoute = found.first; model.tab = uk.noammm.kav.Tab.Lines
+        }
+    }
     CompositionLocalProvider(LocalServiceAlertOpener provides { group, label ->
         alert = group to label
-    }) {
+    }, LocalLineOpener provides openLine) {
     androidx.compose.animation.AnimatedContent(
         targetState = Triple(tracking != null, navigating, tracking),
         transitionSpec = {
@@ -182,7 +203,7 @@ private fun Summary(trip: Moovit.Itinerary, r: Moovit.Resolved) {
             }
         }
         Spacer(Modifier.height(K.gap3))
-        TripStrip(trip, r)
+        RouteStrip(trip, r)
         val chips = ArrayList<String>()
         if (trip.accessible) chips.add(T("Step-free", "נגיש"))
         if (Shown.co2 && trip.co2g >= 0) chips.add(co2(trip.co2g))
@@ -227,27 +248,6 @@ private fun depNote(deps: List<Moovit.Departure>): String? {
 }
 
 fun co2(g: Int): String = if (g < 1000) T("$g g CO2e", "$g גרם CO2e") else T("%.2f kg CO2e", "%.2f ק\"ג CO2e").format(Locale.US, g / 1000.0)
-
-@Composable
-private fun TripStrip(trip: Moovit.Itinerary, r: Moovit.Resolved) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        var first = true
-        var walking = false
-        for (l in trip.legs) {
-            if (l.kind == Moovit.LegKind.WALK && (l.pathway || walking)) continue
-            val glyph: @Composable () -> Unit = when (l.kind) {
-                Moovit.LegKind.WALK -> { { WalkGlyph(K.muted, 16.dp) } }
-                Moovit.LegKind.TAXI -> { { ModeGlyph(Mode.TAXI, K.muted, 17.dp) } }
-                Moovit.LegKind.RIDE -> { { RouteChoices(l, r) } }
-                else -> continue
-            }
-            if (!first) Text(T.onward, fontSize = 13.sp, color = K.surface4)
-            first = false
-            walking = l.kind == Moovit.LegKind.WALK
-            glyph()
-        }
-    }
-}
 
 @Composable
 private fun Timeline(
@@ -324,8 +324,10 @@ private fun Timeline(
                         }
                     }
                     Rail(Mark.NONE, ride, ride) {
-                        Step(rideLabel(l), if (l.fare >= 0) "%s%.2f".format(Locale.US, l.currency, l.fare / 100.0) else null) {
-                            ModeGlyph(mode, tint, 15.dp)
+                        RideStops(l, r) {
+                            Step(rideLabel(l), if (l.fare >= 0) "%s%.2f".format(Locale.US, l.currency, l.fare / 100.0) else null) {
+                                ModeGlyph(mode, tint, 15.dp)
+                            }
                         }
                     }
                     val alight = r.stop(l.toStop)
@@ -370,6 +372,30 @@ private fun walkLabel(metres: Int, mins: Int): String {
     val walk = T("Walk", "הליכה")
     return listOfNotNull(walk, d, m).let {
         if (it.size == 3) "$walk ${it[1]} · ${it[2]}" else it.joinToString(" ")
+    }
+}
+
+// The ride's step opens to every stop it passes on the way; names the trip doesn't have yet come from Moovit.
+@Composable
+private fun RideStops(l: Moovit.Leg, r: Moovit.Resolved, label: @Composable () -> Unit) {
+    var open by remember(l) { mutableStateOf(false) }
+    val between = l.stops.drop(1).dropLast(1)
+    var names by remember(l) { mutableStateOf(between.associateWith { r.stopName(it) }) }
+    LaunchedEffect(open) {
+        if (!open || names.values.all { it != null }) return@LaunchedEffect
+        val s = runCatching { uk.noammm.kav.ui.Online.open() }.getOrNull() ?: return@LaunchedEffect
+        names = withContext(Dispatchers.IO) {
+            names.mapValues { (id, n) -> n ?: runCatching { Moovit.stopInfo(s, id)?.name }.getOrNull() }
+        }
+    }
+    Column(Modifier.fillMaxWidth().animateContentSize()
+        .then(if (between.isEmpty()) Modifier else Modifier.clickable(role = Role.Button) { open = !open })) {
+        label()
+        if (open) Column(Modifier.padding(start = 23.dp, top = K.gap2), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            between.forEach { id ->
+                Text(names[id] ?: "…", fontSize = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
     }
 }
 
@@ -562,6 +588,9 @@ private fun BoardOption(
         wait?.let { AlertRow(it.alertCategory, it.alertText, r.line(ride.lineId)?.groupId ?: 0) }
         val live = r.arrival(ride)?.hasLocation == true
         Spacer(Modifier.height(K.gap2))
-        LiveLocationButton(live) { onTrack(ride, ride.fromStop) }
+        Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+            LiveLocationButton(live) { onTrack(ride, ride.fromStop) }
+            LocalLineOpener.current?.let { open -> Chip(T("All departures", "כל היציאות"), false) { open(ride, r) } }
+        }
     }
 }

@@ -88,7 +88,7 @@ fun LiveLocationButton(live: Boolean, onClick: () -> Unit) {
             .padding(horizontal = K.gap4, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LiveGlyph(if (live) K.live else K.dim, 14.dp)
+        LiveGlyph(if (live) K.realtime else K.dim, 14.dp)
         Spacer(Modifier.width(6.dp))
         Text(
             T("Live location", "מיקום בזמן אמת"), fontSize = 14.sp,
@@ -221,7 +221,7 @@ private fun StatusBlock(
             (a == null || !a.hasLocation) && lineLive -> T("Your bus hasn't set out yet", "האוטובוס שלכם עוד לא יצא לדרך") to K.dim
             a == null || !a.hasLocation -> T("This line doesn’t have a live location", "לקו הזה אין מיקום בזמן אמת") to K.dim
             a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
-            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.live
+            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.realtime
             else -> T("Location is estimated", "המיקום משוער") to K.problem
         }
         Row(verticalAlignment = Alignment.CenterVertically) {

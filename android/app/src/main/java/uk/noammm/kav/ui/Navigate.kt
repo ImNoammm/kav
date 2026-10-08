@@ -481,9 +481,15 @@ internal fun StepCard(
                 // Above the stops, so a long ride's payment is in sight without scrolling.
                 pay?.invoke(step.legIndex, ride)
                 if (stops.size > 1) {
-                    Spacer(Modifier.height(K.gap2))
-                    Box(Modifier.height(1.dp).fillMaxWidth().background(K.border))
-                    Spacer(Modifier.height(K.gap2))
+                    // The rail draws its first stop 5 dp into its row, hence the 5 dp less above it.
+                    if (pay != null) {
+                        // The pay card already parts the line from the stops: the same gap below it as above.
+                        Spacer(Modifier.height(K.gap3 - 5.dp))
+                    } else {
+                        Spacer(Modifier.height(K.gap2))
+                        Box(Modifier.height(1.dp).fillMaxWidth().background(K.border))
+                        Spacer(Modifier.height(K.gap2 - 5.dp))
+                    }
                     StopRail(stops, names, stopsProgress(ride, names, arrival, fix, now), ride.arr)
                 }
             }
@@ -799,7 +805,7 @@ private fun NavigateMap(
                 }
             }
             for (v in vehicles) {
-                val tint = if (v.vehicleStatus == 2) K.problem else K.live
+                val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
                 add(MapDot(v.lat, v.lon, K.bg.copy(alpha = vehicleAlpha.value), 12f))
                 add(MapDot(v.lat, v.lon, tint.copy(alpha = vehicleAlpha.value), 10f))
             }
@@ -812,7 +818,7 @@ private fun NavigateMap(
             MapMarker(v.lat, v.lon, modeIconName(vehicleModes[v.tripId] ?: Mode.BUS), alpha = vehicleAlpha.value)
         },
         halos = vehicles.map { v ->
-            val tint = if (v.vehicleStatus == 2) K.problem else K.live
+            val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
             MapDot(v.lat, v.lon, tint.copy(alpha = 0.20f * vehicleAlpha.value), 20f)
         },
     )
@@ -857,7 +863,7 @@ private fun VehicleCard(a: Moovit.Arrival, leg: Moovit.Leg, r: Moovit.Resolved, 
         val (headline, tint) = when {
             a.vehicleStatus == 3 -> T("Not departed yet", "טרם יצא") to K.dim
             a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
-            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.live
+            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.realtime
             else -> T("Location is estimated", "המיקום משוער") to K.problem
         }
         Text(headline, fontSize = 14.sp, color = tint)

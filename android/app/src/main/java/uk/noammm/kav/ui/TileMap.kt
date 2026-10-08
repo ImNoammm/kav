@@ -157,7 +157,10 @@ private fun Style.ensureKavLayers() {
         PropertyFactory.circleStrokeWidth(Expression.toNumber(Expression.get("strokeWidth"))),
         PropertyFactory.circleSortKey(sort),
     ))
-    addLayer(markLayer("kav-mark", SRC_MARKS, turns = false))
+    // A route's own marks overlap at stations, so they keep the order they were listed in, later ones in front.
+    addLayer(markLayer("kav-mark", SRC_MARKS, turns = false).withProperties(
+        PropertyFactory.symbolSortKey(Expression.toNumber(Expression.get("order"))),
+    ))
     addLayer(CircleLayer(HALO_LAYER, SRC_LIVE_HALOS).withProperties(
         PropertyFactory.circleColor(colour),
         PropertyFactory.circleRadius(Expression.toNumber(Expression.get("r"))),
@@ -189,8 +192,9 @@ private fun Style.addKavImages(images: Map<String, ImageBitmap>) {
     for ((name, image) in images) if (getImage(name) == null) addImage(name, image.asAndroidBitmap())
 }
 
-private fun markFeatures(marks: List<MapMarker>): List<Feature> = marks.map { m ->
+private fun markFeatures(marks: List<MapMarker>): List<Feature> = marks.mapIndexed { i, m ->
     Feature.fromGeometry(Point.fromLngLat(m.lon, m.lat)).apply {
+        addNumberProperty("order", i)
         addStringProperty("icon", m.icon)
         addNumberProperty("rot", m.rotation)
         addNumberProperty("alpha", m.alpha)

@@ -444,8 +444,15 @@ internal fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Uni
         )
         // The stop tapped on this line opens under it with the line's next buses there, like Moovit's line view.
         var open by remember(route) { mutableIntStateOf(-1) }
+        val stopsState = androidx.compose.foundation.lazy.rememberLazyListState()
+        LaunchedEffect(list) {
+            val focus = model.lineFocusStop
+            val at = list?.indexOf(focus) ?: -1
+            if (focus >= 0 && list != null) model.lineFocusStop = -1
+            if (at >= 0) { open = at; stopsState.scrollToItem(at) }
+        }
         if (list != null) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
+            LazyColumn(Modifier.fillMaxSize(), state = stopsState, contentPadding = PaddingValues(
                 start = K.gap2, end = K.gap2, bottom = LocalBottomBarInset.current,
             )) {
                 items(list.size) { i ->
@@ -612,7 +619,7 @@ private fun LineLiveNote(live: LineLive, next: String?) {
         !live.checked -> T("Checking for a live location…", "בודקים מיקום בזמן אמת…") to K.dim
         live.failed -> T("Couldn't check for a live location", "לא ניתן היה לבדוק מיקום בזמן אמת") to K.dim
         count == 0 -> T("This line doesn't have a live location right now", "לקו הזה אין כרגע מיקום בזמן אמת") to K.dim
-        else -> T("Live location · $count on the road", "מיקום בזמן אמת · $count בדרך") to K.live
+        else -> T("Live location · $count on the road", "מיקום בזמן אמת · $count בדרך") to K.realtime
     }
     Row(
         Modifier.padding(horizontal = K.gap4).padding(top = K.gap2),

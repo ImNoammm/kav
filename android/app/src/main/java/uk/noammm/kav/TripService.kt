@@ -278,6 +278,7 @@ class TripService : Service() {
                 .setContentIntent(openApp(ctx))
                 .setAutoCancel(true)
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .build()
             runCatching { NotificationManagerCompat.from(ctx).notify(ALERT_ID, n) }
         }
@@ -335,6 +336,8 @@ class TripService : Service() {
                 .setShowWhen(false)
                 .setColor(accent)
                 .setCategory(Notification.CATEGORY_NAVIGATION)
+                // The next step at a glance on the lock screen, without unlocking.
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
                 .addExtras(Bundle().apply { putBoolean(PROMOTED, true) })
                 .build()
@@ -357,6 +360,7 @@ class TripService : Service() {
                 .setShowWhen(false)
                 .setColor(accent)
                 .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 .build()
     }

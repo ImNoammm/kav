@@ -83,6 +83,7 @@ import uk.noammm.kav.data.MapFile
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.MoovitLink
 import uk.noammm.kav.data.Net
+import uk.noammm.kav.data.RecentRoutes
 import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.Updates
 import uk.noammm.kav.ui.*
@@ -202,21 +203,18 @@ data class ActiveJourney(
     val fromLabel: String,
     val toLabel: String,
     val chosen: Map<Int, Int> = emptyMap(),
-    val from: Moovit.Place? = null,
-    val to: Moovit.Place? = null,
     // Per ride leg, the key of the ticket bought for it from its card.
     val paid: Map<Int, String> = emptyMap(),
 ) {
     val paymentKey get() = "${trip.guid}:${trip.dep}"
 }
 
+// A search that found routes, like Moovit's Recent Journeys. The routes themselves are in RecentRoutes.
 data class RecentTrip(
     val from: Moovit.Place?,
     val to: Moovit.Place,
     val at: Long,
-    val lines: List<Int> = emptyList(),
-    val group: Int = -1,
-    val stops: List<Moovit.RideStops> = emptyList(),
+    val stopovers: List<Moovit.Place> = emptyList(),
 )
 
 // What Moovit is told about where the user is while private search is on.
@@ -255,6 +253,8 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
 
     var stationStop by mutableIntStateOf(-1)
     var lineRoute by mutableIntStateOf(-1)
+    // The stop to open on the line shown, when it was opened from a trip.
+    var lineFocusStop by mutableIntStateOf(-1)
     var moovitLine by mutableStateOf<Moovit.LineGroup?>(null)
 
     var stopQuery by mutableStateOf("")
@@ -446,6 +446,13 @@ private fun Root() {
     val app = ctx.applicationContext
     val model: KavModel = viewModel { KavModel(Loaded.net, app) }
     LaunchedEffect(model) { if (!model.updateChecked) model.checkForUpdate(app) }
+    // Kav's recipe and Vela's: fixes for Moovit or Google that need no update.
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            runCatching { uk.noammm.kav.data.KavRecipe.refresh(app) }
+            runCatching { uk.noammm.kav.data.GoogleRecipe.refresh(app) }
+        }
+    }
     var pickLook by remember { mutableStateOf(Prefs.pickLook(ctx)) }
     var pickSupport by remember { mutableStateOf(Prefs.pickSupport(ctx)) }
     Box(Modifier.fillMaxSize()) {
@@ -1036,9 +1043,10 @@ fun requestLocationOnce(
     if (!requireFresh) {
         lastKnown(ctx)?.takeIf { System.currentTimeMillis() / 1000 - it.fixTime() in 0..120 }?.let { offer(it, false) }
     } else {
-        // A precise fix from the last half minute is as good as a new one, and plans without waiting for the GPS.
+        // A precise fix from the last two minutes is as good as a new one, and plans without waiting for the GPS,
+        // the way Moovit plans from where the phone already knows you are.
         lastKnown(ctx)?.takeIf {
-            System.currentTimeMillis() / 1000 - it.fixTime() in 0..30 && it.hasAccuracy() && it.accuracy in 0f..GOOD_FIX_M
+            System.currentTimeMillis() / 1000 - it.fixTime() in 0..120 && it.hasAccuracy() && it.accuracy in 0f..GOOD_FIX_M
         }?.let { onResult(it.latitude to it.longitude); return {} }
     }
 
@@ -1196,6 +1204,7 @@ object Prefs {
 
     private const val TRIPS = "trips"
     private const val MAX_TRIPS = 100
+    private const val MAX_ROUTES = 20
 
     private fun place(o: org.json.JSONObject) = Moovit.Place(
         o.optString("n"), o.optString("d"), o.optDouble("lat"), o.optDouble("lon"),
@@ -1212,27 +1221,17 @@ object Prefs {
         (0 until arr.length()).mapNotNull { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
             val to = o.optJSONObject("to") ?: return@mapNotNull null
-            val lines = o.optJSONArray("lines")
-            val stops = o.optJSONArray("stops")
+            val stopovers = o.optJSONArray("stopovers")
             RecentTrip(
                 o.optJSONObject("from")?.let { place(it) }, place(to), o.optLong("at"),
-                lines = (0 until (lines?.length() ?: 0)).map { j -> lines!!.optInt(j) },
-                group = o.optInt("group", -1),
-                stops = (0 until (stops?.length() ?: 0)).mapNotNull { j ->
-                    val pair = stops?.optJSONArray(j) ?: return@mapNotNull null
-                    val from = pair.optInt(0, -1); val to = pair.optInt(1, -1)
-                    if (from > 0 && to > 0) Moovit.RideStops(from, to) else null
-                }.takeIf { it.size == (stops?.length() ?: 0) }.orEmpty(),
+                stopovers = (0 until (stopovers?.length() ?: 0)).mapNotNull { j -> stopovers?.optJSONObject(j)?.let { place(it) } },
             )
         }
     } catch (e: Exception) { emptyList() }
 
-    private fun endpointsKey(t: RecentTrip) =
-        "%.4f,%.4f>%.4f,%.4f".format(java.util.Locale.US, t.from?.lat ?: 0.0, t.from?.lon ?: 0.0, t.to.lat, t.to.lon)
-
-    private fun tripKey(t: RecentTrip) = endpointsKey(t) + ":" +
-        if (t.stops.isNotEmpty()) t.stops.joinToString(";") { "${it.from}>${it.to}" }
-        else "${t.group}:${t.lines.joinToString(",")}"
+    private fun tripKey(t: RecentTrip) =
+        "%.4f,%.4f>%.4f,%.4f".format(java.util.Locale.US, t.from?.lat ?: 0.0, t.from?.lon ?: 0.0, t.to.lat, t.to.lon) +
+            t.stopovers.joinToString("") { "+%.4f,%.4f".format(java.util.Locale.US, it.lat, it.lon) }
 
     private fun saveTrips(ctx: Context, trips: List<RecentTrip>) {
         val arr = org.json.JSONArray()
@@ -1240,54 +1239,24 @@ object Prefs {
             arr.put(
                 org.json.JSONObject()
                     .put("from", t.from?.let { json(it) }).put("to", json(t.to)).put("at", t.at)
-                    .put("lines", org.json.JSONArray(t.lines)).put("group", t.group)
-                    .put("stops", org.json.JSONArray().apply {
-                        t.stops.forEach { put(org.json.JSONArray(listOf(it.from, it.to))) }
-                    }),
+                    .put("stopovers", org.json.JSONArray().apply { t.stopovers.forEach { put(json(it)) } }),
             )
         }
         store(ctx).edit().putString(TRIPS, arr.toString()).apply()
     }
 
+    // Every search that found routes, newest first, with the routes it found: Moovit's Recent Journeys.
     fun rememberTrip(
-        ctx: Context,
-        from: Moovit.Place?,
-        to: Moovit.Place,
-        at: Long,
-        trip: Moovit.Itinerary? = null,
-        chosen: Map<Int, Int> = emptyMap(),
+        ctx: Context, trip: RecentTrip, routes: List<Moovit.Itinerary>, resolved: Moovit.Resolved,
+        sections: List<Moovit.Section>,
     ) {
-        val rides = trip?.legs?.mapIndexedNotNull { index, leg ->
-            if (leg.kind != Moovit.LegKind.RIDE) null else leg.options.getOrNull(chosen[index] ?: 0) ?: leg
-        }.orEmpty()
-        val origin = from ?: trip?.legs?.firstOrNull { it.shape.isNotEmpty() }?.shape?.firstOrNull()?.let {
-            Moovit.Place(T("Saved start", "נקודת ההתחלה השמורה"), "", it.first, it.second)
-        }
-        val fresh = RecentTrip(
-            origin, to, at,
-            lines = rides.map { it.lineId },
-            group = trip?.group ?: -1,
-            stops = rides.map { Moovit.RideStops(it.fromStop, it.toStop) }.takeIf { list ->
-                list.all { it.from > 0 && it.to > 0 }
-            }.orEmpty(),
-        )
-        saveTrips(ctx, (listOf(fresh) + trips(ctx)).distinctBy(::tripKey).take(MAX_TRIPS))
+        val kept = (listOf(trip) + trips(ctx)).distinctBy(::tripKey).take(MAX_TRIPS)
+        saveTrips(ctx, kept)
+        RecentRoutes.save(ctx, tripKey(trip), routes, resolved, sections)
+        RecentRoutes.keep(ctx, kept.take(MAX_ROUTES).map(::tripKey))
     }
 
-    fun noteTripRoute(ctx: Context, taken: RecentTrip, trip: Moovit.Itinerary, from: Moovit.Place?) {
-        val want = tripKey(taken)
-        val trips = trips(ctx)
-        fun matches(t: RecentTrip) = t.at == taken.at && tripKey(t) == want && t.stops.isEmpty()
-        if (trips.none(::matches)) return
-        saveTrips(
-            ctx,
-            trips.map {
-                if (!matches(it)) it
-                else it.copy(from = from, lines = trip.rides.map { r -> r.lineId }, group = trip.group,
-                    stops = trip.rideStops.takeIf { list -> list.all { pair -> pair.from > 0 && pair.to > 0 } }.orEmpty())
-            },
-        )
-    }
+    fun savedRoutes(ctx: Context, trip: RecentTrip): RecentRoutes.Saved? = RecentRoutes.load(ctx, tripKey(trip))
 
     fun clearRecents(ctx: Context) = store(ctx).edit().remove(RECENTS).apply()
 

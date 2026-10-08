@@ -736,7 +736,7 @@ private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onS
                         fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text(T("${ageS}s ago", "לפני ${ageS} שנ׳"), style = Mono, fontSize = 11.sp, color = if (a.vehicleStatus == 2) K.problem else K.live)
+                Text(T("${ageS}s ago", "לפני ${ageS} שנ׳"), style = Mono, fontSize = 11.sp, color = if (a.vehicleStatus == 2) K.problem else K.realtime)
                 Text(T.onward, fontSize = 22.sp, color = K.dim)
             }
         }
@@ -785,7 +785,7 @@ private fun LiveVehicleCard(v: Tracked?, now: Long, onClose: () -> Unit) {
             a.vehicleStatus == 3 -> T("Not departed yet", "טרם יצא") to K.dim
             !a.hasLocation -> T("No live location right now", "אין מיקום בזמן אמת כרגע") to K.dim
             a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
-            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.live
+            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.realtime
             else -> T("Location is estimated", "המיקום משוער") to K.problem
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -914,7 +914,7 @@ private fun LiveStopCard(
                             PlatformTag(v.arrival.platform)
                         }
                     }
-                    if (live) LiveGlyph(if (v.arrival.vehicleStatus == 2) K.problem else K.live, 11.dp)
+                    if (live) LiveGlyph(if (v.arrival.vehicleStatus == 2) K.problem else K.realtime, 11.dp)
                     Text(
                         whenLabel(v.eta, now), style = Mono, fontSize = 13.sp,
                         color = if (live) K.text else K.scheduled,

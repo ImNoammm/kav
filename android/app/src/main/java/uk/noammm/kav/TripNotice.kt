@@ -35,7 +35,6 @@ import uk.noammm.kav.ui.isFresh
 import uk.noammm.kav.ui.legMode
 import uk.noammm.kav.ui.modeName
 import uk.noammm.kav.ui.pathLength
-import uk.noammm.kav.ui.ISRAEL
 import uk.noammm.kav.ui.routeTints
 import uk.noammm.kav.ui.stopsProgress
 import uk.noammm.kav.ui.whenLabel

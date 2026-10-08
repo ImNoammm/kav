@@ -58,6 +58,9 @@ internal fun bottomCover(): androidx.compose.ui.unit.Dp =
 
 val LocalServiceAlertOpener = staticCompositionLocalOf<(Int, String) -> Unit> { { _, _ -> } }
 
+// Opens a ride's line in the Lines tab at the stop it is boarded from, for all its departures there.
+val LocalLineOpener = staticCompositionLocalOf<((Moovit.Leg, Moovit.Resolved) -> Unit)?> { null }
+
 // Timetables and departures are in Israel's time, whatever zone the phone is set to.
 val ISRAEL: TimeZone = TimeZone.getTimeZone("Asia/Jerusalem")
 

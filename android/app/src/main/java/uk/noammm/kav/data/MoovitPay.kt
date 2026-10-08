@@ -4,7 +4,12 @@ package uk.noammm.kav.data
 // Transport service Pango runs). Every call goes out as a Moovit user made only for paying: the SMS
 // code ties the account to that user, and Kav plans and searches with a different one.
 object MoovitPay {
-    private const val CONTEXT = "IsraelMot"
+    // Paying runs in Moovit's IsraelMot context and signing in runs in the one Moovit's settings name
+    // (DEFAULT_PAYMENT_CONTEXT, "Login@Default"). A code sent in one is refused in the other ("The code you entered
+    // doesn't match the one sent"). Kav reads the setting as Moovit's app does, and its recipe holds both for when
+    // Moovit can't be asked.
+    private val CONTEXT get() = KavRecipe.moovit.payContext
+    private val LOGIN get() = Moovit.setting("DEFAULT_PAYMENT_CONTEXT")?.ifBlank { null } ?: KavRecipe.moovit.payLoginContext
     const val BUS = 3
 
     // Moovit's MVPaymentRegistrationStep.
@@ -122,8 +127,8 @@ object MoovitPay {
     private fun call(user: MoovitSession, path: String, body: TWriter): Map<Int, Any?>? {
         val headers = Moovit.authHeaders(user) + mapOf("flow-sequence-id" to flow.toString(), "analytics-flow-key-id" to flow.toString())
         val (code, raw) = Moovit.post(Moovit.APP4, path, body.stop().bytes(), headers)
-        if (code == 204 || (code == 200 && raw.isEmpty())) return null
         val s = runCatching { TReader(raw).readStruct() }.getOrNull()
+        if (code == 204 || (code == 200 && raw.isEmpty())) return null
         // Calls with nothing to say (accepting the terms, sending the SMS) answer 200 with a body that
         // is not a struct; Moovit's app never reads it.
         if (code == 200) return s
@@ -155,8 +160,9 @@ object MoovitPay {
     }
 
     // What still stands between this user and paying, with the terms when accepting them is one step.
-    fun steps(user: MoovitSession): Steps {
-        val root = call(user, "PaymentContext/GetMissingSteps", TWriter().strField(1, CONTEXT))?.rec(1)
+    // login: what signing in needs (the phone), else what paying needs (the terms, the card).
+    fun steps(user: MoovitSession, login: Boolean = false): Steps {
+        val root = call(user, "PaymentContext/GetMissingSteps", TWriter().strField(1, if (login) LOGIN else CONTEXT))?.rec(1)
             ?: return Steps(emptyList(), null, null)
         val terms = root.rec(4)?.let { t ->
             val cta = t.rec(6) ?: t.rec(3)
@@ -179,12 +185,12 @@ object MoovitPay {
         val d = phone.filter(Char::isDigit).let { if (it.startsWith("972")) "0" + it.drop(3) else it }
         val shown = if (d.length == 10) "${d.take(3)}-${d.substring(3, 6)}-${d.drop(6)}" else d
         call(user, "PaymentContext/GenerateVerificationToken",
-            TWriter().strField(1, shown).strField(2, "+972").strField(3, CONTEXT))
+            TWriter().strField(1, shown).strField(2, "+972").strField(3, LOGIN))
     }
 
     // The SMS code. Asked first without takeOver, then again with it when the account exists.
     fun verify(user: MoovitSession, code: String, takeOver: Boolean): Verified {
-        val body = TWriter().strField(1, CONTEXT).strField(2, code).boolField(3, !takeOver)
+        val body = TWriter().strField(1, LOGIN).strField(2, code).boolField(3, !takeOver)
         val root = call(user, "PaymentContext/RegistrationVerification", body) ?: return Verified(true, false, emptyList(), null)
         val steps = root.rec(2)
         return Verified(exists = root.bool(3), moved = root.bool(1), missing = steps?.ints(2).orEmpty(),

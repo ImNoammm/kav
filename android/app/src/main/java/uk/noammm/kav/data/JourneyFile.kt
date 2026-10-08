@@ -85,6 +85,35 @@ object JourneyFile {
         journey to o.optInt("step")
     } catch (e: Exception) { null }
 
+    // A search's routes as a recent trip keeps them, without live times or line shapes: those only follow a bus.
+    internal fun routesJson(routes: List<Moovit.Itinerary>, r: Moovit.Resolved, sections: List<Moovit.Section>): JSONObject =
+        JSONObject()
+            .put("trips", JSONArray().apply { routes.forEach { put(json(it)) } })
+            .put("lines", JSONObject().apply { r.lines.forEach { (id, l) -> put(id.toString(), json(l)) } })
+            .put("stops", JSONObject().apply { r.stops.forEach { (id, s) -> put(id.toString(), json(s)) } })
+            .put("types", JSONObject().apply { r.routeTypes.forEach { (a, t) -> put(a.toString(), t) } })
+            .put("sections", JSONArray().apply {
+                sections.forEach {
+                    put(JSONObject().put("id", it.id).put("name", it.name).put("max", it.maxItems)
+                        .put("type", it.type).put("index", it.index))
+                }
+            })
+
+    internal fun routes(o: JSONObject): RecentRoutes.Saved? = try {
+        RecentRoutes.Saved(
+            objects(o.optJSONArray("trips")).map { itinerary(it) },
+            Moovit.Resolved(
+                lines = keyed(o.optJSONObject("lines")) { line(it) },
+                stops = keyed(o.optJSONObject("stops")) { stop(it) },
+                routeTypes = counts(o.optJSONObject("types")),
+            ),
+            objects(o.optJSONArray("sections")).map {
+                Moovit.Section(it.optInt("id", -1), it.optString("name"), it.optInt("max", Int.MAX_VALUE),
+                    it.optInt("type"), it.optInt("index"))
+            },
+        ).takeIf { it.routes.isNotEmpty() }
+    } catch (e: Exception) { null }
+
     private fun json(t: Moovit.Itinerary): JSONObject = JSONObject()
         .put("guid", t.guid).put("group", t.group)
         .put("legs", JSONArray().apply { t.legs.forEach { put(json(it)) } })

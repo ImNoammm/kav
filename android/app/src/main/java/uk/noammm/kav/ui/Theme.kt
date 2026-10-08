@@ -50,6 +50,8 @@ object K {
     var routeIdle by mutableStateOf(Color(0xFF7E7E87))
     var problem by mutableStateOf(Color(0xFFE7C17A))
     var critical by mutableStateOf(Color(0xFFEE929A))
+    // Moovit's green for a time or position measured live.
+    var realtime by mutableStateOf(Color(0xFF04C876))
     val scheduled get() = muted
 
     val gap1 = 4.dp; val gap2 = 8.dp; val gap3 = 12.dp
@@ -68,6 +70,7 @@ object K {
                 plate = Color(0x0FFFFFFF); plateStrong = Color(0x1FFFFFFF)
                 sunken = Color(0xFF19191C); routeIdle = Color(0xFF7E7E87)
                 problem = Color(0xFFE7C17A); critical = Color(0xFFEE929A)
+                realtime = Color(0xFF04C876)
             }
             Look.OLED -> {
                 bg = Color(0xFF000000); surface1 = Color(0xFF000000)
@@ -78,6 +81,7 @@ object K {
                 plate = Color(0x14FFFFFF); plateStrong = Color(0x24FFFFFF)
                 sunken = Color(0xFF000000); routeIdle = Color(0xFF7E7E87)
                 problem = Color(0xFFE7C17A); critical = Color(0xFFEE929A)
+                realtime = Color(0xFF04C876)
             }
             Look.LIGHT -> {
                 bg = Color(0xFFF6F6F3); surface1 = Color(0xFFEBEBE7)
@@ -88,6 +92,7 @@ object K {
                 plate = Color(0x0D000000); plateStrong = Color(0x1A000000)
                 sunken = Color(0xFFEFEFEB); routeIdle = Color(0xFFA6A6AE)
                 problem = Color(0xFF9A6A00); critical = Color(0xFFB3424E)
+                realtime = Color(0xFF00804C)
             }
         }
     }

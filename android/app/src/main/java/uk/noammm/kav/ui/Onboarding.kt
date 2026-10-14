@@ -19,14 +19,35 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import uk.noammm.kav.KavModel
 import uk.noammm.kav.Prefs
+import uk.noammm.kav.Seen
 import uk.noammm.kav.data.MapFile
 
 @Composable
-fun OnboardingScreen(onDone: () -> Unit) {
+fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
     val ctx = LocalContext.current
     var page by rememberSaveable { mutableIntStateOf(0) }
     var filters by remember { mutableStateOf(Prefs.filters(ctx)) }
+    // A custom spot for Moovit to see is picked on the whole screen, as in Settings.
+    var choosing by remember { mutableStateOf(false) }
+    if (choosing) {
+        var q by remember { mutableStateOf("") }
+        PlacePicker(
+            title = T("a place for Moovit to see…", "מקום ש-Moovit יראה…"),
+            here = null,
+            allowMyLocation = false,
+            onMyLocation = {},
+            onPick = { p -> model.setSeen(ctx, Seen.PLACE, p); choosing = false },
+            onDismiss = { choosing = false },
+            favourites = model.favourites,
+            onSaveFavourites = { model.saveFavourites(ctx, it) },
+            query = q,
+            onQuery = { q = it },
+            net = model.net,
+        )
+        return
+    }
     androidx.activity.compose.BackHandler(enabled = page > 0) { page-- }
 
     AnimatedContent(
@@ -39,14 +60,20 @@ fun OnboardingScreen(onDone: () -> Unit) {
         ) {
             Spacer(Modifier.height(K.gap6))
             if (p == 0) {
-                Text("בחרו שפה", style = Display, fontSize = 26.sp)
-                Text("Choose a language", style = Display, fontSize = 26.sp, color = K.dim)
+                Text("בחרו הגדרות אזוריות", style = Display, fontSize = 26.sp)
+                Text("Choose a locale", style = Display, fontSize = 26.sp, color = K.dim)
                 Spacer(Modifier.height(K.gap6))
                 for (l in Lang.entries) {
                     OnboardingButton(l.label, lit = T.lang == l) { T.switchTo(l); Prefs.setLang(ctx, l) }
                     Spacer(Modifier.height(K.gap3))
                 }
-                Spacer(Modifier.height(K.gap5))
+                Text(
+                    T("time format", "תבנית שעה"),
+                    style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+                    modifier = Modifier.padding(start = K.gap3, top = K.gap3, bottom = K.gap2),
+                )
+                ClockChoice(ctx, Modifier)
+                Spacer(Modifier.height(K.gap6))
                 OnboardingButton(T("Next", "הבא")) { page = 1 }
             } else if (p == 1) {
                 Text(T("Pick a look", "בחרו מראה"), style = Display, fontSize = 26.sp)
@@ -122,7 +149,7 @@ fun OnboardingScreen(onDone: () -> Unit) {
                 }
                 Spacer(Modifier.height(K.gap8))
                 OnboardingButton(T("Next", "הבא")) { page = 4 }
-            } else {
+            } else if (p == 4) {
                 val state = MapFile.state
                 Text(T("Download the map", "הורדת המפה"), style = Display, fontSize = 26.sp)
                 Text(
@@ -154,11 +181,36 @@ fun OnboardingScreen(onDone: () -> Unit) {
                 }
                 Spacer(Modifier.height(K.gap8))
                 when (state) {
-                    is MapFile.State.Ready -> OnboardingButton(T("Done", "סיום"), onClick = onDone)
+                    is MapFile.State.Ready -> OnboardingButton(T("Next", "הבא")) { page = 5 }
                     is MapFile.State.Downloading -> {}
                     is MapFile.State.Failed -> OnboardingButton(T("Try again", "נסו שוב")) { MapFile.startDownload(ctx) }
                     else -> OnboardingButton(T("Download", "הורדה")) { MapFile.startDownload(ctx) }
                 }
+            } else {
+                Text(T("Privacy", "פרטיות"), style = Display, fontSize = 26.sp)
+                Text(
+                    T(
+                        "What Kav shares, and with whom. Settings has all of this again later.",
+                        "מה Kav משתפת, ועם מי. אפשר לשנות את כל זה שוב בהגדרות.",
+                    ),
+                    fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
+                )
+                Spacer(Modifier.height(K.gap5))
+                Text(
+                    T("live locations", "מיקום בזמן אמת"),
+                    style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+                    modifier = Modifier.padding(start = K.gap3, bottom = K.gap2),
+                )
+                Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LiveSourceRow() }
+                Spacer(Modifier.height(K.gap5))
+                Text(
+                    T("search", "חיפוש"),
+                    style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+                    modifier = Modifier.padding(start = K.gap3, bottom = K.gap2),
+                )
+                Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { PrivacyRows(model) { choosing = true } }
+                Spacer(Modifier.height(K.gap8))
+                OnboardingButton(T("Done", "סיום"), onClick = onDone)
             }
             Spacer(Modifier.height(K.gap6))
         }
@@ -168,8 +220,12 @@ fun OnboardingScreen(onDone: () -> Unit) {
 @Composable
 private fun OnboardingButton(label: String, lit: Boolean = true, onClick: () -> Unit) {
     Box(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(K.rPill))
-            .background(if (lit) K.accent else K.plate)
+        Modifier.fillMaxWidth().heightIn(min = 52.dp)
+            .then(
+                // A choice not taken is drawn as the rest of Kav draws its controls in the look picked.
+                if (lit) Modifier.clip(RoundedCornerShape(K.rPill)).background(K.accent)
+                else Modifier.panel(K.rPill, solid = true)
+            )
             .clickable(role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

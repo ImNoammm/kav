@@ -24,6 +24,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.LOCATION_PERMISSIONS
@@ -174,14 +175,32 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
             }
         }
     }
+    // From Kav's server the board needs nothing of Moovit, so the stop isn't looked up there.
+    val fromServer = KavLive.enabled
     var moovitId by remember(stop) { mutableStateOf(StopPhotos.idNow(net, stop) ?: -1) }
-    var looked by remember(stop) { mutableStateOf(moovitId > 0) }
-    LaunchedEffect(stop) { moovitId = findMoovitId(net, stop, moovitId) { looked = true } }
+    var looked by remember(stop) { mutableStateOf(moovitId > 0 || fromServer) }
+    LaunchedEffect(stop, fromServer) { if (!fromServer) moovitId = findMoovitId(net, stop, moovitId) { looked = true } }
     // Moovit's live arrivals at this stop: line number, scheduled and live seconds of the day, and the departure that
     // colours and marks it like the search results. Refreshed with t0.
     class LiveAt(val number: String, val static: Int, val rt: Int, val dep: Moovit.Departure)
     var live by remember(stop) { mutableStateOf<List<LiveAt>>(emptyList()) }
-    LaunchedEffect(moovitId, t0) {
+    LaunchedEffect(moovitId, t0, fromServer) {
+        if (fromServer) {
+            // The ministry's buses due here that are under way, each on the timetable trip it is.
+            val code = net.code.getOrElse(stop) { 0 }
+            if (code <= 0) return@LaunchedEffect
+            live = runCatching {
+                withContext(Dispatchers.IO) {
+                    KavLive.stops(listOf(code)).due.filter { it.underWay && it.expected > 0 }.mapNotNull { d ->
+                        val static = KavLive.scheduledAt(net, stop, d.number, d.first) ?: return@mapNotNull null
+                        val late = Math.floorMod(KavLive.secondOfDay(d.expected) - static % 86_400 + 43_200, 86_400) - 43_200
+                        LiveAt(d.number, static, static + late,
+                            Moovit.Departure(KavLive.tripIdOf(d.key), d.expected - late, rtUtc = d.expected))
+                    }
+                }
+            }.getOrDefault(live)
+            return@LaunchedEffect
+        }
         if (moovitId <= 0) return@LaunchedEffect
         live = runCatching {
             withContext(Dispatchers.IO) {

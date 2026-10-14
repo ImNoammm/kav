@@ -52,7 +52,7 @@ private val hm get() = clockFormat()
 fun TripDetailScreen(
     model: KavModel,
     trip: Moovit.Itinerary,
-    r: Moovit.Resolved,
+    resolved: Moovit.Resolved,
     fromLabel: String,
     toLabel: String,
     onBack: () -> Unit,
@@ -62,6 +62,7 @@ fun TripDetailScreen(
     onNavigating: (Boolean) -> Unit = {},
     onHome: () -> Unit = onBack,
 ) {
+    val r = rememberFresher(trip, resolved)
     var tracking by remember { mutableStateOf<Pair<Moovit.Leg, Int>?>(null) }
     var navigating by remember(trip) { mutableStateOf(startInNavigation) }
     var planFromNavigation by remember(trip) { mutableStateOf(false) }
@@ -579,10 +580,12 @@ private fun BoardOption(
             }
         }
         wait?.let { AlertRow(it.alertCategory, it.alertText, r.line(ride.lineId)?.groupId ?: 0) }
-        val live = r.arrival(ride)?.hasLocation == true
+        val bus = r.arrival(ride)?.takeIf { it.hasLocation }
         Spacer(Modifier.height(K.gap2))
         Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-            LiveLocationButton(live) { onTrack(ride, ride.fromStop) }
+            LiveLocationButton(bus != null, bus?.let { freshColour(freshnessOf(it.sampleUtc, now)) } ?: K.realtime) {
+                onTrack(ride, ride.fromStop)
+            }
             LocalLineOpener.current?.let { open -> Chip(T("All departures", "כל היציאות"), false) { open(ride, r) } }
         }
     }

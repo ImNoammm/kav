@@ -33,6 +33,8 @@ jobs:
       - name: Build
         env:
           KAV_SIGNING_KEY: ${{ secrets.KAV_SIGNING_KEY }}
+          # Kav signs its requests to its own server with this; without it the app falls back to Moovit's live data.
+          KAV_LIVE_KEY: ${{ secrets.KAV_LIVE_KEY }}
         run: |
           export ANDROID_USER_HOME="$HOME/.android"
           mkdir -p "$ANDROID_USER_HOME"

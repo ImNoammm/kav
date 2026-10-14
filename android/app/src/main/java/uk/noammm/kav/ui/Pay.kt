@@ -586,8 +586,18 @@ private fun rememberWork(): Work {
 
 private sealed interface SignInStep {
     data object Phone : SignInStep
-    class Code(val phone: String) : SignInStep
+    class Code(val phone: String, val country: String) : SignInStep
 }
+
+// A number written out as Rav-Pass's app confirms it: +972-50-123 4567, other countries' as typed.
+private fun shownNumber(country: String, number: String) =
+    if (country == "972" && number.length == 9) "+$country-${number.take(2)}-${number.substring(2, 5)} ${number.drop(5)}"
+    else "+$country $number"
+
+// The country's flag, from the two letters of its code.
+private fun flagOf(region: String) =
+    if (region.length == 2 && region.all { it in 'A'..'Z' }) region.map { String(Character.toChars(0x1F1E6 + (it - 'A'))) }.joinToString("")
+    else ""
 
 // Signing in and signing up are one: the code HopOn sends by SMS opens an account for a number it doesn't know yet.
 @Composable
@@ -596,6 +606,10 @@ private fun SignIn() {
     val uid = rememberSaveable { RavPass.newUid() }
     var step by remember { mutableStateOf<SignInStep>(SignInStep.Phone) }
     var phone by rememberSaveable { mutableStateOf("") }
+    // Israel unless picked otherwise, as in Rav-Pass's app.
+    var region by rememberSaveable { mutableStateOf("IL") }
+    var picking by remember { mutableStateOf(false) }
+    val country = RavPass.countryCodes[region] ?: "972"
     var code by remember { mutableStateOf("") }
     var agreed by rememberSaveable { mutableStateOf(false) }
     var confirming by remember { mutableStateOf(false) }
@@ -603,14 +617,14 @@ private fun SignIn() {
     var links by remember { mutableStateOf<RavPass.Settings?>(null) }
     LaunchedEffect(Unit) { links = runCatching { withContext(Dispatchers.IO) { RavPass.settings(uid) } }.getOrNull() }
 
-    fun send(number: String) = w.run {
-        withContext(Dispatchers.IO) { RavPass.sendCode(uid, number) }
-        code = ""; step = SignInStep.Code(number)
+    fun send(number: String, calling: String) = w.run {
+        withContext(Dispatchers.IO) { RavPass.sendCode(uid, number, calling) }
+        code = ""; step = SignInStep.Code(number, calling)
     }
 
     // The box ticked before the code was sent is the agreement HopOn's app takes when signing up.
-    fun confirm(number: String) = w.run {
-        val session = withContext(Dispatchers.IO) { RavPass.verify(uid, number, code) }
+    fun confirm(number: String, calling: String) = w.run {
+        val session = withContext(Dispatchers.IO) { RavPass.verify(uid, number, code, calling) }
         Payer.signIn(session)
         runCatching { Payer.check(agreed = true) }
     }
@@ -625,28 +639,55 @@ private fun SignIn() {
                 Text(T("Sign in or sign up", "התחברות או הרשמה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
                 Note(T("Rav-Pass sends a code by SMS to this number. A number without an account gets a new one.",
                     "רב-פס שולחת קוד ב-SMS למספר הזה. מספר בלי חשבון מקבל חשבון חדש."), color = K.muted)
-                KavField(phone, { phone = it.filter { c -> c.isDigit() || c == '-' || c == '+' } }, "050-123-4567",
-                    keyboard = KeyboardType.Phone)
+                Row(horizontalArrangement = Arrangement.spacedBy(K.gap2), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.heightIn(min = 48.dp).glassSurface(K.rControl).clip(RoundedCornerShape(K.rControl))
+                            .clickable(role = Role.Button, onClickLabel = T("Choose the country", "בחירת מדינה")) { picking = true }
+                            .padding(horizontal = K.gap3),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(flagOf(region), fontSize = 16.sp)
+                        LtrText("+$country", 15.sp, K.text)
+                        Text("▾", fontSize = 11.sp, color = K.dim)
+                    }
+                    KavField(phone, { v ->
+                        val typed = v.filter { c -> c.isDigit() || c == '-' || c == '+' }
+                        // A number pasted or typed with + and its country's code moves the code to the country.
+                        val abroad = typed.startsWith("+") || typed.startsWith("00")
+                        val parts = if (abroad) RavPass.phoneParts(typed) else null
+                        if (parts != null) {
+                            region = RavPass.countryCodes[region]?.takeIf { it == parts.first }?.let { region }
+                                ?: RavPass.countryOf(parts.first) ?: region
+                            phone = parts.second
+                        } else phone = typed
+                    }, if (country == "972") "050-123-4567" else T("Phone number", "מספר טלפון"),
+                        Modifier.weight(1f), keyboard = KeyboardType.Phone)
+                }
                 TermsAgreement(agreed, links) { agreed = it }
                 PayButton(T("Send code", "שליחת קוד"), w.busy) {
+                    val parts = RavPass.phoneParts(phone, country)
                     when {
-                        phone.count(Char::isDigit) < 9 -> w.error = T("Enter your phone number.", "הזינו את מספר הטלפון.")
+                        parts == null || parts.second.length < (if (parts.first == "972") 9 else 4) ->
+                            w.error = T("Enter your phone number.", "הזינו את מספר הטלפון.")
                         !agreed -> w.error = T("Please confirm the terms & conditions", "יש לאשר את תנאי השימוש")
                         else -> confirming = true
                     }
                 }
             }
             is SignInStep.Code -> {
-                Text(T("The code Rav-Pass sent to ${s.phone}", "הקוד שרב-פס שלחה ל-${s.phone}"), fontSize = 15.sp, color = K.muted)
+                val sentTo = RavPass.phoneParts(s.phone, s.country)?.let { (c, n) -> T.ltr(shownNumber(c, n)) } ?: s.phone
+                Text(T("The code Rav-Pass sent to $sentTo", "הקוד שרב-פס שלחה ל-$sentTo"), fontSize = 15.sp, color = K.muted)
                 KavField(code, { v ->
                     code = v.filter(Char::isDigit).take(6)
                     // HopOn's codes have four digits, and its app checks one as soon as it is typed.
-                    if (code.length == 4 && !w.busy) confirm(s.phone)
+                    if (code.length == 4 && !w.busy) confirm(s.phone, s.country)
                 }, "1234", keyboard = KeyboardType.NumberPassword, autoFocus = true)
-                PayButton(T("Confirm", "אישור"), w.busy) { if (code.length >= 4) confirm(s.phone) }
+                PayButton(T("Confirm", "אישור"), w.busy) { if (code.length >= 4) confirm(s.phone, s.country) }
                 Row(horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
                     Text(T("Send it again", "שליחה מחדש"), fontSize = 14.sp, color = K.accent,
-                        modifier = Modifier.clickable(enabled = !w.busy, role = Role.Button) { send(s.phone) }.padding(vertical = K.gap2))
+                        modifier = Modifier.clickable(enabled = !w.busy, role = Role.Button) { send(s.phone, s.country) }
+                            .padding(vertical = K.gap2))
                     Text(T("Change number", "שינוי מספר"), fontSize = 14.sp, color = K.muted,
                         modifier = Modifier.clickable(enabled = !w.busy, role = Role.Button) { code = ""; w.error = null; step = SignInStep.Phone }
                             .padding(vertical = K.gap2))
@@ -655,11 +696,49 @@ private fun SignIn() {
         }
         w.error?.let { Note(it, color = K.critical) }
     }
-    if (confirming) {
-        val (country, number) = RavPass.phoneParts(phone)
-        val shown = if (number.length == 9) "+$country-${number.take(2)}-${number.substring(2, 5)} ${number.drop(5)}" else "+$country-$number"
-        PayDialog(T("Is this your number?", "זה המספר שלך?"), T.ltr(shown), T("Correct", "זה המספר"),
-            no = T("Edit", "עריכה"), onDismiss = { confirming = false }) { confirming = false; send(phone) }
+    if (confirming) RavPass.phoneParts(phone, country)?.let { (calling, number) ->
+        PayDialog(T("Is this your number?", "זה המספר שלך?"), T.ltr(shownNumber(calling, number)), T("Correct", "זה המספר"),
+            no = T("Edit", "עריכה"), onDismiss = { confirming = false }) { confirming = false; send(phone, country) }
+    }
+    if (picking) CountryPicker(onDismiss = { picking = false }) { picked -> region = picked; picking = false }
+}
+
+// Every country with the code it's dialled with, Israel first and the rest by name, as Rav-Pass's app lists them.
+@Composable
+private fun CountryPicker(onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val all = remember(T.locale) {
+        val collator = java.text.Collator.getInstance(T.locale)
+        RavPass.countryCodes.map { (region, code) -> Triple(region, code, java.util.Locale("", region).getDisplayCountry(T.locale)) }
+            .sortedWith(compareBy<Triple<String, String, String>> { it.first != "IL" }.thenComparator { a, b -> collator.compare(a.third, b.third) })
+    }
+    val shown = remember(query, all) {
+        val q = query.trim().removePrefix("+")
+        if (q.isEmpty()) all else all.filter { (region, code, name) ->
+            name.contains(q, ignoreCase = true) || code.startsWith(q) || region.equals(q, ignoreCase = true)
+        }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().panel(K.rCard, solid = true).padding(K.gap4), verticalArrangement = Arrangement.spacedBy(K.gap3)) {
+            Text(T("Country", "מדינה"), fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            KavField(query, { query = it }, T("Search by name or code", "חיפוש לפי שם או קידומת"))
+            androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                items(shown.size, key = { shown[it].first }) { i ->
+                    val (region, code, name) = shown[i]
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl))
+                            .clickable(role = Role.Button) { onPick(region) }
+                            .padding(horizontal = K.gap2, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(K.gap3),
+                    ) {
+                        Text(flagOf(region), fontSize = 18.sp)
+                        Text(name, fontSize = 15.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        LtrText("+$code", 14.sp, K.dim)
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -24,6 +24,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.MoovitSession
 import java.util.Date
@@ -93,14 +94,14 @@ fun rememberLineRoutes(shapeIds: List<Int>): Map<Int, List<Pair<Double, Double>>
 }
 
 @Composable
-fun LiveLocationButton(live: Boolean, onClick: () -> Unit) {
+fun LiveLocationButton(live: Boolean, tint: Color = K.realtime, onClick: () -> Unit) {
     Row(
         Modifier.heightIn(min = 44.dp).glassSurface(K.rControl)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = K.gap4, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LiveGlyph(if (live) K.realtime else K.dim, 14.dp)
+        LiveGlyph(if (live) tint else K.dim, 14.dp)
         Spacer(Modifier.width(6.dp))
         Text(
             T("Live location", "מיקום בזמן אמת"), fontSize = 14.sp,
@@ -233,8 +234,7 @@ private fun StatusBlock(
             (a == null || !a.hasLocation) && lineLive -> T("Your bus hasn't set out yet", "האוטובוס שלכם עוד לא יצא לדרך") to K.dim
             a == null || !a.hasLocation -> T("This line doesn’t have a live location", "לקו הזה אין מיקום בזמן אמת") to K.dim
             a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
-            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.realtime
-            else -> T("Location is estimated", "המיקום משוער") to K.problem
+            else -> locationHeadline(a.sampleUtc, now)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (a?.hasLocation == true) { LiveGlyph(tint, 13.dp); Spacer(Modifier.width(6.dp)) }
@@ -248,7 +248,7 @@ private fun StatusBlock(
         }
         if (a != null && a.sampleUtc > 0) {
             Text(
-                T("Location updated: ${hm.format(Date(a.sampleUtc * 1000))}", "המיקום עודכן: ${hm.format(Date(a.sampleUtc * 1000))}"),
+                updatedLabel(a),
                 fontSize = 14.sp, color = K.dim, modifier = Modifier.padding(top = K.gap1),
             )
         }
@@ -266,6 +266,7 @@ private fun StatusBlock(
         if (a != null && a.rtUtc > 0) {
             Fact(T("Arriving", "הגעה"), whenLabel(a.rtUtc, now))
         }
+        a?.let { KavLive.plateOf(it.vehicleId) }?.let { Fact(T("Number plate", "מספר רישוי"), it) }
     }
 }
 

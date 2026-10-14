@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// The key Kav signs its requests to its own server with. It never goes in the repository: local.properties here,
+// a secret for the release build on GitHub.
+val liveKey: String = System.getenv("KAV_LIVE_KEY")?.takeIf { it.isNotBlank() }
+    ?: Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.reader()?.use { load(it) } }
+        .getProperty("kav.liveKey").orEmpty()
 
 android {
     namespace = "uk.noammm.kav"
@@ -12,12 +20,13 @@ android {
         applicationId = "uk.noammm.kav"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "2.5"
+        versionCode = 29
+        versionName = "2.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // MapLibre's renderer is native code. Every phone Kav can reach is arm64;
         // x86_64 stays so the release APK still installs on the emulator.
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        buildConfigField("String", "KAV_LIVE_KEY", "\"$liveKey\"")
     }
 
     buildTypes {
@@ -38,7 +47,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }

@@ -226,6 +226,24 @@ internal fun ringedMark(mode: Mode, fill: Color, outer: Float, inner: Float, den
         }
     }
 
+// Which way a bus is heading: an arrowhead just outside its ring, drawn pointing north for the map to turn.
+internal fun headingMark(fill: Color, outer: Float, density: Density): Pair<String, ImageBitmap> =
+    with(density) {
+        val o = outer.dp.toPx(); val reach = (outer + 6f).dp.toPx(); val half = 4.dp.toPx()
+        val c = reach + 2.dp.toPx()
+        val name = "kav-heading-${fill.toArgb()}-${K.bg.toArgb()}-$outer"
+        icon(name, 2 * c, 2 * c, density, LayoutDirection.Ltr) {
+            val tip = Path().apply {
+                moveTo(c, c - reach)
+                lineTo(c + half, c - o + 1.dp.toPx())
+                lineTo(c - half, c - o + 1.dp.toPx())
+                close()
+            }
+            drawPath(tip, K.bg, style = Stroke(2.dp.toPx()))
+            drawPath(tip, fill)
+        }
+    }
+
 // Vehicles as the Live tab draws them. alpha fades one out.
 internal fun vehicleGeometry(
     vehicles: List<Pair<Moovit.Arrival, Mode>>,
@@ -235,14 +253,20 @@ internal fun vehicleGeometry(
     val halos = ArrayList<MapDot>()
     val markers = ArrayList<MapMarker>()
     val images = HashMap<String, ImageBitmap>()
+    val now = System.currentTimeMillis() / 1000
     for ((a, mode) in vehicles) {
         val k = alpha(a)
         if (k <= .01f) continue
-        val tint = if (a.vehicleStatus == 2) K.problem else K.realtime
+        val tint = if (a.vehicleStatus == 2) K.problem else freshColour(freshnessOf(a.sampleUtc, now))
         halos += MapDot(a.lat, a.lon, tint.copy(alpha = .2f * k), 18f)
         val (name, image) = ringedMark(mode, tint, 11f, 9f, density)
         images[name] = image
         markers += MapMarker(a.lat, a.lon, name, alpha = k)
+        if (a.bearing >= 0) {
+            val (heading, arrow) = headingMark(tint, 11f, density)
+            images[heading] = arrow
+            markers += MapMarker(a.lat, a.lon, heading, rotation = a.bearing.toFloat(), alpha = k, turns = true)
+        }
     }
     return MapGeometry(markers = markers, halos = halos, images = images)
 }

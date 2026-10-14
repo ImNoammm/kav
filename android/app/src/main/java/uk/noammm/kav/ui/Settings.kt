@@ -35,6 +35,7 @@ import uk.noammm.kav.Prefs
 import uk.noammm.kav.Seen
 import uk.noammm.kav.data.Backup
 import uk.noammm.kav.data.GoogleRecipe
+import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.KavRecipe
 import uk.noammm.kav.data.SignedFile
 import uk.noammm.kav.data.Updates
@@ -64,6 +65,9 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     Column(Modifier.fillMaxSize().background(K.bg).verticalScroll(rememberScrollState())
         .padding(bottom = LocalBottomBarInset.current)) {
         ScreenHeader(T("Your", "ההגדרות"), T("settings", "שלכם"), back = onClose)
+
+        Group(T("Live locations", "מיקום בזמן אמת"))
+        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LiveSourceRow() }
 
         // Most used first, the ones set once and forgotten after.
         if (Payer.signedIn) {
@@ -105,25 +109,8 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         }
 
         Group(T("Privacy", "פרטיות"))
-        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
-            var priv by remember(model.prefsVersion) { mutableStateOf(uk.noammm.kav.Prefs.privateSearch(ctx)) }
-            SwitchRow(
-                T("Private search", "חיפוש פרטי"),
-                T(
-                    "Keep your exact location off search and off the anonymous registration Kav makes " +
-                        "with Moovit. Planning a trip still sends the two points you pick, since that " +
-                        "is the trip you asked it to find.",
-                    "המיקום המדויק שלכם לא נשלח בחיפוש ולא ברישום האנונימי ש-Kav מבצעת מול Moovit. " +
-                        "תכנון מסלול עדיין שולח את שתי הנקודות שאתם בוחרים, כי זו הנסיעה שביקשתם למצוא.",
-                ),
-                priv,
-                { on ->
-                    priv = on; uk.noammm.kav.Prefs.setPrivateSearch(ctx, on); uk.noammm.kav.data.Moovit.shareLocation = !on
-                    Online.reset()
-                },
-            ) { ShieldGlyph(if (priv) K.text else K.dim, 18.dp) }
-            if (priv) SeenChoice(model) { choosing = true }
-        }
+        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { PrivacyRows(model) { choosing = true } }
+
 
         Group(T("Language", "שפה"))
         LanguageRow(ctx)
@@ -213,6 +200,53 @@ internal fun LookChoices(inset: Dp = 0.dp, heading: @Composable (String) -> Unit
         T("Liquid glass is the one we recommend.", "זכוכית נוזלית היא האפשרות המומלצת."),
         fontSize = 11.sp, color = K.dim, modifier = Modifier.padding(horizontal = inset).padding(start = 2.dp, top = 6.dp),
     )
+}
+
+// Where live buses come from. In Settings first, and the last step of setting Kav up.
+@Composable
+internal fun LiveSourceRow() {
+    val ctx = LocalContext.current
+    SwitchRow(
+        T("From Kav's server", "מהשרת של Kav"),
+        T(
+            "Live buses, their positions and arrival times straight from the Ministry of Transport, refreshed every " +
+                "15 seconds, and Moovit only plans trips. Moovit gets its buses from the ministry too: in Kav's tests " +
+                "the positions here were as fresh as Moovit's or up to 30 seconds fresher. The server gets only the " +
+                "lines, stops or rough area you're looking at, through Cloudflare, never your location or IP " +
+                "address, and keeps no logs. If it's ever offline, Kav uses Moovit's until it's back. Off, all of " +
+                "it comes from Moovit.",
+            "האוטובוסים בזמן אמת, המיקומים וזמני ההגעה ישירות ממשרד התחבורה, מתעדכנים כל 15 שניות, ו-Moovit רק " +
+                "מתכננת מסלולים. גם Moovit מקבלת את האוטובוסים ממשרד התחבורה: בבדיקות של Kav המיקומים כאן היו " +
+                "עדכניים כמו של Moovit או עד 30 שניות עדכניים יותר. השרת מקבל רק את הקווים, התחנות או האזור הכללי " +
+                "שאתם צופים בהם, דרך Cloudflare, אף פעם לא את המיקום או כתובת ה-IP שלכם, ולא שומר יומנים. אם השרת " +
+                "לא זמין, Kav משתמשת ב-Moovit עד שהוא חוזר. כשהאפשרות כבויה, הכל מגיע מ-Moovit.",
+        ),
+        KavLive.chosen,
+        { on -> KavLive.chosen = on; Prefs.setLiveFromKav(ctx, on) },
+    ) { LiveGlyph(if (KavLive.chosen) K.text else K.dim, 18.dp) }
+}
+
+// Private search and what Moovit sees instead, in Settings and the last step of setting Kav up.
+@Composable
+internal fun PrivacyRows(model: KavModel, onChoose: () -> Unit) {
+    val ctx = LocalContext.current
+    var priv by remember(model.prefsVersion) { mutableStateOf(Prefs.privateSearch(ctx)) }
+    SwitchRow(
+        T("Private search", "חיפוש פרטי"),
+        T(
+            "Keep your exact location off search and off the anonymous registration Kav makes " +
+                "with Moovit. Planning a trip still sends the two points you pick, since that " +
+                "is the trip you asked it to find.",
+            "המיקום המדויק שלכם לא נשלח בחיפוש ולא ברישום האנונימי ש-Kav מבצעת מול Moovit. " +
+                "תכנון מסלול עדיין שולח את שתי הנקודות שאתם בוחרים, כי זו הנסיעה שביקשתם למצוא.",
+        ),
+        priv,
+        { on ->
+            priv = on; uk.noammm.kav.Prefs.setPrivateSearch(ctx, on); uk.noammm.kav.data.Moovit.shareLocation = !on
+            Online.reset()
+        },
+    ) { ShieldGlyph(if (priv) K.text else K.dim, 18.dp) }
+    if (priv) SeenChoice(model, onChoose)
 }
 
 @Composable
@@ -474,10 +508,10 @@ private fun Absent(title: String, desc: String) {
 }
 
 @Composable
-private fun ClockChoice(ctx: android.content.Context) {
+internal fun ClockChoice(ctx: android.content.Context, modifier: Modifier = Modifier.padding(horizontal = K.gap4)) {
     var open by remember { mutableStateOf(false) }
     fun label(twelve: Boolean) = if (twelve) T("12-hour (2:05 PM)", "12 שעות (2:05 PM)") else T("24-hour (14:05)", "24 שעות (14:05)")
-    Box(Modifier.padding(horizontal = K.gap4)) {
+    Box(modifier) {
         Row(
             Modifier.fillMaxWidth().heightIn(min = 52.dp).panel(K.rControl)
                 .clickable(role = androidx.compose.ui.semantics.Role.Button) { open = true }.padding(horizontal = K.gap4),

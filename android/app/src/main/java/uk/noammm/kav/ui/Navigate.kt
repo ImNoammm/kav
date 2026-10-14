@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import uk.noammm.kav.KavModel
+import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.Moovit
 import java.util.Date
 
@@ -544,8 +545,9 @@ private fun PlanGlyph() {
     }
 }
 
+// arriveUtc 0 leaves the last stop without a time.
 @Composable
-private fun StopRail(
+internal fun StopRail(
     stops: List<Int>,
     names: Map<Int, Moovit.StopInfo>,
     progress: Float,
@@ -594,7 +596,7 @@ private fun StopRail(
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(vertical = 3.dp),
                     )
-                    if (last) Text(
+                    if (last && arriveUtc > 0) Text(
                         hm.format(Date(arriveUtc * 1000)),
                         fontSize = 12.sp, color = K.dim, modifier = Modifier.padding(vertical = 3.dp),
                     )
@@ -812,10 +814,10 @@ private fun NavigateMap(
 
     // Walking, the arrow is the way the phone faces; riding, the way the vehicle goes.
     val arrow = if (follow == null) null else if (step is Step.Ride) follow.bearing else heading
-    val vehicleMarks = vehicles.map { v ->
-        val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
-        v to ringedMark(vehicleModes[v.tripId] ?: Mode.BUS, tint, 12f, 10f, density)
-    }
+    val nowSec = System.currentTimeMillis() / 1000
+    fun tintOf(v: Moovit.Arrival) = if (v.vehicleStatus == 2) K.problem else freshColour(freshnessOf(v.sampleUtc, nowSec))
+    val vehicleMarks = vehicles.map { v -> v to ringedMark(vehicleModes[v.tripId] ?: Mode.BUS, tintOf(v), 12f, 10f, density) }
+    val headings = vehicles.filter { it.bearing >= 0 }.map { v -> v to headingMark(tintOf(v), 12f, density) }
     val live = MapGeometry(
         dots = buildList {
             here?.let { (lat, lon) ->
@@ -830,12 +832,12 @@ private fun NavigateMap(
             if (arrow != null) here?.let { (lat, lon) ->
                 listOf(MapMarker(lat, lon, MAP_ARROW_ICON, arrow, mePulse.value, turns = true))
             }.orEmpty() else emptyList()
-        ) + vehicleMarks.map { (v, mark) -> MapMarker(v.lat, v.lon, mark.first, alpha = vehicleAlpha.value) },
-        halos = vehicles.map { v ->
-            val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
-            MapDot(v.lat, v.lon, tint.copy(alpha = 0.20f * vehicleAlpha.value), 20f)
-        },
-        images = vehicleMarks.associate { it.second },
+        ) + vehicleMarks.map { (v, mark) -> MapMarker(v.lat, v.lon, mark.first, alpha = vehicleAlpha.value) } +
+            headings.map { (v, mark) ->
+                MapMarker(v.lat, v.lon, mark.first, v.bearing.toFloat(), vehicleAlpha.value, turns = true)
+            },
+        halos = vehicles.map { v -> MapDot(v.lat, v.lon, tintOf(v).copy(alpha = 0.20f * vehicleAlpha.value), 20f) },
+        images = vehicleMarks.associate { it.second } + headings.associate { it.second },
     )
 
     val reach = with(LocalDensity.current) { 36.dp.toPx() }
@@ -878,12 +880,11 @@ private fun VehicleCard(a: Moovit.Arrival, leg: Moovit.Leg, r: Moovit.Resolved, 
         val (headline, tint) = when {
             a.vehicleStatus == 3 -> T("Not departed yet", "טרם יצא") to K.dim
             a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
-            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.realtime
-            else -> T("Location is estimated", "המיקום משוער") to K.problem
+            else -> locationHeadline(a.sampleUtc, now)
         }
         Text(headline, fontSize = 14.sp, color = tint)
         if (a.sampleUtc > 0) Text(
-            T("Location updated: ${hm.format(Date(a.sampleUtc * 1000))}", "המיקום עודכן: ${hm.format(Date(a.sampleUtc * 1000))}"),
+            updatedLabel(a),
             fontSize = 13.sp, color = K.dim,
         )
         val eta = a.rtUtc.takeIf { it > 0 } ?: a.staticUtc
@@ -897,6 +898,7 @@ private fun VehicleCard(a: Moovit.Arrival, leg: Moovit.Leg, r: Moovit.Resolved, 
             }
         }
         if (a.platform.isNotBlank()) Text(T("Platform ${a.platform}", "רציף ${a.platform}"), fontSize = 13.sp, color = K.muted)
+        KavLive.plateOf(a.vehicleId)?.let { Text(T("Number plate $it", "מספר רישוי $it"), fontSize = 13.sp, color = K.muted) }
     }
 }
 

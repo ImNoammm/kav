@@ -1,6 +1,7 @@
 package uk.noammm.kav.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,14 +12,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TimeInput
-import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -28,19 +30,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import uk.noammm.kav.data.Moovit
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
+import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WhenSheet(
     departAt: Long,
@@ -60,11 +74,8 @@ fun WhenSheet(
     var day by remember(departAt) {
         mutableIntStateOf(if (departAt > 0L) daysBetween(today, start).coerceAtLeast(0) else 0)
     }
-    val picker = rememberTimePickerState(
-        initialHour = start.get(Calendar.HOUR_OF_DAY),
-        initialMinute = start.get(Calendar.MINUTE),
-        is24Hour = !Shown.twelveHour,
-    )
+    var hour by remember(departAt) { mutableIntStateOf(start.get(Calendar.HOUR_OF_DAY)) }
+    var minute by remember(departAt) { mutableIntStateOf(start.get(Calendar.MINUTE)) }
 
     BottomSheet(onDismiss, scrolls = true) { close ->
         val chosen = mode
@@ -98,7 +109,7 @@ fun WhenSheet(
             }
             if (resettable) WhenRow(T("Leave now", "צאו עכשיו"), tint = K.accent, last = true) { close(onNow) }
         } else {
-            TimeInput(picker)
+            TimeEntry(hour, minute) { h, m -> hour = h; minute = m }
             Spacer(Modifier.height(K.gap2))
             Row(
                 Modifier.fillMaxWidth().panel(K.rControl),
@@ -114,9 +125,9 @@ fun WhenSheet(
                 Step(T.onward, day < 14, T("Next day", "היום הבא")) { day++ }
             }
             Spacer(Modifier.height(K.gap3))
-            val pickedToday = chosenMillis(today, day, picker.hour, picker.minute)
+            val pickedToday = chosenMillis(today, day, hour, minute)
             val rolled = day == 0 && pickedToday < openedMinute
-            val picked = if (rolled) chosenMillis(today, day + 1, picker.hour, picker.minute) else pickedToday
+            val picked = if (rolled) chosenMillis(today, day + 1, hour, minute) else pickedToday
             if (rolled) {
                 Text(T("That time has passed today, this will be for tomorrow.", "השעה הזו כבר עברה היום, הנסיעה תתוכנן למחר."), fontSize = 13.sp, color = K.dim)
                 Spacer(Modifier.height(K.gap2))
@@ -133,6 +144,97 @@ fun WhenSheet(
                 Text(T("Done", "סיום"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium)
             }
         }
+    }
+}
+
+// The time typed in, as Kav writes times: "14:05", or "2:05" with AM or PM marked. Material's TimeInput always writes
+// the hour as "02".
+@Composable
+private fun TimeEntry(hour: Int, minute: Int, onChange: (hour: Int, minute: Int) -> Unit) {
+    val twelve = Shown.twelveHour
+    val pm = hour >= 12
+    val minutes = remember { FocusRequester() }
+    val focus = LocalFocusManager.current
+    Row(verticalAlignment = Alignment.Top) {
+        TimeField(
+            if (twelve) (hour + 11) % 12 + 1 else hour, pad = !twelve, range = if (twelve) 1..12 else 0..23,
+            label = T("Hour", "שעה"), ime = ImeAction.Next, onFilled = { minutes.requestFocus() },
+        ) { h -> onChange(if (twelve) h % 12 + (if (pm) 12 else 0) else h, minute) }
+        Text(":", fontSize = 44.sp, color = K.text, modifier = Modifier.padding(horizontal = K.gap2, vertical = 8.dp))
+        TimeField(
+            minute, pad = true, range = 0..59, label = T("Minute", "דקה"), ime = ImeAction.Done,
+            onFilled = { focus.clearFocus() }, modifier = Modifier.focusRequester(minutes),
+        ) { m -> onChange(hour, m) }
+        if (twelve) {
+            Spacer(Modifier.width(K.gap3))
+            Column(
+                Modifier.clip(RoundedCornerShape(K.rControl)).border(1.dp, K.borderStrong, RoundedCornerShape(K.rControl)),
+            ) {
+                Period("AM", !pm) { if (pm) onChange(hour - 12, minute) }
+                Box(Modifier.width(64.dp).height(1.dp).background(K.borderStrong))
+                Period("PM", pm) { if (!pm) onChange(hour + 12, minute) }
+            }
+        }
+    }
+}
+
+// A number shown as it is. Tapped, it's all selected, so the first digit typed replaces it; once it can't take another
+// digit the next field takes over.
+@Composable
+private fun TimeField(
+    value: Int, pad: Boolean, range: IntRange, label: String, ime: ImeAction, onFilled: () -> Unit,
+    modifier: Modifier = Modifier, onValue: (Int) -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var typed by remember { mutableStateOf<String?>(null) }
+    val shown = if (pad) "%02d".format(Locale.US, value) else value.toString()
+    val valid = typed.isNullOrEmpty() || typed?.toIntOrNull()?.let { it in range } == true
+    val field = when {
+        typed != null -> TextFieldValue(typed.orEmpty(), TextRange(typed.orEmpty().length))
+        focused -> TextFieldValue(shown, TextRange(0, shown.length))
+        else -> TextFieldValue(shown, TextRange(shown.length))
+    }
+    Column {
+        BasicTextField(
+            field,
+            onValueChange = { t ->
+                // The tap itself reports the old number back with the caret moved: that's not typing.
+                if (t.text == field.text) return@BasicTextField
+                val digits = t.text.filter(Char::isDigit).take(2)
+                typed = digits
+                val v = digits.toIntOrNull()?.takeIf { it in range } ?: return@BasicTextField
+                onValue(v)
+                if (digits.length == 2 || v * 10 > range.last) onFilled()
+            },
+            modifier = modifier.width(96.dp).height(72.dp)
+                .border(if (focused) 2.dp else 1.dp, if (focused) K.accent else K.borderStrong, RoundedCornerShape(12.dp))
+                .onFocusChanged { focused = it.isFocused; typed = null },
+            textStyle = TextStyle(fontSize = 44.sp, color = if (valid) K.text else K.critical, textAlign = TextAlign.Center),
+            singleLine = true,
+            cursorBrush = SolidColor(K.accent),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ime),
+            keyboardActions = KeyboardActions(onNext = { onFilled() }, onDone = { onFilled() }),
+            decorationBox = { box ->
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    // Rubbed out, what it was stays faintly in place.
+                    if (typed == "") Text(shown, fontSize = 44.sp, color = K.dim)
+                    box()
+                }
+            },
+        )
+        Text(label, fontSize = 13.sp, color = K.dim, modifier = Modifier.padding(top = K.gap1))
+    }
+}
+
+@Composable
+private fun Period(text: String, on: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.size(64.dp, 44.dp).background(if (on) K.accent else Color.Transparent)
+            .semantics { selected = on }
+            .clickable(role = Role.RadioButton, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = if (on) K.onAccent else K.dim)
     }
 }
 

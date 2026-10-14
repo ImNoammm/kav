@@ -32,6 +32,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.KavModel
+import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.representativeTrip
@@ -536,12 +537,16 @@ private class LineLive(
 @Composable
 private fun rememberLineLive(net: Net, route: Int, stops: List<Int>): LineLive {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val live by produceState(LineLive(checked = false), route, stops, lifecycle) {
+    val fromServer = KavLive.enabled
+    val live by produceState(LineLive(checked = false), route, stops, lifecycle, fromServer) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             val number = net.rShort[route].trim()
             while (true) {
                 value = try {
-                    withContext(Dispatchers.IO) { lineLive(net, stops, number) }
+                    withContext(Dispatchers.IO) {
+                        if (fromServer) serverLineLive(number, net.rLong[route].trim(), stops.lastOrNull()?.let { net.name[it] })
+                        else lineLive(net, stops, number)
+                    }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -552,6 +557,15 @@ private fun rememberLineLive(net: Net, route: Int, stops: List<Int>): LineLive {
         }
     }
     return live
+}
+
+// The line's buses from Kav's server: the routes with its number that are this one, by the ministry's name for it, or
+// for a timetable a little older than the ministry's, by where they end.
+private fun serverLineLive(number: String, name: String, last: String?): LineLive {
+    val area = KavLive.line(number)
+    val routes = area.lines.filterValues { it.name == name }.keys
+        .ifEmpty { area.lines.filterValues { last != null && it.to == last }.keys }
+    return LineLive(checked = true, vehicles = area.buses.filter { it.route in routes }.map { KavLive.busArrival(it) })
 }
 
 private suspend fun lineLive(net: Net, stops: List<Int>, number: String): LineLive = coroutineScope {
@@ -590,6 +604,8 @@ private fun LineRouteMap(
 ) {
     val tint = plateFor(rt)?.fill ?: K.route
     val path = shape.ifEmpty { calls }
+    val spots = rememberKavSpots(remember(vehicles) { KavLive.routesOf(vehicles) })
+    val shown = remember(vehicles, spots) { vehicles.map { KavLive.fresher(it, spots) } }
     val geometry = remember(path, calls, tint, K.light) {
         val start = onRoute(calls.first(), path)
         val end = onRoute(calls.last(), path)
@@ -609,7 +625,7 @@ private fun LineRouteMap(
     val mode = modeOf(rt)
     TileMap(
         path, modifier, geometry = geometry,
-        live = vehicleGeometry(vehicles.map { it to mode }, LocalDensity.current),
+        live = vehicleGeometry(shown.map { it to mode }, LocalDensity.current),
     )
 }
 
@@ -823,19 +839,21 @@ internal fun OnlineLineDetail(g: Moovit.LineGroup, onBack: () -> Unit) {
                 else T("This line has no trips in the coming week.", "אין לקו הזה נסיעות בשבוע הקרוב."),
                 Modifier.padding(K.gap4),
             )
-            else -> OnlineDirectionView(dir)
+            else -> OnlineDirectionView(dir, g.number)
         }
     }
 }
 
 @Composable
-private fun OnlineDirectionView(dir: OnlineDirection) {
+private fun OnlineDirectionView(dir: OnlineDirection, number: String) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val live by produceState(LineLive(checked = false), dir.lineId, lifecycle) {
+    val fromServer = KavLive.enabled
+    val live by produceState(LineLive(checked = false), dir.lineId, lifecycle, fromServer) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 value = try {
-                    withContext(Dispatchers.IO) {
+                    if (fromServer) withContext(Dispatchers.IO) { serverLineLive(number.trim(), "", dir.stops.lastOrNull()?.name) }
+                    else withContext(Dispatchers.IO) {
                         val arrivals = Moovit.stopArrivals(Online.open(), dir.stops.map { it.id }.take(60)).first.values
                         LineLive(
                             checked = true,

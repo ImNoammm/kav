@@ -37,7 +37,12 @@ you're on the way.
 - Shows where your bus actually is. The trip stays in the notification shade
   while you're on the way, and on Android 16 it shows up as a live update.
 - Live bus locations on the map, free. Moovit now charges for them in its own
-  app (Moovit+), but in Kav they stay free.
+  app (Moovit+), but in Kav they stay free. They come from Moovit unless you
+  switch on Kav's own server ([server/](server)), which takes them straight from
+  the Ministry of Transport's real-time feed, often fresher than Moovit's. It
+  only learns the lines, stops or rough area you're looking at, through
+  Cloudflare, and keeps no logs. If it's ever down, Kav goes back to Moovit's
+  until it's up again.
 - A live screen with every stop around you and the buses reporting their
   position.
 - Departure boards for every station, and a page for every line with its route
@@ -62,7 +67,7 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-2.5.apk --repo ImNoammm/kav
+gh attestation verify kav-2.6.apk --repo ImNoammm/kav
 ```
 
 First launch fetches the map, about 176 MB once. It lives on the phone from then
@@ -86,6 +91,9 @@ tools/fetch.sh
 KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
 ```
 
+A build of your own gets its live buses from Moovit: Kav's server only answers
+the APKs from Releases.
+
 ## Credits
 
 - Map data © OpenStreetMap contributors, from the Protomaps build, drawn with
@@ -93,8 +101,8 @@ KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
 - The liquid glass shaders come from Kyant0's
   [AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache
   License 2.0).
-- Timetables from the Israel Ministry of Transport. Trip plans and live
-  positions from Moovit.
+- Timetables, and live buses when Kav's server is on, from the Israel Ministry
+  of Transport. Trip plans, and live buses otherwise, from Moovit.
 - Places and exact addresses from Google Maps' public web search, asked the way
   a logged-out browser asks it: no key, no account, no cookies. It gets the typed
   text and the area above. The request recipe is

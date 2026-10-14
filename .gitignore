@@ -26,6 +26,7 @@ tools/thrift_from_jadx.py
 # Tests
 android/app/src/androidTest/
 android/app/src/test/
+server/test_*.py
 
 # The private key that signs recipe/kav.json
 .signing/

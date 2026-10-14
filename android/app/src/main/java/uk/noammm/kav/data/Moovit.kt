@@ -182,6 +182,9 @@ object Moovit {
         val tripShapeId: Int = -1,
         val patternId: Int = -1,
         val platform: String = "",
+        // Only from Kav's server: degrees from north and km/h at the last report, or -1.
+        val bearing: Int = -1,
+        val speed: Int = -1,
     ) {
         val key get() = ArrivalKey(stopId, tripId)
         fun departure(alert: Int = 0) = Departure(
@@ -191,6 +194,17 @@ object Moovit {
         val hasLocation get() = tracked && lat != 0.0 && lon != 0.0
         val stopsAway get() =
             if (nextStopIndex >= 0 && stopIndex >= nextStopIndex) stopIndex - nextStopIndex else -1
+        // Its own times, with its vehicle where an earlier answer had it.
+        fun withVehicleOf(old: Arrival) = Arrival(
+            stopId, lineId, tripId, staticUtc, rtUtc, statisticalUtc, status, certainty, traffic, frequency,
+            rtDropped, old.tracked, old.lat, old.lon, old.vehicleId, old.sampleUtc, old.vehicleStatus, old.nextStopIndex,
+            stopIndex, patternStops, tripShapeId, patternId, platform, old.bearing, old.speed,
+        )
+        fun movedTo(lat: Double, lon: Double, sampleUtc: Long, bearing: Int = this.bearing, speed: Int = this.speed) = Arrival(
+            stopId, lineId, tripId, staticUtc, rtUtc, statisticalUtc, status, certainty, traffic, frequency,
+            rtDropped, tracked, lat, lon, vehicleId, sampleUtc, vehicleStatus, nextStopIndex, stopIndex,
+            patternStops, tripShapeId, patternId, platform, bearing, speed,
+        )
     }
 
     class ServiceAlert(
@@ -253,8 +267,26 @@ object Moovit {
         }
     }
 
-    @Suppress("UNCHECKED_CAST")
+    // Asked about many stops at once, Moovit mostly leaves its positions and live times out; 25 at a time it doesn't.
+    private const val ARRIVALS_AT_ONCE = 25
+
     fun stopArrivals(s: MoovitSession, stopIds: List<Int>): Pair<Map<ArrivalKey, Arrival>, Int> {
+        if (stopIds.size <= ARRIVALS_AT_ONCE) return stopArrivalsOnce(s, stopIds)
+        val parts = stopIds.chunked(ARRIVALS_AT_ONCE)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(parts.size.coerceAtMost(6))
+        try {
+            val answers = parts.map { part -> pool.submit<Pair<Map<ArrivalKey, Arrival>, Int>> { stopArrivalsOnce(s, part) } }
+                .map { job -> try { job.get() } catch (e: java.util.concurrent.ExecutionException) { throw e.cause ?: e } }
+            val out = LinkedHashMap<ArrivalKey, Arrival>()
+            answers.forEach { out.putAll(it.first) }
+            return out to answers.minOf { it.second }
+        } finally {
+            pool.shutdown()
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun stopArrivalsOnce(s: MoovitSession, stopIds: List<Int>): Pair<Map<ArrivalKey, Arrival>, Int> {
         if (stopIds.isEmpty()) return emptyMap<ArrivalKey, Arrival>() to 20
         val body = TWriter().apply {
             i32ListField(1, stopIds)
@@ -1119,6 +1151,8 @@ object Moovit {
     ) {
         fun arrival(ride: Leg): Arrival? = live[ArrivalKey(ride.fromStop, ride.tripId)]
 
+        fun withLive(live: Map<ArrivalKey, Arrival>) = Resolved(lines, stops, routeTypes, live, shapes, pollSecs, patterns, delays)
+
         // Moovit's live time for the ride at the rider's stop. It doesn't time a line's last stop.
         fun alightLiveAt(ride: Leg): Long? = live[ArrivalKey(ride.toStop, ride.tripId)]?.rtUtc?.takeIf { it > 0 }
 
@@ -1218,12 +1252,16 @@ object Moovit {
         val types = LinkedHashMap<Int, Int>()
         val boarding = timedStops(list, ending)
         val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
-        // The live layer doesn't need the line and stop details, so both load at once.
-        val liveJob = pool.submit<Pair<Map<ArrivalKey, Arrival>, Int>> {
+        // From Kav's server the live layer needs the stops' codes first; from Moovit both load at once.
+        val liveJob = if (KavLive.enabled) null else pool.submit<Pair<Map<ArrivalKey, Arrival>, Int>> {
             try { stopArrivals(s, boarding) } catch (e: Exception) { emptyMap<ArrivalKey, Arrival>() to 20 }
         }
         val (live, poll) = try {
             loadDetails(pool, s, lineIds, stopIds, lines, stops, types)
+            if (liveJob == null) {
+                val rides = serverLive(list, stops, lines, ending)
+                return Resolved(lines, stops, types, rides.live, emptyMap(), SERVER_POLL, rides.patterns, delaysOf(list, rides.live))
+            }
             liveJob.get()
         } finally {
             pool.shutdown()
@@ -1236,6 +1274,13 @@ object Moovit {
         val patterns = runCatching { patternJob.get() }.getOrDefault(emptyMap())
         return Resolved(lines, stops, types, live, shapes, poll, patterns, delaysOf(list, live))
     }
+
+    // Kav's server answers for stops about every 15 seconds.
+    private const val SERVER_POLL = 15
+
+    private fun serverLive(list: List<Itinerary>, stops: Map<Int, StopInfo>, lines: Map<Int, LineInfo>, ending: Boolean) =
+        try { KavLive.rideArrivals(list, stops, lines, ending, uk.noammm.kav.Loaded.net) }
+        catch (e: Exception) { KavLive.Rides(emptyMap(), emptyMap()) }
 
     // Shapes and stop patterns only refine a found route. One slow fetch must not hold the results back: whatever
     // misses this budget keeps loading into its cache and arrives with the next live refresh.
@@ -1340,6 +1385,11 @@ object Moovit {
     }
 
     fun refreshLive(s: MoovitSession, list: List<Itinerary>, prev: Resolved, ending: Boolean = false): Resolved {
+        if (KavLive.enabled) {
+            val rides = try { KavLive.rideArrivals(list, prev.stops, prev.lines, ending, uk.noammm.kav.Loaded.net) } catch (e: Exception) { return prev }
+            return Resolved(prev.lines, prev.stops, prev.routeTypes, rides.live, prev.shapes, SERVER_POLL,
+                prev.patterns + rides.patterns, prev.delays + delaysOf(list, rides.live))
+        }
         val (live, poll) = try { stopArrivals(s, timedStops(list, ending)) } catch (e: Exception) { return prev }
         // Details that didn't load with the results, on a weak connection, are asked for again on every refresh.
         val (lineIds, stopIds) = detailIds(list)

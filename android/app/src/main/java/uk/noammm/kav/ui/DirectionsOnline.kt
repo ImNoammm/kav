@@ -674,12 +674,7 @@ internal fun sameLines(candidate: Moovit.Itinerary, named: List<MoovitLink.Ride>
 
 @Composable
 private fun ShiftButton(label: String, onClick: () -> Unit) {
-    Text(
-        label, fontSize = 12.sp, color = K.text,
-        modifier = Modifier.panel(K.rPill)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp),
-    )
+    Chip(label, lit = false, onClick = onClick)
 }
 
 private fun whenLabel(departAt: Long, timeType: Int): String {
@@ -689,9 +684,10 @@ private fun whenLabel(departAt: Long, timeType: Int): String {
     val then = java.util.Calendar.getInstance(ISRAEL).apply { timeInMillis = departAt }
     val sameDay = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&
         now.get(java.util.Calendar.DAY_OF_YEAR) == then.get(java.util.Calendar.DAY_OF_YEAR)
-    val stamp = java.text.SimpleDateFormat(
-        if (sameDay) CLOCK else "EEE $CLOCK", T.locale,
-    ).apply { timeZone = ISRAEL }.format(java.util.Date(departAt))
+    // The time as Kav writes it everywhere ("2:15 PM"), the day in Kav's language.
+    val time = clockFormat().format(java.util.Date(departAt))
+    val stamp = if (sameDay) time
+        else java.text.SimpleDateFormat("EEE", T.locale).apply { timeZone = ISRAEL }.format(java.util.Date(departAt)) + " " + time
     return when (timeType) {
         Moovit.TIME_ARRIVAL -> T("Arrive by ", "הגעה עד ") + stamp
         else -> T("Depart ", "יציאה ") + stamp

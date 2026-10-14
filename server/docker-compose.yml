@@ -1,0 +1,34 @@
+# Runs next to the other stacks on the server, behind Nginx Proxy Manager and Cloudflare.
+# .env holds MOT_KEY, MOT_URL, MOT_URL_BACKUP and KAV_APP_KEY; mot-ca.pem is the intermediate certificate
+# the ministry leaves out of its chain (GeoTrust TLS RSA CA G1).
+services:
+  kav-live:
+    image: python:3.12-slim
+    container_name: kav-live
+    restart: unless-stopped
+    command: python3 -u /app/live.py
+    env_file: .env
+    environment:
+      - MOT_CA=/app/mot-ca.pem
+      - PORT=8080
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - ./live.py:/app/live.py:ro
+      - ./mot-ca.pem:/app/mot-ca.pem:ro
+    user: "1000:1000"
+    read_only: true
+    mem_limit: 512m
+    logging:
+      options:
+        max-size: 1m
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/live/v1/status', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    networks: [proxy-net]
+
+networks:
+  proxy-net:
+    external: true

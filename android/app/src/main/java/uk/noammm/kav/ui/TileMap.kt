@@ -641,12 +641,15 @@ fun TileMap(
         }
         val anchor = viewport.anchor
         val look by rememberUpdatedState(onLook)
-        if (onLook != null) LaunchedEffect(w, h) {
+        val mapSize by rememberUpdatedState(w to h)
+        // Only a hand on the map changes where it looks: the map growing or shrinking isn't a new place.
+        if (onLook != null) LaunchedEffect(Unit) {
             snapshotFlow { camera.value?.takeIf { camera.manual } }.collectLatest { c ->
                 if (c == null) return@collectLatest
                 kotlinx.coroutines.delay(600)
-                val proj = MapProjection(c.worldX, c.worldY, c.pxPerWorld, w, h)
-                val mid = proj.latLon(Offset(w / 2, h / 2))
+                val (sw, sh) = mapSize
+                val proj = MapProjection(c.worldX, c.worldY, c.pxPerWorld, sw, sh)
+                val mid = proj.latLon(Offset(sw / 2, sh / 2))
                 val corner = proj.latLon(Offset(0f, 0f))
                 look?.invoke(mid, metres(mid.first, mid.second, corner.first, corner.second) / 1000.0)
             }

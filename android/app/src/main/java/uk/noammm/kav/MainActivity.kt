@@ -79,6 +79,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import uk.noammm.kav.data.Backup
 import uk.noammm.kav.data.JourneyFile
+import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.MapFile
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.MoovitLink
@@ -139,6 +140,7 @@ class MainActivity : ComponentActivity() {
         Shown.co2 = Prefs.showCo2(this)
         Shown.twelveHour = Prefs.twelveHour(this)
         Moovit.shareLocation = !Prefs.privateSearch(this)
+        KavLive.chosen = Prefs.liveFromKav(this)
         MapFile.init(this)
         StopPhotos.init(this)
         Online.init(this)
@@ -288,6 +290,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         Shown.co2 = Prefs.showCo2(ctx)
         Shown.twelveHour = Prefs.twelveHour(ctx)
         Moovit.shareLocation = !Prefs.privateSearch(ctx)
+        KavLive.chosen = Prefs.liveFromKav(ctx)
         seen = Prefs.seen(ctx)
         seenPlace = Prefs.seenPlace(ctx)
         Online.reset()
@@ -432,18 +435,42 @@ suspend fun loadNet(ctx: Context): Net = withContext(Dispatchers.Default) {
 private fun Root() {
     val ctx = LocalContext.current
     var onboarded by remember { mutableStateOf(Prefs.onboarded(ctx)) }
-    if (!onboarded) {
-        OnboardingScreen { Prefs.setOnboarded(ctx); onboarded = true }
-        return
-    }
     val app = ctx.applicationContext
     val model: KavModel = viewModel { KavModel(Loaded.net, app) }
+    if (!onboarded) {
+        OnboardingScreen(model) { Prefs.setOnboarded(ctx); onboarded = true }
+        return
+    }
     LaunchedEffect(model) { if (!model.updateChecked) model.checkForUpdate(app) }
     // Kav's recipe and Vela's: fixes for Moovit or Google that need no update.
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             runCatching { uk.noammm.kav.data.KavRecipe.refresh(app) }
             runCatching { uk.noammm.kav.data.GoogleRecipe.refresh(app) }
+        }
+    }
+    // Kav's server tells a bus on its way by the trip the timetable has it on, so the timetable loads with it.
+    LaunchedEffect(KavLive.enabled) { if (KavLive.enabled) runCatching { loadNet(app) } }
+    // Kav's server chosen but not answering: Moovit's live data meanwhile, said once when the app opens, and the
+    // server's again as soon as it answers. Without internet it isn't the server, and nothing changes.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(KavLive.chosen) {
+        if (!KavLive.chosen) { KavLive.up = true; return@LaunchedEffect }
+        var opening = true
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                if (hasNetwork(app)) {
+                    val answering = withContext(Dispatchers.IO) { KavLive.answering() }
+                    if (!answering && opening) android.widget.Toast.makeText(
+                        app,
+                        T("Kav's server is offline · using Moovit", "השרת של Kav לא זמין · משתמשים ב-Moovit"),
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                    KavLive.up = answering
+                    opening = false
+                }
+                kotlinx.coroutines.withTimeoutOrNull(if (KavLive.up) 30_000L else 15_000L) { KavLive.recheck.receive() }
+            }
         }
     }
     var pickLook by remember { mutableStateOf(Prefs.pickLook(ctx)) }
@@ -581,10 +608,12 @@ private fun Shell(model: KavModel) {
             val refreshed = withContext(Dispatchers.IO) {
                 Moovit.refreshLive(session, listOf(current.trip), current.resolved, ending = true)
             }
+            // With the same refresh, so the notification and the floating window move with the server's positions too.
+            val spots = withContext(Dispatchers.IO) { KavLive.tripSpots(current.trip, refreshed) }
             model.activeJourney?.takeIf { it.trip == journey.trip }?.let {
                 model.activeJourney = it.copy(resolved = Moovit.Resolved(
                     refreshed.lines + it.resolved.lines, refreshed.stops + it.resolved.stops,
-                    refreshed.routeTypes + it.resolved.routeTypes, refreshed.live,
+                    refreshed.routeTypes + it.resolved.routeTypes, KavLive.fresher(refreshed.live, spots),
                     refreshed.shapes + it.resolved.shapes, refreshed.pollSecs, refreshed.patterns,
                     it.resolved.delays + refreshed.delays,
                 ))
@@ -1296,6 +1325,9 @@ object Prefs {
     fun privateSearch(ctx: Context): Boolean = store(ctx).getBoolean("privateSearch", true)
     fun setPrivateSearch(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("privateSearch", on).apply()
 
+    fun liveFromKav(ctx: Context): Boolean = store(ctx).getBoolean("liveFromKav", false)
+    fun setLiveFromKav(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("liveFromKav", on).apply()
+
     fun seen(ctx: Context): Seen = Seen.entries.firstOrNull { it.name == store(ctx).getString("seen", null) } ?: Seen.CITY
     fun seenPlace(ctx: Context): Moovit.Place? = savedPlace(ctx, "seenPlace")
     fun setSeen(ctx: Context, how: Seen, place: Moovit.Place?) {
@@ -1372,6 +1404,7 @@ object Prefs {
             .put("look", look(ctx).name.lowercase())
             .put("liquidGlass", s.getBoolean("liquidGlass", true))
             .put("privateSearch", privateSearch(ctx))
+            .put("liveFromKav", liveFromKav(ctx))
             .put("seen", seen(ctx).name)
             .apply { seenPlace(ctx)?.let { put("seenPlace", json(it)) } }
             .put("filters", org.json.JSONObject().apply { ResultFilter.entries.forEach { put(it.name, it in on) } })
@@ -1393,6 +1426,7 @@ object Prefs {
         o.optString("look").takeIf { it in looks }?.let { e.putString("look", it) }
         if (o.has("liquidGlass")) e.putBoolean("liquidGlass", o.optBoolean("liquidGlass"))
         if (o.has("privateSearch")) e.putBoolean("privateSearch", o.optBoolean("privateSearch"))
+        if (o.has("liveFromKav")) e.putBoolean("liveFromKav", o.optBoolean("liveFromKav"))
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }
         if (o.has("showCo2")) e.putBoolean("showCo2", o.optBoolean("showCo2"))

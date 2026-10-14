@@ -83,6 +83,9 @@ object Online {
         }
     }
 
+    // A fix for Moovit just arrived: the next call tries at once rather than waiting out earlier failures.
+    fun retryNow() { failures = 0 }
+
     // After a change to what Moovit may be told: the next call starts a new user, and a registration
     // already under way is not kept.
     fun reset() {
@@ -315,11 +318,12 @@ fun LiveScreen(model: KavModel) {
                     }
                     val missing = tracked.sortedBy { it.rtUtc.takeIf { t -> t > 0 } ?: it.staticUtc }
                         .map { it.lineId }.distinct().filter { it !in lines }
+                    // A line that didn't load stays missing and is asked again on the next refresh.
                     for (batch in missing.chunked(8)) {
                         val named = withContext(Dispatchers.IO) {
                             batch.map { id -> async { id to runCatching { Moovit.lineInfo(s, id) }.getOrNull() } }.awaitAll().toMap()
                         }
-                        lines = lines + named
+                        lines = lines + named.filterValues { it != null }
                         val agencies = named.values.mapNotNull { it?.agencyId }.distinct().filter { it !in modes }
                         if (agencies.isNotEmpty()) modes = modes + withContext(Dispatchers.IO) {
                             agencies.associateWith { runCatching { Moovit.agencyRouteType(s, it) }.getOrDefault(3) }
@@ -829,18 +833,28 @@ private fun LiveStopCard(
     var extraLines by remember { mutableStateOf<Map<Int, Moovit.LineInfo?>>(emptyMap()) }
     var extraModes by remember { mutableStateOf<Map<Int, Int>>(emptyMap()) }
     val lineIds = remember(due) { due.map { it.lineId }.distinct() }
+    // A line that didn't load is asked again, less and less often, while the card is open.
     LaunchedEffect(lineIds) {
-        val s = runCatching { Online.open() }.getOrNull() ?: return@LaunchedEffect
-        for (batch in lineIds.filter { it !in lines && it !in extraLines }.chunked(8)) {
-            val named = withContext(Dispatchers.IO) {
-                batch.map { id -> async { id to runCatching { Moovit.lineInfo(s, id) }.getOrNull() } }.awaitAll().toMap()
+        var wait = 2_000L
+        while (true) {
+            val missing = lineIds.filter { it !in lines && it !in extraLines }
+            if (missing.isEmpty()) break
+            runCatching { Online.open() }.getOrNull()?.let { s ->
+                for (batch in missing.chunked(8)) {
+                    val named = withContext(Dispatchers.IO) {
+                        batch.map { id -> async { id to runCatching { Moovit.lineInfo(s, id) }.getOrNull() } }.awaitAll().toMap()
+                    }
+                    extraLines = extraLines + named.filterValues { it != null }
+                    val agencies = named.values.mapNotNull { it?.agencyId }.distinct()
+                        .filter { it !in modes && it !in extraModes }
+                    if (agencies.isNotEmpty()) extraModes = extraModes + withContext(Dispatchers.IO) {
+                        agencies.associateWith { runCatching { Moovit.agencyRouteType(s, it) }.getOrDefault(3) }
+                    }
+                }
             }
-            extraLines = extraLines + named
-            val agencies = named.values.mapNotNull { it?.agencyId }.distinct()
-                .filter { it !in modes && it !in extraModes }
-            if (agencies.isNotEmpty()) extraModes = extraModes + withContext(Dispatchers.IO) {
-                agencies.associateWith { runCatching { Moovit.agencyRouteType(s, it) }.getOrDefault(3) }
-            }
+            if (lineIds.all { it in lines || it in extraLines }) break
+            delay(wait)
+            wait = (wait * 2).coerceAtMost(60_000L)
         }
     }
     val info = lines + extraLines

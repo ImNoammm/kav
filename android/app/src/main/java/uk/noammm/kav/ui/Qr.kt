@@ -57,6 +57,9 @@ internal fun QrScanner(modifier: Modifier, onFail: () -> Unit = {}, onCode: (Str
         modifier = modifier,
         factory = { c ->
             PreviewView(c).also { view ->
+                // Drawn as a TextureView, inside the page, so the preview fades and slides out with it. The default
+                // SurfaceView sits above the page and stays on screen until the camera stops.
+                view.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                 providerFuture.addListener({
                     // Scanning was left before the camera was ready: it stays off.
                     if (gone.get()) return@addListener

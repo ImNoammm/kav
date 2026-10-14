@@ -48,9 +48,10 @@ you're on the way.
 - Private search, on by default, keeps your exact location out of searches:
   Moovit and Google only see the centre of the town you're in, or a place you
   pick.
-- Pays for bus, train, light rail and Carmelit rides, if you want it to. That
-  needs your own Moovit payment account, and only payments use it. Everything
-  else stays anonymous.
+- Pays for bus, train, light rail and Carmelit rides, if you want it to, with a
+  Rav-Pass account you sign up or sign in to right in Kav. Only payments use
+  it, and Rav-Pass gets your location only at the moment you scan or pay, as in
+  its own app, never in the background. Everything else stays anonymous.
 
 ## Getting it
 
@@ -61,7 +62,7 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-2.4.1.apk --repo ImNoammm/kav
+gh attestation verify kav-2.5.apk --repo ImNoammm/kav
 ```
 
 First launch fetches the map, about 176 MB once. It lives on the phone from then

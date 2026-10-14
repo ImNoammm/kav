@@ -237,6 +237,7 @@ fun DirectionsOnline(model: KavModel) {
                     it.resolved.routeTypes + resolved.routeTypes,
                     resolved.live + it.resolved.live, resolved.shapes + it.resolved.shapes,
                     it.resolved.pollSecs, it.resolved.patterns + resolved.patterns,
+                    it.resolved.delays + resolved.delays,
                 ))
             }
             // Every search that found routes becomes a recent trip with them, as in Moovit's Recent Journeys,
@@ -313,6 +314,7 @@ fun DirectionsOnline(model: KavModel) {
                 refreshed.lines + resolved.lines, refreshed.stops + resolved.stops,
                 refreshed.routeTypes + resolved.routeTypes, refreshed.live,
                 refreshed.shapes + resolved.shapes, refreshed.pollSecs, refreshed.patterns + resolved.patterns,
+                resolved.delays + refreshed.delays,
             )
         }
     }

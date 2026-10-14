@@ -3,32 +3,26 @@ package uk.noammm.kav.ui
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationManager
+import android.os.Build
+import android.os.Looper
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.view.WindowManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.findRootCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.unit.toSize
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
-import kotlin.math.roundToInt
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -42,13 +36,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.findRootCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -56,52 +56,115 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.toSize
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationListenerCompat
+import androidx.core.location.LocationManagerCompat
+import androidx.core.location.LocationRequestCompat
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import uk.noammm.kav.loadNet
-import uk.noammm.kav.data.Net
 import org.json.JSONArray
 import org.json.JSONObject
 import uk.noammm.kav.KavModel
+import uk.noammm.kav.LOCATION_PERMISSIONS
 import uk.noammm.kav.TripService
-import uk.noammm.kav.Seen
-import uk.noammm.kav.requestLocationOnce
 import uk.noammm.kav.data.Moovit
-import uk.noammm.kav.data.MoovitPay
-import uk.noammm.kav.data.MoovitSession
+import uk.noammm.kav.data.Net
+import uk.noammm.kav.data.RavPass
+import uk.noammm.kav.hasLocationPermission
+import uk.noammm.kav.loadNet
+import uk.noammm.kav.locationProviders
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlin.math.roundToInt
 
-// The Moovit user Kav pays with. Made the first time the rider signs in to pay and renewed like the
-// anonymous one, but never replaced: the payment account is tied to it. Its tokens can spend money,
-// so they are kept sealed with a key that cannot leave the phone.
+// Where the phone is for paying, kept as HopOn's app keeps it while it is open: the newest fix with its time and
+// accuracy, at any accuracy, never a mocked one. Pay listens while it is open; paying from elsewhere waits for a fix.
+// Only the moment of paying sends it to HopOn.
+internal object PayFix {
+    @Volatile private var latest: Location? = null
+    private var users = 0
+    private var off: (() -> Unit)? = null
+
+    fun start(ctx: Context) {
+        if (users++ == 0) off = listen(ctx.applicationContext) { latest = it }
+    }
+
+    fun stop() {
+        if (users == 0 || --users > 0) return
+        off?.invoke(); off = null; latest = null
+    }
+
+    // The newest fix, without waiting.
+    fun last(): RavPass.Fix? = latest?.let(::fixOf)
+
+    // The newest fix, or the next one within 10 seconds.
+    suspend fun now(ctx: Context): RavPass.Fix? {
+        last()?.let { return it }
+        if (!hasLocationPermission(ctx)) return null
+        val got = CompletableDeferred<Location>()
+        val stop = withContext(Dispatchers.Main) { listen(ctx.applicationContext) { got.complete(it) } }
+        return try { withTimeoutOrNull(10_000) { got.await() }?.let(::fixOf) } finally { withContext(Dispatchers.Main) { stop() } }
+    }
+
+    private fun fixOf(l: Location) = RavPass.Fix(l.latitude, l.longitude, l.time, l.accuracy)
+
+    // HopOn's app takes a fix that has an accuracy and a position and isn't mocked, from the fused provider it asks
+    // through Google's. Without the platform's own fused provider, GPS and the network.
+    private fun listen(ctx: Context, onFix: (Location) -> Unit): () -> Unit {
+        val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return {}
+        if (!hasLocationPermission(ctx)) return {}
+        val listener = object : LocationListenerCompat {
+            override fun onLocationChanged(location: Location) {
+                val mock = if (Build.VERSION.SDK_INT >= 31) location.isMock else @Suppress("DEPRECATION") location.isFromMockProvider
+                if (location.hasAccuracy() && location.latitude != 0.0 && location.longitude != 0.0 && !mock) onFix(location)
+            }
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+        }
+        val all = locationProviders(lm)
+        val providers = if (LocationManager.FUSED_PROVIDER in all) listOf(LocationManager.FUSED_PROVIDER) else all
+        val request = LocationRequestCompat.Builder(2_000L).setQuality(LocationRequestCompat.QUALITY_HIGH_ACCURACY).build()
+        var any = false
+        for (p in providers) {
+            try {
+                LocationManagerCompat.requestLocationUpdates(lm, p, request, listener, Looper.getMainLooper())
+                any = true
+            } catch (e: SecurityException) {
+            } catch (e: IllegalArgumentException) {
+            }
+        }
+        return if (any) ({ runCatching { LocationManagerCompat.removeUpdates(lm, listener) } }) else ({})
+    }
+}
+
+// No fix to pay from. HopOn's app doesn't pay without one either.
+internal class NoFix : Exception("no location")
+
+// The Rav-Pass account Kav pays with, and today's tickets. Its token can spend money, so it is kept sealed with a key
+// that cannot leave the phone. Nothing else in Kav uses the account.
 object Payer {
-    @Volatile private var user: MoovitSession? = null
     private var store: android.content.SharedPreferences? = null
-    private val lock = Mutex()
+    @Volatile private var session: RavPass.Session? = null
     private val purchases = PayPurchase()
-    private val refreshLock = Mutex()
     private val accountState = Any()
     @Volatile private var sessionVersion = 0L
     val purchasing get() = purchases.busy
@@ -109,28 +172,40 @@ object Payer {
     var signedIn by mutableStateOf(false)
         private set
 
-    var wallet by mutableStateOf<MoovitPay.Wallet?>(null)
+    // What paying still needs, in the order HopOn's app asks for it: the terms in force, the holder's name and email,
+    // then a card. Null until HopOn is asked.
+    enum class Setup { TERMS, DETAILS, CARD }
+    var missing by mutableStateOf<List<Setup>?>(null)
         private set
+    var settings by mutableStateOf<RavPass.Settings?>(null)
+        private set
+    var account by mutableStateOf<RavPass.Account?>(null)
+        private set
+    var cards by mutableStateOf<List<RavPass.Card>>(emptyList())
+        private set
+    // The card page asked for from Settings, with the account otherwise ready.
+    var addingCard by mutableStateOf(false)
+    private var skipped = false
+
+    // Today's tickets, newest first: those bought here and the latest HopOn lists.
+    var tickets by mutableStateOf<List<RavPass.Ticket>>(emptyList())
+        private set
+
+    // When the last ride's free transfer ends, while it lasts.
+    fun transferUntil(now: Long) = tickets.maxOfOrNull { it.transferUntilUtc }?.takeIf { it > now }
 
     var showRef by mutableStateOf<String?>(null)
 
-    // Kept on the phone only, per purchase: the bus's QR or the station's position, to add passengers to the
-    // same ride without scanning again. key joins the purchases of one ride; fare and region repeat its fare;
-    // mode is the station route type, or -1 on a bus. cancelled: a train entrance cancelled from Kav, which Moovit
-    // then lists like any finished ride.
-    class Ride(
-        val qr: String, val lat: Double, val lon: Double, val atUtc: Long,
-        val key: String, val fare: Int = 0, val region: Int = 0, val mode: Int = -1, val cancelled: Boolean = false,
-    )
-    private val rides = LinkedHashMap<String, Ride>()
-    @Volatile var lastFare: Pair<Int, Int>? = null
+    // The bus code each ticket was paid on, to know the same bus when it is scanned again.
+    private val codes = HashMap<Long, String>()
+    fun codeOf(t: RavPass.Ticket) = synchronized(codes) { codes[t.id] }
 
-    // Asshole mode: a bus ride kept until it is paid or dropped, by the bus's QR and fare; lat and lon are where Moovit is
-    // told it is paid from. title is the fare's reach; leg and journey identify the trip ride it was for.
+    // Asshole mode: a bus ride kept until it is paid or dropped. qr is the bus's code, the ride its line's run (routeId,
+    // officeLineId) from the stop `from` to the stop `to` as HopOn priced it, and guests the others riding along. leg
+    // and journey identify the trip ride it was for.
     class Pending(
-        val title: String, val qr: String, val fare: Int, val region: Int,
-        val lat: Double, val lon: Double, val count: Int, val leg: Int?,
-        val journey: String? = null,
+        val line: String, val qr: String, val routeId: String, val officeLineId: String?, val from: String, val to: String,
+        val guests: Int, val leg: Int?, val journey: String? = null,
     )
     var pending by mutableStateOf<Pending?>(null)
         private set
@@ -138,78 +213,148 @@ object Payer {
         private set
     var laterError by mutableStateOf<String?>(null)
         private set
-    // The kept purchase just paid: its ride's key and trip leg, while the square and the trip notification say "Paid".
+    // The kept ride just paid: its ticket's key and trip leg, while the square and the trip notification say "Paid".
     var paidLater by mutableStateOf<Pair<String, Int?>?>(null)
     private val later = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    private var app: Context? = null
+
+    // Whether the phone's traffic goes through a VPN. HopOn's network blocks some VPN servers in Israel and its answer
+    // then never comes, which HopOn's own app explains the same way.
+    fun behindVpn(): Boolean {
+        val cm = app?.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+        return cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+    }
+
     // Once per process: by the app, or by the trip service paying from its notification with the app closed.
     fun init(ctx: Context) {
+        app = ctx.applicationContext
         if (store != null) return
-        val s = ctx.getSharedPreferences("moovit-pay", Context.MODE_PRIVATE)
+        // Kav paid through Moovit before; that paying user's sealed tokens go.
+        ctx.deleteSharedPreferences("moovit-pay")
+        val s = ctx.getSharedPreferences("rav-pass", Context.MODE_PRIVATE)
         store = s
-        user = s.getString("user", null)?.let(Seal::open)?.let { runCatching { sessionOf(JSONObject(it)) }.getOrNull() }
-        signedIn = user != null && s.getBoolean("signed-in", false)
+        session = s.getString("session", null)?.let(Seal::open)?.let { json ->
+            runCatching { JSONObject(json).let { RavPass.Session(it.getString("token"), it.getString("uid")) } }.getOrNull()
+        }
+        signedIn = session != null
         pending = s.getString("pending", null)?.let(Seal::open)?.let { json ->
             runCatching {
                 val o = JSONObject(json)
-                Pending(o.getString("title"), o.getString("qr"), o.getInt("fare"), o.getInt("region"),
-                    o.getDouble("lat"), o.getDouble("lon"), o.getInt("count"),
-                    o.optInt("leg", -1).takeIf { it >= 0 }, o.optString("journey").takeIf { it.isNotBlank() })
+                Pending(o.getString("line"), o.getString("qr"), o.getString("route"), o.optString("office").ifBlank { null },
+                    o.getString("from"), o.getString("to"), o.optInt("guests"), o.optInt("leg", -1).takeIf { it >= 0 },
+                    o.optString("journey").ifBlank { null })
             }.getOrNull()
         }
-        s.getString("rides", null)?.let(Seal::open)?.let { json ->
+        s.getString("tickets", null)?.let(Seal::open)?.let { json ->
             runCatching {
                 val a = JSONArray(json)
-                for (i in 0 until a.length()) {
-                    val o = a.getJSONObject(i)
-                    val ref = o.getString("ref")
-                    rides[ref] = Ride(o.getString("qr"), o.optDouble("lat", Double.NaN), o.optDouble("lon", Double.NaN),
-                        o.getLong("at"), o.optString("key", ref), o.optInt("fare"), o.optInt("region"), o.optInt("mode", -1),
-                        o.optBoolean("cancelled"))
-                }
+                val kept = (0 until a.length()).map { a.getJSONObject(it) }
+                kept.forEach { o -> o.optString("kav_qr").ifBlank { null }?.let { codes[o.optLong("id")] = it } }
+                tickets = kept.map(RavPass::ticketOf)
             }
         }
     }
 
-    fun ride(ref: String): Ride? = synchronized(rides) { rides[ref] }
+    // A ticket joins today's, replacing an older copy of itself; a day later it goes, unless it is still valid.
+    private fun note(t: RavPass.Ticket, qr: String? = null) {
+        val now = System.currentTimeMillis()
+        synchronized(codes) { if (qr != null) codes[t.id] = qr }
+        tickets = (listOf(t) + tickets.filter { it.id != t.id })
+            .filter { it.boughtUtc > now - 86_400_000L || it.valid(now) }
+            .sortedByDescending { it.boughtUtc }
+        val json = JSONArray().apply {
+            tickets.forEach { k -> put(RavPass.json(k).apply { codeOf(k)?.let { put("kav_qr", it) } }) }
+        }.toString()
+        store?.edit()?.putString("tickets", Seal.close(json))?.apply()
+    }
 
-    // The ride a ticket belongs to: its first purchase's reference.
-    fun rideKey(t: MoovitPay.Ticket): String = ride(t.ref)?.key ?: t.ref
+    // HopOn's latest ticket joins today's.
+    suspend fun refresh() {
+        if (!signedIn) return
+        val version = sessionVersion
+        val t = call { RavPass.latest(it) }
+        if (t != null && version == sessionVersion) note(t)
+    }
 
-    fun noteRide(ref: String, ride: Ride) {
-        val json = synchronized(rides) {
-            rides[ref] = ride
-            // A purchase is kept for the day, a cancelled ride for the history.
-            val now = System.currentTimeMillis()
-            rides.entries.removeAll { it.value.atUtc < now - if (it.value.cancelled) 90 * 86_400_000L else 86_400_000L }
-            JSONArray().apply {
-                rides.forEach { (k, r) ->
-                    val o = JSONObject().put("ref", k).put("qr", r.qr).put("at", r.atUtc).put("key", r.key)
-                        .put("fare", r.fare).put("region", r.region).put("mode", r.mode)
-                    if (!r.lat.isNaN()) o.put("lat", r.lat).put("lon", r.lon)
-                    if (r.cancelled) o.put("cancelled", true)
-                    put(o)
-                }
-            }.toString()
+    // A payment whose answer is lost on the way back may still have gone through: before it is called failed, HopOn's
+    // latest ticket is read again. The charge itself is never repeated automatically.
+    suspend fun purchase(qr: String, prepare: suspend () -> Unit = {}, buy: suspend () -> RavPass.Ticket): RavPass.Ticket {
+        val t = purchases.run(snapshot = { call { RavPass.latest(it) } }, buy = buy, prepare = prepare)
+        note(t, qr)
+        return t
+    }
+
+    // Asks HopOn what paying still needs. agreed: the rider has just agreed to the terms, so they are accepted now.
+    suspend fun check(agreed: Boolean = false): List<Setup> {
+        val version = sessionVersion
+        val s = call { RavPass.settings(it.uid, it.token) }
+        val a = call { RavPass.account(it) }
+        val terms = s.terms
+        var termsDue = terms != null && a.terms != terms
+        if (termsDue && agreed && terms != null) {
+            call { RavPass.acceptTerms(it, terms) }
+            termsDue = false
         }
-        store?.edit()?.putString("rides", Seal.close(json))?.apply()
+        val methods = call { RavPass.cards(it) }
+        val out = buildList {
+            if (termsDue) add(Setup.TERMS)
+            if (!a.hasDetails) add(Setup.DETAILS)
+            if (methods.all { it.expired(System.currentTimeMillis()) }) add(Setup.CARD)
+        }
+        if (version == sessionVersion) {
+            settings = s; account = a; cards = methods
+            missing = if (skipped) out - Setup.CARD else out
+        }
+        return out
     }
 
-    // Kept under the ticket's own time, the one Moovit's history shows it at.
-    fun noteCancelled(t: MoovitPay.Ticket) {
-        val r = ride(t.ref)
-        noteRide(t.ref, Ride(r?.qr.orEmpty(), r?.lat ?: Double.NaN, r?.lon ?: Double.NaN, t.boughtUtc,
-            r?.key ?: t.ref, r?.fare ?: 0, r?.region ?: 0, r?.mode ?: -1, cancelled = true))
+    // Paying without a card on file for now: HopOn says so in its own words if it needs one.
+    fun skipCard() {
+        skipped = true
+        missing = missing?.minus(Setup.CARD)
     }
 
-    // Whether the ride Moovit lists at `atUtc` is one cancelled from Kav: its history has only the time to go by, and its
-    // ticket list can show a cancelled entrance under another reference than the one cancelled.
-    fun cancelledAt(atUtc: Long) = synchronized(rides) {
-        rides.values.minByOrNull { kotlin.math.abs(it.atUtc - atUtc) }
-            ?.let { it.cancelled && kotlin.math.abs(it.atUtc - atUtc) < 30_000 } == true
+    fun signIn(s: RavPass.Session) {
+        synchronized(accountState) {
+            sessionVersion++
+            session = s
+            signedIn = true
+            missing = null; skipped = false
+            store?.edit()?.putString("session", Seal.close(JSONObject().put("token", s.token).put("uid", s.uid).toString()))?.apply()
+        }
     }
 
-    fun cancelled(t: MoovitPay.Ticket) = ride(t.ref)?.cancelled == true || (t.mode == 7 && cancelledAt(t.boughtUtc))
+    // A call as the account, off the main thread. HopOn no longer taking the token means signing in again.
+    suspend fun <T> call(block: (RavPass.Session) -> T): T {
+        val version = sessionVersion
+        val s = session ?: throw RavPass.Unauthorized()
+        val result = try {
+            withContext(Dispatchers.IO) { block(s) }
+        } catch (e: RavPass.Unauthorized) {
+            withContext(Dispatchers.Main) { if (version == sessionVersion) signOut(force = true) }
+            throw e
+        }
+        if (version != sessionVersion) throw CancellationException("Payment account changed")
+        return result
+    }
+
+    // Whether HopOn's app counts others riding along as occasional passengers too, from HopOn's settings.
+    suspend fun occasional(): Boolean = (settings ?: call { RavPass.settings(it.uid, it.token) }).occasional
+
+    // HopOn's app asks before a second bus ticket from the same company within minutes of the last: 20 for its agency
+    // 22, a light rail, and 5 for the rest.
+    fun paidJustNow(agency: String?): Boolean {
+        val s = store ?: return false
+        return agency != null && agency == s.getString("again_agency", null) && System.currentTimeMillis() < s.getLong("again_until", 0L)
+    }
+
+    fun paidBus(agency: String?) {
+        val minutes = if (agency == "22") 20 else 5
+        store?.edit()?.putString("again_agency", agency)?.putLong("again_until", System.currentTimeMillis() + minutes * 60_000L)?.apply()
+    }
+
+    fun forgetPaidBus() { store?.edit()?.remove("again_agency")?.remove("again_until")?.apply() }
 
     fun hold(p: Pending) { if (payingLater || purchasing) return; pending = p; laterError = null; keepPending() }
 
@@ -220,123 +365,52 @@ object Payer {
         val edit = store?.edit() ?: return
         if (p == null) edit.remove("pending")
         else edit.putString("pending", Seal.close(JSONObject()
-            .put("title", p.title).put("qr", p.qr).put("fare", p.fare).put("region", p.region)
-            .put("lat", p.lat).put("lon", p.lon).put("count", p.count).put("leg", p.leg ?: -1).put("journey", p.journey).toString()))
+            .put("line", p.line).put("qr", p.qr).put("route", p.routeId).put("office", p.officeLineId)
+            .put("from", p.from).put("to", p.to).put("guests", p.guests).put("leg", p.leg ?: -1).put("journey", p.journey)
+            .toString()))
         edit.apply()
     }
 
-    // Pays the kept ride now. Moovit is asked again for the code's fare, so a price kept for a while is never stale and
-    // the purchase is the same as paying on the spot. onPaid gets the ride's key and trip leg; onDone follows either way.
-    fun payLater(onPaid: (key: String, leg: Int?, journey: String?) -> Unit, onDone: () -> Unit = {}) {
+    // Pays the kept ride now, as on the spot: HopOn reads the bus's code with the phone's fix as it is now, prices the
+    // kept ride, and only then is it paid. onPaid gets the ticket's key and trip leg; onDone follows either way.
+    fun payLater(ctx: Context, onPaid: (key: String, leg: Int?, journey: String?) -> Unit, onDone: () -> Unit = {}) {
         val p = pending ?: return
         if (payingLater || purchasing) return
         payingLater = true; laterError = null
         later.launch {
             try {
-                val at = p.lat to p.lon
-                lateinit var offer: MoovitPay.Offer
-                lateinit var fare: MoovitPay.Fare
-                val bought = Payer.purchase(prepare = {
-                    offer = call { MoovitPay.price(it, p.qr, at) }
-                    fare = offer.fares.firstOrNull { it.code == p.fare && it.regionId == p.region }
-                        ?: throw MoovitPay.Refused("", T("Moovit has no fare for this code.", "ל-Moovit אין תעריף לקוד הזה."))
-                }) {
-                    call { MoovitPay.buy(it, offer, fare, at, p.count) }
-                }
-                val key = bought.first().ref
-                lastFare = p.fare to p.region
-                runCatching {
-                    bought.map { it.ref }.distinct().forEach { ref ->
-                        noteRide(ref, Ride(p.qr, Double.NaN, Double.NaN, System.currentTimeMillis(), key, p.fare, p.region))
-                    }
-                }
+                lateinit var bus: RavPass.Bus
+                var asOccasional = false
+                val t = purchase(p.qr, prepare = {
+                    val fix = PayFix.now(ctx) ?: throw NoFix()
+                    val scanned = call { RavPass.scan(it, p.qr, fix) }
+                    val to = RavPass.Stop(p.to, "", Double.NaN, Double.NaN, -1)
+                    bus = scanned.with(RavPass.Suggestion(p.line, p.routeId, p.officeLineId,
+                        RavPass.Stop(p.from, "", Double.NaN, Double.NaN, -1), to, "", ""))
+                    asOccasional = occasional()
+                    call { RavPass.quote(it, bus, to, p.guests) }
+                }) { call { RavPass.buy(it, bus.qr, p.guests, asOccasional) } }
+                paidBus(bus.agencyId)
                 if (pending === p) { pending = null; keepPending() }
+                val key = t.id.toString()
                 paidLater = key to p.leg
                 onPaid(key, p.leg, p.journey)
-                runCatching { refresh() }
             } catch (e: CancellationException) { throw e } catch (e: Exception) { if (pending === p) laterError = failure(e) }
             finally { payingLater = false; onDone() }
         }
     }
 
-    // A purchase whose answer is lost on the way back may still have gone through. Before calling it failed, Moovit's
-    // list is read again for tickets that were not there just before. The charge itself is never automatically retried.
-    suspend fun purchase(
-        allowOpenTrain: Boolean = false, prepare: suspend () -> Unit = {}, buy: suspend () -> List<MoovitPay.Ticket>,
-    ): List<MoovitPay.Ticket> {
-        return purchases.run(snapshot = { refresh().tickets }, buy = buy, prepare = {
-            if (!allowOpenTrain && wallet?.tickets.orEmpty().any { it.active && it.needsExit && !cancelled(it) })
-                throw MoovitPay.Refused(T("Important!", "חשוב!"), endTrainRide)
-            prepare()
-        })
-    }
-
-    // Today's tickets and the free-ride window, kept for the home screen as well.
-    suspend fun refresh(): MoovitPay.Wallet = refreshLock.withLock {
-        if (!signedIn) throw MoovitPay.Unauthorized()
-        val version = sessionVersion
-        val w = call { MoovitPay.tickets(it) }
-        withContext(Dispatchers.Main) { if (version == sessionVersion && signedIn) wallet = w }
-        w
-    }
-
-    private fun sessionOf(o: JSONObject) = MoovitSession(
-        o.getString("user"), o.getString("access"), o.getString("refresh"), o.getInt("metro"), o.getLong("expires"),
-    )
-
-    private fun keep(s: MoovitSession) {
-        user = s
-        val o = JSONObject().put("user", s.userKey).put("access", s.accessToken).put("refresh", s.refreshToken)
-            .put("metro", s.metroId).put("expires", s.accessExpiresUtc)
-        store?.edit()?.putString("user", Seal.close(o.toString()))?.apply()
-    }
-
-    private suspend fun current(renew: Boolean, version: Long): MoovitSession = lock.withLock {
-        if (version != sessionVersion) throw CancellationException("Payment account changed")
-        val kept = user
-        val now = System.currentTimeMillis() / 1000
-        val next = when {
-            kept == null -> Moovit.register()
-            renew || kept.accessExpiresUtc - now < 60 -> Moovit.renew(kept)
-            else -> kept
-        }
+    // Forget the account on this phone: its token, today's tickets and a kept ride. force: HopOn already let it go.
+    fun signOut(force: Boolean = false) {
         synchronized(accountState) {
-            if (version != sessionVersion) throw CancellationException("Payment account changed")
-            if (next !== kept) keep(next)
-        }
-        next
-    }
-
-    // A call made as the paying user, off the main thread. If Moovit stops taking its access, renew once.
-    suspend fun <T> call(block: (MoovitSession) -> T): T {
-        val version = sessionVersion
-        val result = withContext(Dispatchers.IO) {
-            try {
-                block(current(false, version))
-            } catch (e: MoovitPay.Unauthorized) {
-                block(current(true, version))
-            }
-        }
-        if (version != sessionVersion) throw CancellationException("Payment account changed")
-        return result
-    }
-
-    fun markSignedIn() {
-        signedIn = true
-        store?.edit()?.putBoolean("signed-in", true)?.apply()
-    }
-
-    // Forget the paying user. Signing in again makes a new one and moves the account to it.
-    fun signOut() {
-        synchronized(accountState) {
-            if (purchasing || payingLater) return
+            if (!force && (purchasing || payingLater)) return
             sessionVersion++
-            user = null
+            session = null
             signedIn = false
-            wallet = null
-            lastFare = null
+            missing = null; settings = null; account = null; cards = emptyList(); skipped = false; addingCard = false
+            tickets = emptyList()
+            synchronized(codes) { codes.clear() }
             pending = null; paidLater = null; laterError = null
-            synchronized(rides) { rides.clear() }
             store?.edit()?.clear()?.apply()
         }
     }
@@ -347,16 +421,15 @@ fun PayScreen(model: KavModel, onClose: () -> Unit) {
     androidx.activity.compose.BackHandler(onBack = onClose)
     Column(Modifier.fillMaxSize().background(K.bg)) {
         ScreenHeader(T("Pay", "תשלום"), T("for a ride", "על נסיעה"), back = onClose)
-        if (Payer.signedIn) Paying(model) else Connect(model)
+        if (Payer.signedIn) Ready(model) else Connect()
     }
 }
 
 private enum class ConnectStep { START, ABOUT, SIGN_IN }
 
-// Until a payment account is connected: what connecting means, how to set payments up in Moovit's app first, what
-// Moovit sees, and then signing in.
+// Until an account is connected: what paying with Rav-Pass means, what HopOn sees, then signing in or up.
 @Composable
-private fun Connect(model: KavModel) {
+private fun Connect() {
     var step by rememberSaveable { mutableStateOf(ConnectStep.START) }
     androidx.activity.compose.BackHandler(enabled = step != ConnectStep.START) { step = ConnectStep.entries[step.ordinal - 1] }
     androidx.compose.animation.AnimatedContent(
@@ -367,7 +440,7 @@ private fun Connect(model: KavModel) {
     ) { s ->
         when (s) {
             ConnectStep.START -> ConnectStart { step = ConnectStep.ABOUT }
-            ConnectStep.ABOUT -> ConnectAbout(model) { step = ConnectStep.SIGN_IN }
+            ConnectStep.ABOUT -> ConnectAbout { step = ConnectStep.SIGN_IN }
             ConnectStep.SIGN_IN -> SignIn()
         }
     }
@@ -381,70 +454,47 @@ private fun ConnectStart(onNext: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Canvas(Modifier.size(56.dp)) { drawQr() }
-        Text(T("Connect a Moovit account for bus payments", "חיבור חשבון Moovit לתשלום על נסיעות באוטובוס"),
+        Text(T("Pay for bus rides with Rav-Pass", "תשלום על נסיעות באוטובוס עם רב-פס"),
             fontSize = 22.sp, color = K.text, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-        Text(T("Scan the QR code on the bus, or pay at a train, light rail or Carmelit station, right from Kav.",
-            "סורקים את קוד ה-QR באוטובוס, או משלמים בתחנת רכבת, רכבת קלה או כרמלית, ישירות מ-Kav."),
+        Text(T("Scan the QR code on the bus and pay with your Rav-Pass account, right from Kav. No account yet? You " +
+            "can open one here.",
+            "סורקים את קוד ה-QR באוטובוס ומשלמים עם חשבון רב-פס שלכם, ישירות מ-Kav. אין לכם חשבון? אפשר לפתוח אחד כאן."),
             fontSize = 15.sp, lineHeight = 21.sp, color = K.muted, textAlign = TextAlign.Center)
         Spacer(Modifier.height(K.gap2))
-        PayButton(T("Connect", "התחברות"), false, onClick = onNext)
+        PayButton(T("Continue", "המשך"), false, onClick = onNext)
     }
 }
 
 @Composable
-private fun ConnectAbout(model: KavModel, onNext: () -> Unit) {
-    // Where Moovit is told a payment is made from, as chosen under Private search.
-    val place = model.seenPlace?.name
-    val location = when (model.seen) {
-        Seen.CITY -> T(
-            "For your location it gets the centre of your town, never your GPS. You can change this under Private " +
-                "search in Settings.",
-            "כמיקום שלכם היא מקבלת את מרכז היישוב שלכם, אף פעם לא את ה-GPS. אפשר לשנות את זה תחת חיפוש פרטי בהגדרות.",
-        )
-        Seen.PLACE -> T(
-            "For your location it gets ${place ?: "the place you chose"}, as you set in Settings, never your GPS.",
-            "כמיקום שלכם היא מקבלת את ${place ?: "המקום שבחרתם"}, כפי שהגדרתם בהגדרות, אף פעם לא את ה-GPS.",
-        )
-        Seen.NONE -> T(
-            "It gets no location of yours at all, as you set in Settings.",
-            "היא לא מקבלת שום מיקום שלכם, כפי שהגדרתם בהגדרות.",
-        )
-    }
+private fun ConnectAbout(onNext: () -> Unit) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = K.gap4)
             .padding(bottom = K.gap6 + LocalBottomBarInset.current),
         verticalArrangement = Arrangement.spacedBy(K.gap4),
     ) {
-        AboutCard(T("Your payments stay with Moovit", "התשלומים נשארים אצל Moovit")) {
+        AboutCard(T("Your payments stay with Rav-Pass", "התשלומים נשארים ברב-פס")) {
             Note(T(
-                "Every payment is made by Moovit's servers, on your own Moovit payment account. Kav has no server of " +
-                    "its own, so your account, your card and your rides never reach Kav or its developer.",
-                "כל תשלום מתבצע בשרתים של Moovit, בחשבון התשלום שלכם ב-Moovit. ל-Kav אין שרת משלה, כך שהחשבון, " +
-                    "הכרטיס והנסיעות שלכם לא מגיעים ל-Kav או למפתח שלה.",
+                "Rav-Pass is HopOn's payment service, licensed by the Ministry of Transport. Every payment is made by " +
+                    "HopOn's servers, on your own Rav-Pass account. Kav has no server of its own, so your account, your " +
+                    "card and your rides never reach Kav or its developer.",
+                "רב-פס הוא שירות התשלום של הופ-און, ברישיון משרד התחבורה. כל תשלום מתבצע בשרתים של הופ-און, בחשבון " +
+                    "רב-פס שלכם. ל-Kav אין שרת משלה, כך שהחשבון, הכרטיס והנסיעות שלכם לא מגיעים ל-Kav או למפתח שלה.",
             ), color = K.muted)
             Note(T(
-                "Your card is never in Kav. Moovit may ask you once to confirm its CVV; it goes straight to Moovit and " +
-                    "isn't kept. Kav asks Moovit to pay only when you press pay.",
-                "הכרטיס שלכם אף פעם לא נמצא ב-Kav. ייתכן ש-Moovit תבקש פעם אחת לאשר את ה-CVV שלו; הוא נשלח ישר " +
-                    "ל-Moovit ולא נשמר. Kav מבקשת מ-Moovit לשלם רק כשאתם לוחצים על תשלום.",
+                "Your card is typed only on CreditGuard's secure page for HopOn, never in Kav. Rides are charged to it " +
+                    "once a month. Kav asks HopOn to pay only when you press pay.",
+                "את הכרטיס מקלידים רק בדף המאובטח של CreditGuard עבור הופ-און, אף פעם לא ב-Kav. הנסיעות מחויבות בו " +
+                    "פעם בחודש. Kav מבקשת מהופ-און לשלם רק כשאתם לוחצים על תשלום.",
             ), color = K.muted)
         }
-        AboutCard(T("No Moovit payments yet?", "עוד אין לכם תשלומים ב-Moovit?")) {
-            AboutStep(1, T("Open the Moovit app and tap \"Pay for a new ride\", then \"Join service\".",
-                "פתחו את אפליקציית Moovit, בחרו בתשלום על נסיעה חדשה והצטרפו לשירות."))
-            AboutStep(2, T("Register: your details, a payment method (a credit card), and a discount profile if " +
-                "you're entitled to one.",
-                "הירשמו: פרטים אישיים, אמצעי תשלום (כרטיס אשראי) ופרופיל הנחה אם אתם זכאים לו."))
-            AboutStep(3, T("That's all. You can uninstall Moovit if you like, and connect here.",
-                "זהו. אפשר להסיר את Moovit אם רוצים, ולהתחבר כאן."))
-            Note(T(
-                "The account works on one phone at a time: connecting here moves it from Moovit's app, and paying in " +
-                    "Moovit's app moves it back.",
-                "החשבון עובד בטלפון אחד בכל פעם: התחברות כאן מעבירה אותו מהאפליקציה של Moovit, ותשלום באפליקציה " +
-                    "של Moovit מחזיר אותו לשם.",
-            ))
+        AboutCard(T("New to Rav-Pass?", "חדשים ברב-פס?")) {
+            AboutStep(1, T("Enter your phone number and the code Rav-Pass sends by SMS. A new number opens an account.",
+                "מזינים את מספר הטלפון ואת הקוד שרב-פס שולחת ב-SMS. מספר חדש פותח חשבון."))
+            AboutStep(2, T("Add your name and email, then a credit card.", "מוסיפים שם ואימייל, ואז כרטיס אשראי."))
+            AboutStep(3, T("That's all. A discount profile (student, senior and more) is added in the Rav-Pass app.",
+                "זהו. פרופיל הנחה (סטודנט, אזרח ותיק ועוד) מוסיפים באפליקציית רב-פס."))
         }
-        AboutCard(T("What Moovit sees", "מה Moovit רואה")) {
+        AboutCard(T("What HopOn sees", "מה הופ-און רואה")) {
             Note(T(
                 "Everything else in Kav, from planning and live times to search, stations and lines, goes through an " +
                     "anonymous Moovit ID that isn't tied to you.",
@@ -452,16 +502,13 @@ private fun ConnectAbout(model: KavModel, onNext: () -> Unit) {
                     "אנונימי שלא קשור אליכם.",
             ), color = K.muted)
             Note(T(
-                "Only paying uses your account. Then Moovit knows the bus you scanned or the station you pay at, and " +
-                    "when, because the ticket needs them.",
-                "רק תשלום משתמש בחשבון שלכם. אז Moovit יודעת באיזה אוטובוס סרקתם או באיזו תחנה אתם משלמים, ומתי, " +
-                    "כי הכרטיס צריך את זה.",
+                "Only paying uses your Rav-Pass account. Then HopOn knows the bus you scanned, the stop you board at and " +
+                    "how far you ride, or the station you pay at, because the fare needs them. Like HopOn's own app, Kav " +
+                    "sends your location only at the moment you scan or pay, never in the background.",
+                "רק תשלום משתמש בחשבון רב-פס שלכם. אז הופ-און יודעת באיזה אוטובוס סרקתם, באיזו תחנה עליתם וכמה רחוק " +
+                    "אתם נוסעים, או באיזו תחנה אתם משלמים, כי המחיר צריך את זה. כמו האפליקציה של הופ-און, Kav שולחת " +
+                    "את המיקום שלכם רק ברגע הסריקה או התשלום, אף פעם לא ברקע.",
             ), color = K.muted)
-            Note(location, color = K.muted)
-            Note(T(
-                "The two IDs are kept apart, though both come from this phone and its internet connection.",
-                "שני המזהים נפרדים, אבל שניהם מגיעים מהטלפון הזה ומאותו חיבור לאינטרנט.",
-            ))
         }
         PayButton(T("Continue", "המשך"), false, onClick = onNext)
     }
@@ -486,52 +533,40 @@ private fun AboutStep(n: Int, text: String) {
     }
 }
 
-// Moovit's words when a new ride is asked for while a train ride is still open.
-private val endTrainRide get() = T("To avoid being charged the maximum daily rate, please end your train ride.",
-    "כדי לא לחויב בתעריף היומי המרבי, סיימו את הנסיעה ברכבת.")
-
 internal fun failure(e: Throwable): String = when (e) {
-    // Moovit's title says what went wrong; its message is often only "Please try again."
-    is MoovitPay.Refused -> listOf(e.title, e.message).filterNotNull().filter { it.isNotBlank() }.distinct().joinToString(" ")
+    // HopOn's title says what went wrong and its reasons say why.
+    is RavPass.Refused -> listOf(e.title, e.message).filterNotNull().filter { it.isNotBlank() }.distinct().joinToString(" ")
     is PayPurchase.Unconfirmed -> T("Couldn't confirm the payment. Check your tickets before trying again.",
         "לא ניתן לאשר אם התשלום בוצע. בדקו את הכרטיסים לפני ניסיון נוסף.")
-    else -> T("Couldn't reach Moovit. Try again.", "אין חיבור ל-Moovit. נסו שוב.")
+    is RavPass.Unauthorized -> T("Rav-Pass signed you out. Sign in again.", "רב-פס ניתקה אתכם. התחברו שוב.")
+    is NoFix -> T("Kav can't tell where you are. Turn on location and try again.",
+        "Kav לא מצליחה לדעת איפה אתם. הפעילו את המיקום ונסו שוב.")
+    else -> if (Payer.behindVpn()) T(
+        "Rav-Pass didn't answer through your VPN. It blocks some VPN servers in Israel: switch to a server outside Israel, or pause the VPN while you pay.",
+        "רב-פס לא ענתה דרך ה-VPN. היא חוסמת חלק משרתי ה-VPN בישראל: עברו לשרת מחוץ לישראל, או השהו את ה-VPN בזמן התשלום.",
+    ) else T("Couldn't reach Rav-Pass. Try again.", "אין חיבור לרב-פס. נסו שוב.")
 }
 
 @Composable
-private fun PayButton(text: String, busy: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun PayButton(text: String, busy: Boolean, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     val waiting = busy || Payer.purchasing || Payer.payingLater
     Box(
         modifier.fillMaxWidth().heightIn(min = 50.dp).clip(RoundedCornerShape(K.rPill))
-            .background(if (waiting) K.surface4 else K.accent)
-            .clickable(enabled = !waiting, role = Role.Button, onClick = onClick),
+            .background(if (waiting || !enabled) K.surface4 else K.accent)
+            .clickable(enabled = !waiting && enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(if (waiting) T("One moment…", "רגע…") else text, fontSize = 16.sp,
-            color = if (waiting) K.muted else K.onAccent, fontWeight = FontWeight.Medium)
+            color = if (waiting || !enabled) K.muted else K.onAccent, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2))
     }
 }
 
-private sealed interface SignInStep {
-    data object Loading : SignInStep
-    class Terms(val terms: MoovitPay.Terms) : SignInStep
-    data object Phone : SignInStep
-    class Code(val phone: String) : SignInStep
-    class Cvv(val card: MoovitPay.Card) : SignInStep
-    class Unfinished(val missing: List<Int>) : SignInStep
-    data object NoAccount : SignInStep
-}
-
-@Composable
-private fun SignIn() {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var step by remember { mutableStateOf<SignInStep>(SignInStep.Loading) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var phone by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
-    var cvv by remember { mutableStateOf("") }
+// Runs one step's call at a time, with its error shown under it.
+private class Work(private val scope: CoroutineScope) {
+    var busy by mutableStateOf(false)
+        private set
+    var error by mutableStateOf<String?>(null)
 
     fun run(work: suspend () -> Unit) {
         if (busy) return
@@ -541,35 +576,43 @@ private fun SignIn() {
             busy = false
         }
     }
+}
 
-    // Once this phone holds the account: confirm the card if Moovit asks, else ready when Moovit lists the
-    // account as connected for paying.
-    suspend fun finish(missing: List<Int>, card: MoovitPay.Card?) {
-        if (card != null && MoovitPay.STEP_PAYMENT_METHOD in missing) step = SignInStep.Cvv(card)
-        else if (Payer.call { MoovitPay.account(it) }?.connected == true) Payer.markSignedIn()
-        else step = SignInStep.Unfinished(missing)
+@Composable
+private fun rememberWork(): Work {
+    val scope = rememberCoroutineScope()
+    return remember { Work(scope) }
+}
+
+private sealed interface SignInStep {
+    data object Phone : SignInStep
+    class Code(val phone: String) : SignInStep
+}
+
+// Signing in and signing up are one: the code HopOn sends by SMS opens an account for a number it doesn't know yet.
+@Composable
+private fun SignIn() {
+    val w = rememberWork()
+    val uid = rememberSaveable { RavPass.newUid() }
+    var step by remember { mutableStateOf<SignInStep>(SignInStep.Phone) }
+    var phone by rememberSaveable { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var agreed by rememberSaveable { mutableStateOf(false) }
+    var confirming by remember { mutableStateOf(false) }
+    // Where HopOn's terms and privacy policy are read.
+    var links by remember { mutableStateOf<RavPass.Settings?>(null) }
+    LaunchedEffect(Unit) { links = runCatching { withContext(Dispatchers.IO) { RavPass.settings(uid) } }.getOrNull() }
+
+    fun send(number: String) = w.run {
+        withContext(Dispatchers.IO) { RavPass.sendCode(uid, number) }
+        code = ""; step = SignInStep.Code(number)
     }
 
-    // Signed in: what paying still needs, the terms and then the card, the way Moovit's app asks them.
-    suspend fun next() {
-        val s = Payer.call { MoovitPay.steps(it) }
-        val terms = s.terms
-        if (MoovitPay.STEP_TERMS in s.missing && terms != null) step = SignInStep.Terms(terms)
-        else finish(s.missing, s.card)
-    }
-
-    // Tried again after registering in Moovit's app: from the start, as a new paying user.
-    var attempt by remember { mutableIntStateOf(0) }
-    LaunchedEffect(attempt) {
-        try {
-            // Moovit's own app signs in as a brand new user, and so does Kav.
-            if (!Payer.signedIn) Payer.signOut()
-            MoovitPay.newFlow()
-            val login = Payer.call { MoovitPay.steps(it, login = true) }
-            if (MoovitPay.STEP_PHONE in login.missing) step = SignInStep.Phone else next()
-        } catch (e: CancellationException) { throw e } catch (e: Exception) {
-            error = failure(e); step = SignInStep.Phone
-        }
+    // The box ticked before the code was sent is the agreement HopOn's app takes when signing up.
+    fun confirm(number: String) = w.run {
+        val session = withContext(Dispatchers.IO) { RavPass.verify(uid, number, code) }
+        Payer.signIn(session)
+        runCatching { Payer.check(agreed = true) }
     }
 
     Column(
@@ -578,178 +621,402 @@ private fun SignIn() {
         verticalArrangement = Arrangement.spacedBy(K.gap4),
     ) {
         when (val s = step) {
-            SignInStep.Loading -> Note(T("Asking Moovit…", "שואלים את Moovit…"))
-            is SignInStep.Terms -> {
-                val t = s.terms
-                Column(Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap5), verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-                    Text(t.title, fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                    Note(t.text, color = K.muted)
-                    var agree = t.agree
-                    t.links.forEachIndexed { i, l -> agree = agree.replace("%${i + 1}\$s", l.first) }
-                    if (agree.isNotBlank()) Note(agree)
-                    t.links.forEach { (label, url) ->
-                        Text(label, fontSize = 14.sp, color = K.accent,
-                            modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
-                    }
-                }
-                PayButton(t.button.ifBlank { T("Let's begin", "בואו נתחיל") }, busy) {
-                    run { Payer.call { MoovitPay.acceptTerms(it, t.version) }; next() }
-                }
-            }
             SignInStep.Phone -> {
-                Text(T("Your phone number", "מספר הטלפון שלכם"), fontSize = 15.sp, color = K.muted)
+                Text(T("Sign in or sign up", "התחברות או הרשמה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                Note(T("Rav-Pass sends a code by SMS to this number. A number without an account gets a new one.",
+                    "רב-פס שולחת קוד ב-SMS למספר הזה. מספר בלי חשבון מקבל חשבון חדש."), color = K.muted)
                 KavField(phone, { phone = it.filter { c -> c.isDigit() || c == '-' || c == '+' } }, "050-123-4567",
                     keyboard = KeyboardType.Phone)
-                PayButton(T("Send code", "שליחת קוד"), busy) {
-                    if (phone.count(Char::isDigit) >= 9) run {
-                        Payer.call { MoovitPay.sendCode(it, phone) }
-                        code = ""; step = SignInStep.Code(phone)
+                TermsAgreement(agreed, links) { agreed = it }
+                PayButton(T("Send code", "שליחת קוד"), w.busy) {
+                    when {
+                        phone.count(Char::isDigit) < 9 -> w.error = T("Enter your phone number.", "הזינו את מספר הטלפון.")
+                        !agreed -> w.error = T("Please confirm the terms & conditions", "יש לאשר את תנאי השימוש")
+                        else -> confirming = true
                     }
                 }
             }
             is SignInStep.Code -> {
-                Text(T("The code Moovit sent to ${s.phone}", "הקוד ש-Moovit שלחה ל-${s.phone}"), fontSize = 15.sp, color = K.muted)
-                KavField(code, { code = it.filter(Char::isDigit).take(6) }, "123456",
-                    keyboard = KeyboardType.NumberPassword, autoFocus = true)
-                PayButton(T("Confirm", "אישור"), busy) {
-                    if (code.length == 6) run {
-                        val v = Payer.call { MoovitPay.verify(it, code, takeOver = false) }
-                        // Kav can't add a card, so a number without an account is registered in Moovit's app first. The
-                        // paying user that asked is dropped, and trying again starts afresh.
-                        if (!v.exists) { Payer.signOut(); step = SignInStep.NoAccount }
-                        else {
-                            if (!v.moved) Payer.call { MoovitPay.verify(it, code, takeOver = true) }
-                            next()
-                        }
-                    }
+                Text(T("The code Rav-Pass sent to ${s.phone}", "הקוד שרב-פס שלחה ל-${s.phone}"), fontSize = 15.sp, color = K.muted)
+                KavField(code, { v ->
+                    code = v.filter(Char::isDigit).take(6)
+                    // HopOn's codes have four digits, and its app checks one as soon as it is typed.
+                    if (code.length == 4 && !w.busy) confirm(s.phone)
+                }, "1234", keyboard = KeyboardType.NumberPassword, autoFocus = true)
+                PayButton(T("Confirm", "אישור"), w.busy) { if (code.length >= 4) confirm(s.phone) }
+                Row(horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
+                    Text(T("Send it again", "שליחה מחדש"), fontSize = 14.sp, color = K.accent,
+                        modifier = Modifier.clickable(enabled = !w.busy, role = Role.Button) { send(s.phone) }.padding(vertical = K.gap2))
+                    Text(T("Change number", "שינוי מספר"), fontSize = 14.sp, color = K.muted,
+                        modifier = Modifier.clickable(enabled = !w.busy, role = Role.Button) { code = ""; w.error = null; step = SignInStep.Phone }
+                            .padding(vertical = K.gap2))
                 }
-                Text(T("Send it again", "שליחה מחדש"), fontSize = 14.sp, color = K.accent,
-                    modifier = Modifier.clickable(role = Role.Button) { run { Payer.call { MoovitPay.sendCode(it, s.phone) } } }
-                        .padding(vertical = K.gap2))
-            }
-            is SignInStep.Cvv -> {
-                Text(T("Confirm your card", "אישור הכרטיס"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                Note(T(
-                    "Moovit asks a newly connected phone to confirm the card on the account. Enter the CVV of " +
-                        "the card ending in ${s.card.last4}, the digits on its back.",
-                    "Moovit מבקשת מטלפון שהתחבר עכשיו לאשר את הכרטיס שבחשבון. הקלידו את ה-CVV של הכרטיס " +
-                        "שמסתיים ב-${s.card.last4}, הספרות שבגב הכרטיס.",
-                ), color = K.muted)
-                KavField(cvv, { cvv = it.filter(Char::isDigit).take(4) }, "CVV",
-                    keyboard = KeyboardType.NumberPassword, autoFocus = true, secret = true)
-                PayButton(T("Confirm card", "אישור הכרטיס"), busy) {
-                    if (cvv.length >= 3) run {
-                        val digits = cvv
-                        cvv = ""
-                        Payer.call { MoovitPay.confirmCard(it, digits) }
-                        finish(emptyList(), null)
-                    }
-                }
-            }
-            SignInStep.NoAccount -> {
-                Column(Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap5), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
-                    Text(T("No payment account", "אין חשבון תשלום"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                    Note(T("Please register a payment account in the Moovit app and try again.",
-                        "נא לרשום חשבון תשלום באפליקציה של Moovit ולנסות שוב."), color = K.muted)
-                }
-                PayButton(T("Try again", "ניסיון נוסף"), busy) { phone = ""; code = ""; error = null; step = SignInStep.Loading; attempt++ }
-            }
-            is SignInStep.Unfinished -> Column(Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap5),
-                verticalArrangement = Arrangement.spacedBy(K.gap2)) {
-                Text(T("Not ready to pay yet", "עוד לא מוכן לתשלום"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                Note(if (MoovitPay.STEP_PAYMENT_METHOD in s.missing) T(
-                    "Moovit needs a card on this account. Add one in Moovit's app, then sign in here again and " +
-                        "Kav will ask for its CVV.",
-                    "Moovit צריכה כרטיס אשראי בחשבון. הוסיפו אחד באפליקציה של Moovit, ואז התחברו כאן שוב ו-Kav " +
-                        "תבקש את ה-CVV שלו.",
-                ) else T(
-                    "Finish setting up payments in Moovit's app, then sign in here again.",
-                    "סיימו להגדיר תשלומים באפליקציה של Moovit, ואז התחברו כאן שוב.",
-                ))
             }
         }
-        error?.let { Note(it, color = K.critical) }
+        w.error?.let { Note(it, color = K.critical) }
+    }
+    if (confirming) {
+        val (country, number) = RavPass.phoneParts(phone)
+        val shown = if (number.length == 9) "+$country-${number.take(2)}-${number.substring(2, 5)} ${number.drop(5)}" else "+$country-$number"
+        PayDialog(T("Is this your number?", "זה המספר שלך?"), T.ltr(shown), T("Correct", "זה המספר"),
+            no = T("Edit", "עריכה"), onDismiss = { confirming = false }) { confirming = false; send(phone) }
     }
 }
 
-// Settings' payments group, once paying is set up: the account, its history, and signing out.
+// HopOn's sign-up agreement: its terms of service and privacy policy, each opening its page.
+@Composable
+private fun TermsAgreement(agreed: Boolean, links: RavPass.Settings?, onChange: (Boolean) -> Unit) {
+    val ctx = LocalContext.current
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
+        Box(
+            Modifier.padding(top = 2.dp).size(22.dp).clip(RoundedCornerShape(6.dp))
+                .background(if (agreed) K.accent else K.surface4).border(1.dp, if (agreed) K.accent else K.border, RoundedCornerShape(6.dp))
+                .clickable(role = Role.Checkbox) { onChange(!agreed) },
+            contentAlignment = Alignment.Center,
+        ) { if (agreed) Text("✓", fontSize = 14.sp, color = K.onAccent, fontWeight = FontWeight.SemiBold) }
+        Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
+            Note(T("By signing up, you agree to Rav-Pass's terms of service and privacy policy",
+                "השימוש בשירות מותנה בהסכמתך לתנאי השימוש ומדיניות הפרטיות של רב-פס"),
+                Modifier.clickable(role = Role.Checkbox) { onChange(!agreed) }, color = K.muted)
+            Row(horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
+                links?.termsUrl?.let { url ->
+                    Text(T("Terms of service", "תנאי השימוש"), fontSize = 14.sp, color = K.accent,
+                        modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
+                }
+                links?.privacyUrl?.let { url ->
+                    Text(T("Privacy policy", "מדיניות הפרטיות"), fontSize = 14.sp, color = K.accent,
+                        modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
+                }
+            }
+        }
+    }
+}
+
+// Signed in: what the account still needs first, as HopOn's app asks it, then paying.
+@Composable
+private fun Ready(model: KavModel) {
+    var error by remember { mutableStateOf<String?>(null) }
+    var attempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(attempt) {
+        error = null
+        try { Payer.check() } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            if (Payer.missing == null) error = failure(e)
+        }
+    }
+    val missing = Payer.missing
+    when {
+        missing == null && error != null -> PayStep {
+            Note(error.orEmpty(), color = K.critical)
+            PayButton(T("Try again", "ניסיון נוסף"), false) { attempt++ }
+        }
+        missing == null -> LoadingBlock(T("Asking Rav-Pass", "שואלים את רב-פס"), labelAbove = true)
+        missing.isNotEmpty() -> when (missing.first()) {
+            Payer.Setup.TERMS -> TermsStep()
+            Payer.Setup.DETAILS -> DetailsStep()
+            Payer.Setup.CARD -> CardStep(canSkip = true)
+        }
+        Payer.addingCard -> CardStep(canSkip = false)
+        else -> Paying(model)
+    }
+}
+
+// HopOn's terms changed since the rider agreed to them.
+@Composable
+private fun TermsStep() {
+    val ctx = LocalContext.current
+    val w = rememberWork()
+    val s = Payer.settings
+    PayStep {
+        AboutCard(T("Rav-Pass terms of service", "תנאי השימוש של רב-פס")) {
+            Note(T("Please confirm the terms & conditions to keep paying with Rav-Pass.",
+                "יש לאשר את תנאי השימוש כדי להמשיך לשלם עם רב-פס."), color = K.muted)
+            listOfNotNull(
+                s?.termsUrl?.let { T("Terms of service", "תנאי השימוש") to it },
+                s?.privacyUrl?.let { T("Privacy policy", "מדיניות הפרטיות") to it },
+                s?.motTermsUrl?.let { T("Ministry of Transport terms", "תנאי משרד התחבורה") to it },
+            ).forEach { (label, url) ->
+                Text(label, fontSize = 14.sp, color = K.accent,
+                    modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
+            }
+        }
+        PayButton(T("I agree", "אני מסכים/ה"), w.busy) {
+            w.run {
+                val version = s?.terms ?: return@run
+                Payer.call { RavPass.acceptTerms(it, version) }
+                Payer.check()
+            }
+        }
+        w.error?.let { Note(it, color = K.critical) }
+    }
+}
+
+// The holder's name and email, which HopOn's app asks for before a card is added.
+@Composable
+private fun DetailsStep() {
+    val w = rememberWork()
+    val a = Payer.account
+    var first by rememberSaveable { mutableStateOf(a?.first.orEmpty()) }
+    var last by rememberSaveable { mutableStateOf(a?.last.orEmpty()) }
+    var email by rememberSaveable { mutableStateOf(a?.email.orEmpty()) }
+    PayStep {
+        Text(T("Your details", "הפרטים שלכם"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+        Note(T("Rav-Pass asks for your name and email before a card is added. Its receipts go to this email.",
+            "רב-פס מבקשת שם ואימייל לפני הוספת כרטיס. הקבלות שלה נשלחות לאימייל הזה."), color = K.muted)
+        Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+            Text(T("First name", "שם פרטי"), fontSize = 13.sp, color = K.dim)
+            KavField(first, { first = it.take(40) }, T("First name", "שם פרטי"))
+            Text(T("Last name", "שם משפחה"), fontSize = 13.sp, color = K.dim)
+            KavField(last, { last = it.take(40) }, T("Last name", "שם משפחה"))
+            Text(T("Email", "אימייל"), fontSize = 13.sp, color = K.dim)
+            KavField(email, { email = it.trim().take(80) }, "name@example.com", keyboard = KeyboardType.Email)
+        }
+        PayButton(T("Save", "שמירה"), w.busy) {
+            when {
+                first.isBlank() || last.isBlank() -> w.error = T("Enter your first and last name.", "הזינו שם פרטי ושם משפחה.")
+                !android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches() -> w.error = T("Enter a valid email.", "הזינו אימייל תקין.")
+                else -> w.run {
+                    Payer.call { RavPass.saveDetails(it, first.trim(), last.trim(), email.trim()) }
+                    Payer.check()
+                }
+            }
+        }
+        w.error?.let { Note(it, color = K.critical) }
+    }
+}
+
+// Adding a card on HopOn's card page, inside Kav, then the code the card's issuer sends by SMS when HopOn asks for it.
+// canSkip: the account has no card yet, and paying can be tried anyway.
+@Composable
+private fun CardStep(canSkip: Boolean) {
+    val w = rememberWork()
+    var page by remember { mutableStateOf<String?>(null) }
+    var askCode by remember { mutableStateOf(false) }
+    var code by remember { mutableStateOf("") }
+    var notYet by remember { mutableStateOf(false) }
+
+    // HopOn may take a moment to list a card just added.
+    fun added() = w.run {
+        notYet = false
+        repeat(10) { i ->
+            if (Payer.Setup.CARD !in Payer.check()) { Payer.addingCard = false; askCode = false; return@run }
+            if (i < 9) delay(2_000)
+        }
+        notYet = true
+    }
+
+    fun confirm() = w.run {
+        val digits = code
+        Payer.call { RavPass.verifyCard(it, digits) }
+        code = ""
+        notYet = false
+        repeat(10) { i ->
+            if (Payer.Setup.CARD !in Payer.check()) { Payer.addingCard = false; askCode = false; return@run }
+            if (i < 9) delay(2_000)
+        }
+        notYet = true
+    }
+
+    val url = page
+    if (url != null) {
+        CardPage(url, onClose = { page = null }) { end ->
+            page = null
+            when (end) {
+                RavPass.CardEnd.ADDED -> added()
+                RavPass.CardEnd.CODE -> { code = ""; askCode = true }
+                RavPass.CardEnd.FAILED -> w.error = T("Rav-Pass couldn't add the card. Check its details and try again.",
+                    "רב-פס לא הצליחה להוסיף את הכרטיס. בדקו את הפרטים ונסו שוב.")
+                RavPass.CardEnd.CANCELLED -> {}
+            }
+        }
+        return
+    }
+    PayStep {
+        if (askCode) {
+            AboutCard(T("Enter the 4-digit code", "מה קוד האימות שקיבלת?")) {
+                Note(T("We have requested the credit card issuer to send an SMS with a 4 digits code to the owner of the card",
+                    "לצורך אימות הפרטים ביקשנו מחברת האשראי לשלוח קוד בן 4 ספרות לבעל.ת הכרטיס"), color = K.muted)
+            }
+            KavField(code, { v ->
+                code = v.filter(Char::isDigit).take(4)
+                // As in HopOn's app, the code is checked as soon as its fourth digit is typed.
+                if (code.length == 4 && !w.busy) confirm()
+            }, "1234", keyboard = KeyboardType.NumberPassword, autoFocus = true)
+            PayButton(T("Confirm", "אישור"), w.busy) { if (code.length == 4) confirm() }
+        } else {
+            AboutCard(T("Add a credit card", "הוספת כרטיס אשראי")) {
+                Note(T(
+                    "Rav-Pass charges your rides to a credit card once a month. You type it on CreditGuard's secure page " +
+                        "for HopOn, shown here; Kav never sees it.",
+                    "רב-פס מחייבת את הנסיעות בכרטיס אשראי פעם בחודש. מקלידים אותו בדף המאובטח של CreditGuard עבור " +
+                        "הופ-און, שמוצג כאן; Kav לא רואה אותו.",
+                ), color = K.muted)
+            }
+            // The cards HopOn lists but can't charge, and why.
+            val now = rememberNow()
+            Payer.cards.filter { it.expired(now) }.forEach { c ->
+                Note(listOf(c.brand, "•••• ${c.last4}").filter { it.isNotBlank() }.joinToString(" ") + " · " +
+                    if (c.expiresUtc != null && c.expiresUtc < now) T("expired", "פג תוקף") else T("not active", "לא פעיל"), color = K.problem)
+            }
+            PayButton(T("Add a card", "הוספת כרטיס"), w.busy) { w.run { page = Payer.call { RavPass.cardPage(it) } } }
+        }
+        if (notYet) Note(if (Payer.cards.isEmpty())
+            T("Rav-Pass doesn't list the card yet. If you finished adding it, try again in a moment.",
+                "רב-פס עוד לא מציגה את הכרטיס. אם סיימתם להוסיף אותו, נסו שוב בעוד רגע.")
+            else T("Rav-Pass lists the card but can't charge it yet. Try again in a moment, or add another card.",
+                "רב-פס מציגה את הכרטיס אבל עוד לא יכולה לחייב אותו. נסו שוב בעוד רגע, או הוסיפו כרטיס אחר."),
+            color = K.problem)
+        w.error?.let { Note(it, color = K.critical) }
+        // The code can come after the page closed; and a card waiting for one can be added again for a new code.
+        Text(if (askCode) T("Add the card again", "הוספת הכרטיס מחדש") else T("Got a code from your card company? Enter it",
+            "קיבלתם קוד מחברת האשראי? הזינו אותו"), fontSize = 14.sp, color = K.accent,
+            modifier = Modifier.clickable(enabled = !w.busy, role = Role.Button) { w.error = null; askCode = !askCode; code = "" }
+                .padding(vertical = K.gap2))
+        if (canSkip) Text(T("Skip for now", "דילוג בינתיים"), fontSize = 14.sp, color = K.muted,
+            modifier = Modifier.clickable(role = Role.Button) { Payer.skipCard() }.padding(vertical = K.gap2))
+        else CancelLink { Payer.addingCard = false }
+    }
+}
+
+// CreditGuard's page for HopOn, where the card is typed. Every page loads, HopOn's return link among them, which is what
+// adds the card; the marks it then sends the page to only say how it ended, so they are read instead of loaded, as in
+// HopOn's app. No screenshots.
+@Composable
+private fun CardPage(url: String, onClose: () -> Unit, onEnd: (RavPass.CardEnd) -> Unit) {
+    val activity = LocalContext.current as? android.app.Activity
+    DisposableEffect(activity) {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+    }
+    androidx.activity.compose.BackHandler(onBack = onClose)
+    val ended = rememberUpdatedState(onEnd)
+    Column(Modifier.fillMaxSize().padding(bottom = LocalBottomBarInset.current)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = K.gap4, vertical = K.gap2), verticalAlignment = Alignment.CenterVertically) {
+            Text(T("Add a card", "הוספת כרטיס"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f))
+            CancelLink(onClose)
+        }
+        AndroidView(
+            factory = { c ->
+                WebView(c).apply {
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    webViewClient = object : WebViewClient() {
+                        private var finished = false
+                        private fun end(u: String?): Boolean {
+                            val how = u?.let(RavPass::cardEnd) ?: return false
+                            if (!finished) { finished = true; ended.value(how) }
+                            return true
+                        }
+                        // Only web pages open here.
+                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                            if (end(request.url.toString())) return true
+                            val scheme = request.url.scheme
+                            return scheme != "http" && scheme != "https"
+                        }
+                        override fun onPageStarted(view: WebView, u: String?, favicon: android.graphics.Bitmap?) {
+                            if (end(u)) view.stopLoading()
+                        }
+                    }
+                    loadUrl(url)
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+            onRelease = { it.destroy() },
+        )
+    }
+}
+
+// Settings' payments group, once signed in: the account, its card, its history, and signing out.
 @Composable
 internal fun PaymentsSection(model: KavModel) {
-    var account by remember { mutableStateOf<MoovitPay.Account?>(null) }
-    var linked by remember { mutableStateOf(true) }
     var leaving by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        runCatching { Payer.call { MoovitPay.account(it) } }.onSuccess { account = it; linked = it?.connected == true }
-    }
+    LaunchedEffect(Unit) { runCatching { Payer.check() } }
+    val a = Payer.account
+    val now = System.currentTimeMillis()
+    val card = Payer.cards.firstOrNull { !it.expired(now) && it.default } ?: Payer.cards.firstOrNull { !it.expired(now) }
     Column(
         Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(14.dp).padding(K.gap3).animateContentSize(),
         verticalArrangement = Arrangement.spacedBy(K.gap2),
     ) {
-        Text(account?.name?.ifBlank { null } ?: T("Your Moovit account", "חשבון ה-Moovit שלכם"), fontSize = 15.sp, color = K.text)
-        account?.phone?.takeIf { it.isNotBlank() }?.let { LtrText(it, 13.sp, K.dim) }
-        if (!linked) Text(T(
-            "Your Moovit account isn't connected to Kav any more, for example after paying in Moovit's app. Sign " +
-                "out and sign in again to bring it back.",
-            "חשבון ה-Moovit שלכם כבר לא מחובר ל-Kav, למשל אחרי תשלום באפליקציה של Moovit. התנתקו והתחברו " +
-                "מחדש כדי להחזיר אותו.",
-        ), fontSize = 11.sp, color = K.problem, lineHeight = 16.sp)
+        Text(a?.name?.ifBlank { null } ?: T("Your Rav-Pass account", "חשבון רב-פס שלכם"), fontSize = 15.sp, color = K.text)
+        a?.phone?.takeIf { it.isNotBlank() }?.let { LtrText(it, 13.sp, K.dim) }
+        if (card != null) LtrText(listOf(card.brand, "•••• ${card.last4}").filter { it.isNotBlank() }.joinToString(" "), 13.sp, K.dim)
+        else if (a != null) Text(T("No card on the account yet", "עוד אין כרטיס בחשבון"), fontSize = 13.sp, color = K.problem)
+        a?.profiles?.takeIf { it.isNotEmpty() }?.let { Text(it.joinToString(", "), fontSize = 13.sp, color = K.dim) }
         Text(T(
-            "Kav pays through a Moovit user of its own, used for nothing else. The account can be on one phone " +
-                "at a time, so paying in Moovit's app moves it back there.",
-            "Kav משלמת דרך משתמש Moovit משלה, שלא משמש לשום דבר אחר. החשבון יכול להיות בטלפון אחד בכל פעם, " +
-                "ולכן תשלום באפליקציה של Moovit מעביר אותו בחזרה לשם.",
+            "Kav pays with your Rav-Pass account, and nothing else in Kav uses it.",
+            "Kav משלמת עם חשבון רב-פס שלכם, ושום דבר אחר ב-Kav לא משתמש בו.",
         ), fontSize = 11.sp, color = K.dim, lineHeight = 16.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
             Text(T("Payment history", "היסטוריית תשלומים"), fontSize = 14.sp, color = K.accent,
                 modifier = Modifier.clickable(role = Role.Button) { model.payHistoryOpen = true }.padding(vertical = K.gap1))
+            Text(if (card == null) T("Add a card", "הוספת כרטיס") else T("Change card", "החלפת כרטיס"), fontSize = 14.sp, color = K.accent,
+                modifier = Modifier.clickable(role = Role.Button) { Payer.addingCard = true; model.payOpen = true }.padding(vertical = K.gap1))
             Text(T("Sign out", "התנתקות"), fontSize = 14.sp, color = K.muted,
                 modifier = Modifier.clickable(enabled = !Payer.purchasing && !Payer.payingLater, role = Role.Button) { leaving = true }
                     .padding(vertical = K.gap1))
         }
     }
-    if (leaving) MoovitDialog(
+    if (leaving) PayDialog(
         T("Sign out of payments?", "להתנתק מהתשלומים?"),
-        T("Kav forgets its paying user on this phone. To pay again you sign in with a code by SMS and confirm " +
-            "your card's CVV. Your Moovit account itself stays as it is.",
-            "Kav תשכח את משתמש התשלום שלה בטלפון הזה. כדי לשלם שוב מתחברים עם קוד ב-SMS ומאשרים את ה-CVV של " +
-                "הכרטיס. חשבון ה-Moovit שלכם עצמו נשאר כמו שהוא."),
+        T("Kav forgets your Rav-Pass account on this phone. To pay again you sign in with a code by SMS. The account " +
+            "itself stays as it is.",
+            "Kav תשכח את חשבון רב-פס שלכם בטלפון הזה. כדי לשלם שוב מתחברים עם קוד ב-SMS. החשבון עצמו נשאר כמו שהוא."),
         T("Sign out", "התנתקות"), onDismiss = { leaving = false },
     ) { leaving = false; Payer.signOut() }
 }
 
-private fun fareLabel(f: MoovitPay.Fare): String {
-    val km = km(f.radius.toDouble())
-    val from = f.from; val to = f.to
-    return when {
-        from != null && to != null && from == to -> T("Up to $km km in $from", "עד $km ק\"מ ב$from")
-        from != null && to != null -> T("Up to $km km, $from to $to", "עד $km ק\"מ, מ$from ל$to")
-        from != null -> T("Up to $km km from $from", "עד $km ק\"מ מ$from")
-        to != null -> T("Up to $km km to $to", "עד $km ק\"מ ל$to")
-        else -> T("Up to $km km", "עד $km ק\"מ")
-    }
-}
+private enum class PayStage { HOME, BUS, STATION, EXIT, RIDE }
 
 @Composable
 private fun Paying(model: KavModel) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var account by remember { mutableStateOf<MoovitPay.Account?>(null) }
-    val wallet = Payer.wallet
     var cameraAllowed by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
     var cameraAsked by remember { mutableStateOf(false) }
+    var located by remember { mutableStateOf(hasLocationPermission(ctx)) }
     var scanFailed by remember { mutableStateOf(false) }
     var cameraBroken by remember { mutableStateOf(false) }
-    var scanned by remember { mutableStateOf<String?>(null) }
-    var offer by remember { mutableStateOf<MoovitPay.Offer?>(null) }
-    var chosen by remember { mutableStateOf<MoovitPay.Fare?>(null) }
-    // The other passengers on this purchase, as Moovit's guest picker counts them, and whether it is open.
+    // The bus scanned and the ride on it: the line's runs HopOn lists and the one ridden, where the rider gets off, how
+    // many ride along, and HopOn's price for that. fixedEnd: HopOn said where the ride ends, so it isn't chosen.
+    var bus by remember { mutableStateOf<RavPass.Bus?>(null) }
+    var runs by remember { mutableStateOf<List<RavPass.Run>?>(null) }
+    var runIndex by remember { mutableIntStateOf(0) }
+    var to by remember { mutableStateOf<RavPass.Stop?>(null) }
+    var fixedEnd by remember { mutableStateOf(false) }
     var guests by remember { mutableIntStateOf(0) }
-    var picking by remember { mutableStateOf(false) }
-    // The ride on screen, by key, and the tickets just bought, shown until Moovit's list has them.
+    var guestsBlocked by remember { mutableStateOf(false) }
+    var quote by remember { mutableStateOf<RavPass.Quote?>(null) }
+    var priceError by remember { mutableStateOf<String?>(null) }
+    // HopOn's suggested rides when the code alone doesn't place the rider on a line, then the company's lines around
+    // them and those found by number, to choose the ride by hand.
+    var suggestions by remember { mutableStateOf<List<RavPass.Suggestion>?>(null) }
+    var lines by remember { mutableStateOf<List<RavPass.Nearby>?>(null) }
+    var lineQuery by remember { mutableStateOf("") }
+    var found by remember { mutableStateOf<List<RavPass.Nearby>?>(null) }
+    // A bus of the company paid for minutes ago, waiting for the rider to say it's a new ride.
+    var again by remember { mutableStateOf<RavPass.Bus?>(null) }
+    // The fare's reach, as Moovit's fare picker chooses it: 15 km unless the rider picks more. Kav turns it into the stop
+    // HopOn prices the ride to.
+    var band by remember { mutableIntStateOf(15) }
+    // Paying at a station: the mode, the station HopOn placed the rider at, and the list to choose it from when HopOn
+    // asks.
+    var stationMode by remember { mutableStateOf<StationMode?>(null) }
+    var station by remember { mutableStateOf<RavPass.Station?>(null) }
+    var choosing by remember { mutableStateOf(false) }
+    var lastFix by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    // Leaving the train: the entrance ticket, the exit station HopOn found, and whether the rider confirms it.
+    var exiting by remember { mutableStateOf<RavPass.Ticket?>(null) }
+    var exitStation by remember { mutableStateOf<RavPass.Station?>(null) }
+    var confirmExit by remember { mutableStateOf(false) }
+    // A train entrance still open when a new ride is asked for.
+    var openEntrance by remember { mutableStateOf<RavPass.Ticket?>(null) }
+    // A train entrance about to be created, which HopOn can't cancel afterwards.
+    var confirmEntry by remember { mutableStateOf(false) }
+    // The ticket on screen, by key.
     var shownKey by remember { mutableStateOf<String?>(null) }
-    var fresh by remember { mutableStateOf<List<MoovitPay.Ticket>>(emptyList()) }
     // The leg of the trip whose card asked to pay, until its ticket is bought.
     var tripLeg by remember { mutableStateOf<Int?>(null) }
     var tripKey by remember { mutableStateOf<String?>(null) }
@@ -761,31 +1028,10 @@ private fun Paying(model: KavModel) {
         model.activeJourney?.takeIf { it.paymentKey == journey }
             ?.let { model.activeJourney = it.copy(paid = it.paid + (leg to key)) }
     }
-    // Passengers being added to the ride on screen, in a sheet over it: the ride, its prices once Moovit answers, how
-    // many guests, and whether they were bought.
-    var adding by remember { mutableStateOf<RideGroup?>(null) }
-    var again by remember { mutableStateOf<Again?>(null) }
-    var addGuests by remember { mutableIntStateOf(1) }
-    var addError by remember { mutableStateOf<String?>(null) }
-    var added by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var reload by remember { mutableIntStateOf(0) }
-    // The scanned code's fares while Moovit is asked for them: the fare step shows them loading, and backing out stops it.
+    // HopOn asked about a bus or a station: its step shows it loading, and backing out stops it.
     var fetching by remember { mutableStateOf<Job?>(null) }
-    var stationMode by remember { mutableStateOf<StationMode?>(null) }
-    var step by remember { mutableStateOf<MoovitPay.StationStep?>(null) }
-    var stationAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-    var origin by remember { mutableIntStateOf(0) }
-    var picks by remember { mutableStateOf<List<Moovit.StopInfo>>(emptyList()) }
-    var exiting by remember { mutableStateOf<MoovitPay.Ticket?>(null) }
-    var exit by remember { mutableStateOf<MoovitPay.Exit?>(null) }
-    var exitAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-    var manualExit by remember { mutableStateOf(false) }
-    // Moovit's questions before acting: a train entrance still open, the exit station, cancelling an entrance.
-    var openEntrance by remember { mutableStateOf<MoovitPay.Ticket?>(null) }
-    var confirmExit by remember { mutableStateOf(false) }
-    var cancelling by remember { mutableStateOf<MoovitPay.Ticket?>(null) }
 
     fun run(work: suspend () -> Unit) {
         if (busy) return
@@ -793,35 +1039,131 @@ private fun Paying(model: KavModel) {
         scope.launch {
             try { withContext(NonCancellable) { work() } }
             catch (e: CancellationException) { throw e }
-            catch (e: Exception) { error = failure(e) }
+            catch (e: Exception) {
+                error = failure(e)
+                // No card HopOn can charge: back to adding one.
+                if (RavPass.needsCard(e)) runCatching { Payer.check() }
+            }
             finally { busy = false }
         }
     }
 
+    fun look(work: suspend () -> Unit) {
+        fetching?.cancel(); error = null
+        fetching = scope.launch {
+            try { work() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = failure(e) }
+            fetching = null
+        }
+    }
+
+    fun clearRide() {
+        runs = null; runIndex = 0; to = null; fixedEnd = false; guests = 0; guestsBlocked = false; quote = null; priceError = null
+        suggestions = null; lines = null; lineQuery = ""; found = null; again = null; band = 15
+    }
+
+    // The bus's run as HopOn's app finds it once HopOn named the line or where the ride ends: the run HopOn named,
+    // boarded where HopOn found the rider, or where the run says when HopOn already gave the end.
+    suspend fun board(b: RavPass.Bus) {
+        val fix = PayFix.now(ctx) ?: throw NoFix()
+        val run = Payer.call { RavPass.runs(it, b, fix) }.firstOrNull { it.routeId == b.routeId }
+            ?: throw RavPass.Refused("", T("HopOn couldn't find this line's stops. Scan the code again.",
+                "הופ-און לא מצאה את התחנות של הקו. סרקו את הקוד שוב."))
+        val end = b.to
+        val from = if (end != null) run.stops.firstOrNull { it.code == run.boarding }
+            else run.stops.firstOrNull { it.code == b.from?.code } ?: b.from
+        bus = b.on(run, from)
+        runs = listOf(run); runIndex = 0
+        fixedEnd = end != null
+        if (end != null) to = end
+    }
+
+    // The company's lines around the rider, to choose the ride by hand, as HopOn's app offers when it can't tell it.
+    suspend fun around(b: RavPass.Bus) {
+        val fix = PayFix.now(ctx) ?: throw NoFix()
+        lines = Payer.call { RavPass.nearby(it, b, fix) }
+        suggestions = null
+    }
+
+    // What HopOn's app does after the scan: the bus's run when HopOn named the line or where the ride ends, else the
+    // rides it suggests, else the company's lines around the rider.
+    suspend fun follow(b: RavPass.Bus) {
+        when {
+            b.to != null || (b.routeId != null && b.officeLineId != null && b.from != null) -> board(b)
+            b.agencyId != null && b.meanOfTransport != null -> {
+                val fix = PayFix.now(ctx)
+                val picks = runCatching { Payer.call { RavPass.likelyRides(it, b, fix) } }.getOrDefault(emptyList())
+                if (picks.isNotEmpty()) suggestions = picks else around(b)
+            }
+            else -> throw RavPass.Refused(T("Service not available.", "השירות לא זמין."),
+                T("HopOn doesn't know this QR code. Try scanning a different one.", "הופ-און לא מכירה את קוד ה-QR הזה. נסו לסרוק קוד אחר."))
+        }
+    }
+
+    // The bus's code, as HopOn's app takes it: the phone's fix goes with it, and HopOn names the line and the stop the
+    // rider boards at from its own data. A company paid for minutes ago is asked about first, as its app does.
     fun priceFor(qr: String, fromScanner: Boolean = false) {
         fetching?.cancel(); error = null
         scanFailed = false
         fetching = scope.launch {
             try {
-                val got = Payer.call { MoovitPay.price(it, qr, model.payAt(ctx)) }
-                if (got.fares.isEmpty()) {
-                    error = T("Moovit has no fare for this code.", "ל-Moovit אין תעריף לקוד הזה.")
-                    scanFailed = fromScanner
-                }
-                else {
-                    scanned = qr
-                    val last = Payer.lastFare
-                    guests = 0
-                    offer = got
-                    chosen = got.fares.firstOrNull { it.radius == 15_000 }
-                        ?: got.fares.firstOrNull { last != null && it.code == last.first && it.regionId == last.second }
-                        ?: got.fares.firstOrNull()
-                }
+                val fix = PayFix.now(ctx) ?: throw NoFix()
+                val b = Payer.call { RavPass.scan(it, qr, fix) }
+                clearRide()
+                bus = b
+                if (Payer.paidJustNow(b.agencyId)) again = b else follow(b)
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
                 error = failure(e); scanFailed = fromScanner
             }
             fetching = null
         }
+    }
+
+    // A ride picked from HopOn's suggestions, taken as HopOn's app takes it: from where it starts to where it ends.
+    fun pick(s: RavPass.Suggestion) {
+        val chosen = bus?.with(s) ?: return
+        suggestions = null; quote = null
+        if (s.to == null) look { board(chosen) } else { bus = chosen; runs = null; fixedEnd = true; to = s.to }
+    }
+
+    // A line chosen by hand: HopOn's runs of it around the rider, the first one (or the next when the stop HopOn found
+    // isn't on it), boarded where HopOn reckons on it, as its app takes them.
+    fun pickLine(n: RavPass.Nearby) = look {
+        val b = bus?.onLine(n) ?: return@look
+        val fix = PayFix.now(ctx) ?: throw NoFix()
+        val all = Payer.call { RavPass.runs(it, b, fix) }
+        if (all.isEmpty()) throw RavPass.Refused("", T("HopOn has no rides of line ${n.line} around you now.",
+            "להופ-און אין עכשיו נסיעות של קו ${n.line} סביבכם."))
+        val i = if (b.stopOnly && all[0].stops.none { it.code == b.from?.code } && all.size > 1) 1 else 0
+        val run = all[i]
+        val from = run.stops.firstOrNull { b.stopOnly && it.code == b.from?.code } ?: run.stops.firstOrNull { it.code == run.boarding }
+        bus = b.on(run, from); runs = all; runIndex = i; fixedEnd = false; to = null
+        lines = null; lineQuery = ""; found = null
+    }
+
+    // The line's other run, as HopOn's app switches direction: boarded where HopOn reckons on it.
+    fun switchRun() {
+        val all = runs?.takeIf { it.size > 1 } ?: return
+        val b = bus ?: return
+        val i = (runIndex + 1) % all.size
+        bus = b.on(all[i], all[i].stops.firstOrNull { it.code == all[i].boarding }); runIndex = i; to = null
+    }
+
+    // The company's lines by the number typed, as HopOn's app searches them.
+    LaunchedEffect(lineQuery) {
+        val b = bus ?: return@LaunchedEffect
+        val q = lineQuery.trim()
+        found = null
+        if (q.isEmpty()) return@LaunchedEffect
+        delay(400)
+        found = runCatching { Payer.call { RavPass.searchLines(it, b, q) } }.getOrDefault(emptyList())
+    }
+
+    // Where a ride of the chosen reach ends on the run, when HopOn didn't say.
+    LaunchedEffect(bus, runs, runIndex, band, fixedEnd) {
+        if (fixedEnd) return@LaunchedEffect
+        val run = runs?.getOrNull(runIndex) ?: return@LaunchedEffect
+        val from = bus?.from ?: return@LaunchedEffect
+        to = reach(run.stops, from.code, band)
     }
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -835,514 +1177,466 @@ private fun Paying(model: KavModel) {
             }
         }
     }
+    val askLocation = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        located = hasLocationPermission(ctx)
+    }
 
     fun scan() {
         cameraAsked = true
         cameraAllowed = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         if (!cameraAllowed) askCamera.launch(Manifest.permission.CAMERA)
+        else if (!hasLocationPermission(ctx)) askLocation.launch(LOCATION_PERMISSIONS)
     }
 
-    // Finding the station waits for a fresh fix; backing out stops it.
-    var lookup by remember { mutableStateOf<Job?>(null) }
-    fun look(work: suspend () -> Unit) {
-        lookup?.cancel(); error = null
-        lookup = scope.launch {
-            try { work() } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                error = failure(e); stationMode = null; exiting = null
-            }
-        }
-    }
-
-    // The station chosen from the list, when the fix can't tell or found the wrong one; and the last fix, to sort it.
-    var choosing by remember { mutableStateOf(false) }
-    var lastFix by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-
-    fun clearStation() {
-        lookup?.cancel(); lookup = null
-        choosing = false
-        stationMode = null; step = null; stationAt = null; origin = 0; picks = emptyList()
-        exiting = null; exit = null; exitAt = null; manualExit = false
-    }
-
-    // The station of that mode nearest the phone. Only the station's own position is sent, never the fix.
-    suspend fun nearStation(m: StationMode): Pair<Double, Double>? = coroutineScope {
-        val net = async { runCatching { loadNet(ctx.applicationContext) }.getOrNull() }
-        val fix = freshFix(ctx)
-        lastFix = fix
-        if (fix == null) {
-            error = T("Kav needs your location to find the station.", "Kav צריכה את המיקום שלכם כדי למצוא את התחנה.")
-            return@coroutineScope null
-        }
-        val near = net.await()?.let { nearestStation(it, fix, m) }
-        if (near == null) error = m.noneNear
-        near
-    }
-
-    suspend fun showStep(s: MoovitPay.StationStep) {
-        step = s
-        val ids = s.pickOrigin.ifEmpty { s.pickDestination }
-        picks = if (ids.isEmpty()) emptyList() else stopNames(ids)
-    }
-
-    // Moovit's station purchase: find the station, confirm it (or pick from Moovit's list), then the fare summary.
-    // at: a trip's own boarding station. Without a station from the fix, the rider chooses it from a list.
-    fun startStation(m: StationMode, at: Pair<Double, Double>? = null) {
-        if (busy) return
-        clearStation()
-        stationMode = m; guests = 0
-        look {
-            val here = at ?: nearStation(m)
-            if (here == null) { choosing = true; return@look }
-            stationAt = here
-            showStep(Payer.call { MoovitPay.station(it, here, m.routeType) })
-        }
-    }
-
-    fun chooseStation(m: StationMode, at: Pair<Double, Double>) {
-        choosing = false; step = null; picks = emptyList(); origin = 0; error = null
-        look {
-            stationAt = at
-            showStep(Payer.call { MoovitPay.station(it, at, m.routeType) })
-        }
-    }
-
-    fun pickStation(info: Moovit.StopInfo) = run {
-        val m = stationMode ?: return@run
-        val s = step ?: return@run
-        val at = if (!info.lat.isNaN()) info.lat to info.lon else stationAt ?: return@run
-        if (s.pickOrigin.isNotEmpty()) {
-            origin = info.id; stationAt = at
-            showStep(Payer.call { MoovitPay.station(it, at, m.routeType, origin = info.id) })
-        } else {
-            showStep(Payer.call { MoovitPay.station(it, stationAt ?: at, m.routeType, origin = origin, destination = info.id) })
-        }
-    }
-
-    // A train ride paid from a trip's card gets off at that trip's station, as it got in at the trip's.
-    fun tripExit(t: MoovitPay.Ticket): Pair<Double, Double>? {
-        val j = model.activeJourney ?: return null
-        val leg = j.paid.entries.firstOrNull { it.value == Payer.rideKey(t) }?.key ?: return null
-        val ride = j.trip.legs.getOrNull(leg) ?: return null
-        val wait = j.trip.legs.getOrNull(leg - 1)?.takeIf { it.kind == Moovit.LegKind.WAIT }
-        return j.resolved.stop(boardingChoice(ride, wait, j.chosen[leg] ?: 0).first.toStop)?.point
-    }
-
-    fun startExit(t: MoovitPay.Ticket) {
-        if (busy) return
-        clearStation()
-        exiting = t
-        look {
-            val at = tripExit(t) ?: nearStation(StationMode.TRAIN)
-            if (at == null) { exiting = null; return@look }
-            exitAt = at
-            val e = Payer.call { MoovitPay.exitPrice(it, at) }
-            exit = e
-            picks = if (e.pick.isNotEmpty()) stopNames(e.pick) else emptyList()
-        }
-    }
-
-    fun pickExit(info: Moovit.StopInfo) = run {
-        if (info.lat.isNaN()) return@run
-        val at = info.lat to info.lon
-        exitAt = at; manualExit = true; picks = emptyList()
-        exit = Payer.call { MoovitPay.exitPrice(it, at) }
-    }
-
-    // Whether Moovit still has the payment account on Kav's paying user; paying in Moovit's app moves it back there.
-    var linked by remember { mutableStateOf(true) }
-    LaunchedEffect(reload) {
-        try {
-            account = Payer.call { MoovitPay.account(it) }
-            linked = account?.connected == true
-            Payer.refresh()
-        } catch (e: CancellationException) { throw e } catch (e: Exception) { error = failure(e) }
-    }
-
-    // The timetable that places the phone at a station takes seconds to read; start while the rider chooses.
+    LaunchedEffect(Unit) { runCatching { Payer.refresh() } }
+    // The timetable that lists the stations takes seconds to read; start while the rider scans.
     LaunchedEffect(Unit) { runCatching { loadNet(ctx.applicationContext) } }
-
-    LaunchedEffect(Unit) {
-        while (true) { delay(60_000); runCatching { Payer.refresh() } }
+    // The phone's fix, kept while Pay is open as HopOn's app keeps it while it is.
+    DisposableEffect(located) {
+        val on = located
+        if (on) PayFix.start(ctx)
+        onDispose { if (on) PayFix.stop() }
     }
 
-    // Opened on a ride from the home screen's card or a trip's: closing it returns there.
+    // Opened on a ticket from the home screen's card or a trip's: closing it returns there.
     var returnOnClose by remember { mutableStateOf(false) }
     fun leave() { returnOnClose = false; model.payOpen = false }
     LaunchedEffect(Payer.showRef) {
         Payer.showRef?.let { shownKey = it; Payer.showRef = null; returnOnClose = true }
     }
 
-    // As Moovit's app does before any new purchase: a train entrance still open must be ended first.
+    fun clearBus() {
+        fetching?.cancel(); fetching = null
+        bus = null; clearRide()
+    }
+
+    fun clearStation() {
+        fetching?.cancel(); fetching = null
+        stationMode = null; station = null; choosing = false; quote = null; guests = 0; guestsBlocked = false
+        exiting = null; exitStation = null; confirmExit = false
+    }
+
+    // The station HopOn places the rider at from the phone's fix, as its app asks, else the list, so paying at a station
+    // works from anywhere. picked: chosen from the list or the trip's own, sent by its own position.
+    fun stationAtPosition(m: StationMode, picked: Pair<Double, Double>?) = look {
+        choosing = false; station = null; quote = null
+        if (picked != null) { station = Payer.call { RavPass.station(it, m.kind, RavPass.spot(picked)) }; return@look }
+        val fix = PayFix.now(ctx)
+        if (fix == null) { choosing = true; return@look }
+        lastFix = fix.lat to fix.lon
+        try { station = Payer.call { RavPass.station(it, m.kind, fix) } }
+        catch (e: RavPass.Refused) { if (e.code == RavPass.NO_STATION || e.code == RavPass.CHOOSE_STATION) choosing = true else throw e }
+    }
+
+    // Paying at a station of mode m. at: a trip's own station, sent as one chosen by hand.
+    fun startStation(m: StationMode, at: Pair<Double, Double>? = null) {
+        if (busy) return
+        clearBus(); clearStation()
+        stationMode = m; guests = 0
+        stationAtPosition(m, at)
+    }
+
+    // The exit station the same way: HopOn finds it from the phone's fix, else it's chosen from the list.
+    fun exitAtPosition(picked: Pair<Double, Double>?) = look {
+        choosing = false; exitStation = null; quote = null
+        if (picked != null) { exitStation = Payer.call { RavPass.checkout(it, RavPass.spot(picked)) }; return@look }
+        val fix = PayFix.now(ctx)
+        if (fix == null) { choosing = true; return@look }
+        lastFix = fix.lat to fix.lon
+        try { exitStation = Payer.call { RavPass.checkout(it, fix) } }
+        catch (e: RavPass.Refused) { if (e.code == RavPass.NO_STATION || e.code == RavPass.CHOOSE_STATION) choosing = true else throw e }
+    }
+
+    // Leaving the train: the exit station HopOn finds, else chosen from the list.
+    fun startExit(t: RavPass.Ticket) {
+        if (busy) return
+        clearBus(); clearStation()
+        exiting = t; stationMode = StationMode.TRAIN
+        exitAtPosition(null)
+    }
+
+    // The entrance's own station, first in the list of exit stations: leaving where the ride began closes it with no
+    // distance travelled. HopOn's station codes are the timetable's own.
+    val entranceStation by produceState<Spot?>(null, exiting) {
+        val code = exiting?.fromCode?.toIntOrNull() ?: return@produceState
+        value = withContext(Dispatchers.Default) {
+            runCatching {
+                val net = loadNet(ctx.applicationContext)
+                net.lat.indices.firstOrNull { net.code[it] == code && net.stopType[it] == StationMode.TRAIN.gtfs }
+                    ?.let { Spot(net.name[it], net.lat[it], net.lon[it], null) }
+            }.getOrNull()
+        }
+    }
+
+    // HopOn's price for the ride to the exit station, as its app asks before the exit ticket.
+    LaunchedEffect(exitStation) {
+        val e = exitStation ?: return@LaunchedEffect
+        val t = exiting ?: return@LaunchedEffect
+        quote = null
+        quote = runCatching { Payer.call { RavPass.exitQuote(it, e, t) } }.getOrNull()
+    }
+
+    // Before a new ride, as HopOn's app does: a train entrance still open is ended first.
     fun beforeNew(go: () -> Unit) {
-        val open = wallet?.tickets.orEmpty().firstOrNull { it.active && it.needsExit && !Payer.cancelled(it) }
+        val now = System.currentTimeMillis()
+        val open = Payer.tickets.firstOrNull { it.valid(now) && it.needsExit }
         if (open != null) openEntrance = open else go()
     }
 
-    // Backing out of leaving the train returns to that ride; backing out of paying for a trip's ride, to the trip.
+    // Backing out of leaving the train returns to that ticket; backing out of a trip's ride, to the trip.
     fun backOut() {
-        val ride = exiting?.let { Payer.rideKey(it) }
-        fetching?.cancel(); fetching = null
-        scanFailed = false; offer = null; chosen = null; guests = 0; clearStation()
+        val ride = exiting?.id?.toString()
+        scanFailed = false; clearBus(); clearStation()
         shownKey = ride
         if (ride == null && returnOnClose) { tripLeg = null; leave() }
     }
 
-    // A trip card's pay row: straight to its ride's way of paying, and the ticket goes back to that ride's card.
+    // A trip card's pay row: straight to that ride's way of paying, and the ticket goes back to that ride's card.
     LaunchedEffect(model.payFor) {
         val p = model.payFor ?: return@LaunchedEffect
         model.payFor = null
         tripLeg = p.leg; tripKey = p.journey; returnOnClose = true
-        beforeNew { if (p.station == null) scan() else startStation(p.station, p.at) }
+        beforeNew { val m = p.station; if (m == null) scan() else startStation(m, p.at) }
     }
 
-    // The code of the bus whose ride is running shows the tickets already bought on it, not a new purchase.
+    // The code of a bus whose ticket is still valid shows that ticket, not a new payment.
     fun onScanned(qr: String) {
         val now = System.currentTimeMillis()
-        val same = ridesOf(wallet?.tickets.orEmpty()).firstOrNull { r ->
-            !r.canPayAgain(wallet?.window, now) && r.tickets.any { Payer.ride(it.ref)?.qr == qr }
-        }
-        if (same != null) { shownKey = same.key; forTrip(same.key) } else priceFor(qr, fromScanner = true)
+        val same = Payer.tickets.firstOrNull { it.valid(now) && Payer.codeOf(it) == qr }
+        if (same != null) { shownKey = same.id.toString(); forTrip(same.id.toString()) } else priceFor(qr, fromScanner = true)
     }
 
-    // The ride's own bus fare or station, priced by Moovit again for passengers added to it.
-    suspend fun againFor(r: RideGroup, rec: Payer.Ride): Again {
-        if (rec.qr.isNotBlank()) {
-            val at = model.payAt(ctx)
-            val o = Payer.call { MoovitPay.price(it, rec.qr, at) }
-            val f = o.fares.firstOrNull { it.code == rec.fare && it.regionId == rec.region }
-                ?: o.fares.firstOrNull { it.radius == r.first.radius }
-                ?: throw MoovitPay.Refused("", T("Moovit has no fare for this code.", "ל-Moovit אין תעריף לקוד הזה."))
-            val q = runCatching { Payer.call { MoovitPay.quote(it, o, f, at) } }.getOrNull()
-            return Again(q, f.cost) { n -> Payer.call { MoovitPay.buy(it, o, f, at, n) } }
-        }
-        val m = StationMode.entries.firstOrNull { it.routeType == rec.mode } ?: throw java.io.IOException("no station")
-        val at = rec.lat to rec.lon
-        val st = Payer.call { MoovitPay.station(it, at, m.routeType) }.station ?: throw java.io.IOException("no station")
-        val q = runCatching { Payer.call { MoovitPay.quote(it, st, m.routeType) } }.getOrNull()
-        return Again(q, st.cost) { n ->
-            Payer.call { MoovitPay.enter(it, st, at, m.routeType, n, picked = false) }
+    // HopOn's price for the ride and the others riding along, which its app has before it offers to pay.
+    LaunchedEffect(bus, to, guests) {
+        val b = bus ?: return@LaunchedEffect
+        quote = null; priceError = null
+        val end = to ?: return@LaunchedEffect
+        if (b.from == null || b.routeId == null) return@LaunchedEffect
+        try { quote = Payer.call { RavPass.quote(it, b, end, guests) } }
+        catch (e: CancellationException) { throw e } catch (e: Exception) { priceError = failure(e) }
+    }
+    // And at a station, for the rider and the others riding along.
+    LaunchedEffect(station, guests) {
+        val st = station ?: return@LaunchedEffect
+        val m = stationMode ?: return@LaunchedEffect
+        quote = null
+        quote = runCatching { Payer.call { RavPass.stationQuote(it, m.kind, st, null, guests) } }.getOrNull()
+    }
+    // With every price, HopOn's app checks the account's payment methods and takes the others riding along off when one
+    // of them blocks them: on a bus with the ride's price, at a light rail or Carmelit station with 1.
+    LaunchedEffect(quote) {
+        val q = quote ?: return@LaunchedEffect
+        val b = bus
+        val st = station?.takeIf { stationMode?.kind == RavPass.Kind.OTHER && exiting == null }
+        val qr = b?.qr ?: st?.qr ?: return@LaunchedEffect
+        val allowed = runCatching { Payer.call { RavPass.guestsAllowed(it, qr, if (b != null) q.total else null) } }.getOrDefault(true)
+        guestsBlocked = !allowed
+        if (!allowed && guests > 0) guests = 0
+    }
+
+    // Pays once HopOn has priced the ride. HopOn's app prices the others riding along once more right before paying for
+    // them, and pays only if that works.
+    fun pay() {
+        val b = bus ?: return
+        val end = to ?: return
+        if (quote?.total == null) return
+        val count = guests
+        run {
+            var asOccasional = false
+            val t = Payer.purchase(b.qr, prepare = {
+                asOccasional = Payer.occasional()
+                if (count > 0) Payer.call { RavPass.quote(it, b, end, count) }
+            }) { Payer.call { RavPass.buy(it, b.qr, count, asOccasional) } }
+            Payer.paidBus(b.agencyId)
+            val key = t.id.toString()
+            shownKey = key
+            forTrip(key)
+            clearBus()
         }
     }
 
-    var pricing by remember { mutableStateOf<Job?>(null) }
-    fun startAdding(r: RideGroup) {
-        val rec = Payer.ride(r.first.ref) ?: Payer.ride(r.newest.ref) ?: return
-        adding = r; again = null; addGuests = 1; addError = null; added = false
-        pricing?.cancel()
-        pricing = scope.launch {
-            try { again = againFor(r, rec) } catch (e: CancellationException) { throw e } catch (e: Exception) { addError = failure(e) }
+    fun payStation() {
+        val st = station ?: return
+        val m = stationMode ?: return
+        val count = if (m.kind == RavPass.Kind.OTHER) guests else 0
+        run {
+            val t = Payer.purchase(st.qr, prepare = {
+                // HopOn's app prices the train ride, and other rides with others along, right before paying.
+                if (m.kind == RavPass.Kind.TRAIN || count > 0)
+                    Payer.call { RavPass.stationQuote(it, m.kind, st, null, count) }
+            }) { Payer.call { RavPass.enter(it, m.kind, st, count) } }
+            val key = t.id.toString()
+            shownKey = key
+            forTrip(key)
+            clearStation()
         }
-    }
-
-    fun stopAdding() {
-        pricing?.cancel(); pricing = null
-        adding = null; again = null; addError = null
-    }
-
-    // Buys the guests and, as every Moovit purchase does, my own ticket again; all of them join the ride.
-    fun buyAdded() {
-        val r = adding ?: return
-        val a = again ?: return
-        val rec = Payer.ride(r.first.ref) ?: Payer.ride(r.newest.ref) ?: return
-        if (busy) return
-        val count = addGuests + 1
-        busy = true; addError = null
-        scope.launch { withContext(NonCancellable) {
-            try {
-                val bought = Payer.purchase { a.buy(count) }
-                runCatching {
-                    bought.map { it.ref }.distinct().forEach { ref ->
-                        Payer.noteRide(ref, Payer.Ride(rec.qr, rec.lat, rec.lon, System.currentTimeMillis(), r.key,
-                            rec.fare, rec.region, rec.mode))
-                    }
-                }
-                runCatching { Payer.refresh() }
-                fresh = bought
-                added = true
-            } catch (e: CancellationException) { throw e } catch (e: Exception) { addError = failure(e) }
-            finally { busy = false }
-        } }
     }
 
     val stage = when {
         shownKey != null -> PayStage.RIDE
-        offer != null || fetching != null -> PayStage.FARE
         exiting != null -> PayStage.EXIT
         stationMode != null -> PayStage.STATION
+        bus != null || fetching != null -> PayStage.BUS
         else -> PayStage.HOME
     }
     LaunchedEffect(stage, openEntrance) {
-        // A ticket or station opened directly can change these before this effect runs.
+        // A ticket or station opened directly can change this before the effect runs.
         if (stage == PayStage.HOME && shownKey == null && stationMode == null && openEntrance == null && !cameraAsked) scan()
     }
-    androidx.activity.compose.BackHandler(enabled = stage != PayStage.HOME && stage != PayStage.RIDE) { backOut() }
+    androidx.activity.compose.BackHandler(enabled = stage == PayStage.BUS || stage == PayStage.STATION || stage == PayStage.EXIT) { backOut() }
 
-    // Moovit's GetPrice for the chosen fare or station: my ticket and each other passenger's.
-    var fareQuote by remember { mutableStateOf<MoovitPay.Quote?>(null) }
-    LaunchedEffect(offer, chosen) {
-        fareQuote = null
-        val o = offer ?: return@LaunchedEffect
-        val f = chosen ?: return@LaunchedEffect
-        fareQuote = runCatching { Payer.call { MoovitPay.quote(it, o, f, model.payAt(ctx)) } }.getOrNull()
-    }
-    var stationQuote by remember { mutableStateOf<MoovitPay.Quote?>(null) }
-    LaunchedEffect(step?.station) {
-        stationQuote = null
-        val st = step?.station ?: return@LaunchedEffect
-        val m = stationMode ?: return@LaunchedEffect
-        stationQuote = runCatching { Payer.call { MoovitPay.quote(it, st, m.routeType) } }.getOrNull()
-    }
-
-    Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
-            androidx.compose.animation.AnimatedVisibility(error != null && stage != PayStage.RIDE) {
-                error?.let { Note(it, Modifier.padding(horizontal = K.gap4).padding(bottom = K.gap3), color = K.critical) }
-            }
-            androidx.compose.animation.AnimatedContent(
-                targetState = stage,
-                modifier = Modifier.weight(1f),
-                transitionSpec = { if (targetState == PayStage.HOME) backward() else forward() },
-                label = "pay",
-            ) { s ->
-                when (s) {
-                    PayStage.RIDE -> {
-                        val rideNow = shownKey?.let { key ->
-                            val all = (wallet?.tickets.orEmpty() + fresh).distinctBy { it.id to it.ref }
-                            ridesOf(all).firstOrNull { it.key == key }
-                        }
-                        if (rideNow != null) {
-                            // Moovit counts other passengers on every mode but the train; a ride needs its code or station.
-                            val train = rideNow.tickets.any { it.mode == 7 }
-                            val known = Payer.ride(rideNow.first.ref) ?: Payer.ride(rideNow.newest.ref)
-                            RideView(
-                                rideNow, wallet?.window,
-                                onAdd = if (train || known == null) null else ({ beforeNew { startAdding(rideNow) } }),
-                                onExit = { t -> shownKey = null; startExit(t) },
-                                onCancel = { t -> cancelling = t },
-                                onPayAgain = {
-                                    shownKey = null; fresh = emptyList(); offer = null; chosen = null; guests = 0
-                                    clearStation()
-                                    tripLeg = model.activeJourney?.paid?.entries?.firstOrNull { it.value == rideNow.key }?.key
-                                    tripKey = model.activeJourney?.paymentKey
-                                    beforeNew {
-                                        if (known?.qr?.isNotBlank() == true) priceFor(known.qr)
-                                        else {
-                                            val m = StationMode.entries.firstOrNull { it.routeType == known?.mode }
-                                            if (m != null) startStation(m, known?.takeIf { !it.lat.isNaN() }?.let { it.lat to it.lon })
-                                        }
-                                    }
-                                },
-                            ) { shownKey = null; fresh = emptyList(); reload++; if (returnOnClose) leave() }
-                        } else {
-                            // The ride is gone from Moovit's list: back to the start rather than a blank page.
-                            LaunchedEffect(Unit) { shownKey = null }
-                            Box(Modifier.fillMaxSize())
-                        }
+    Column(Modifier.fillMaxSize()) {
+        androidx.compose.animation.AnimatedVisibility(error != null && stage != PayStage.RIDE) {
+            error?.let { Note(it, Modifier.padding(horizontal = K.gap4).padding(bottom = K.gap3), color = K.critical) }
+        }
+        androidx.compose.animation.AnimatedContent(
+            targetState = stage,
+            modifier = Modifier.weight(1f),
+            transitionSpec = { if (targetState == PayStage.HOME) backward() else forward() },
+            label = "pay",
+        ) { s ->
+            when (s) {
+                PayStage.RIDE -> {
+                    val shown = shownKey?.let { key -> Payer.tickets.firstOrNull { it.id.toString() == key } }
+                    if (shown != null) TicketView(shown, onExit = { shownKey = null; startExit(shown) }, onAgain = { shownKey = null; error = null }) {
+                        shownKey = null; if (returnOnClose) leave()
+                    } else {
+                        // The ticket is gone from today's: back to the start rather than a blank page.
+                        LaunchedEffect(Unit) { shownKey = null }
+                        Box(Modifier.fillMaxSize())
                     }
-                    PayStage.FARE -> {
-                        val o = offer
-                        if (o == null) LoadingBlock(T("Loading…", "טוען…"))
-                        else {
-                            val f = chosen
-                            val sum = MoovitPay.summary(fareQuote, f?.cost, guests)
-                            PinnedStep(top = {
-                                FareDropdown(o.fares, chosen) { chosen = it }
-                                Passengers(f?.let { reach(it) }, sum, canAdd = true, onAdd = { picking = true }) { guests = 0 }
-                            }) {
-                                Total(sum, busy = busy || f == null) {
-                                    if (f != null) run {
-                                        val bought = Payer.purchase { Payer.call { MoovitPay.buy(it, o, f, model.payAt(ctx), sum.count) } }
-                                        val key = bought.first().ref
-                                        Payer.lastFare = f.code to f.regionId
-                                        scanned?.let { qr ->
-                                            runCatching {
-                                                bought.map { it.ref }.distinct().forEach { ref ->
-                                                    Payer.noteRide(ref, Payer.Ride(qr, Double.NaN, Double.NaN,
-                                                        System.currentTimeMillis(), key, f.code, f.regionId))
-                                                }
-                                            }
-                                        }
-                                        runCatching { Payer.refresh() }
-                                        fresh = bought; shownKey = key
-                                        forTrip(key)
-                                        offer = null; chosen = null; guests = 0
-                                    }
-                                }
-                                if (f != null) AddButton(T("Asshole mode", "מצב מנייאק"), detail = T(
-                                    "have a popup in the app/a \"PAY QUICK\" button in the notification so you can pay quickly when you see an inspector on the line",
-                                    "חלונית באפליקציה / כפתור \"תשלום מהיר!\" בהתראה, כדי שתוכלו לשלם במהירות כשרואים פקח בקו",
-                                ), modifier = Modifier.border(1.dp, K.accent, RoundedCornerShape(K.rPill))) {
-                                    val qr = scanned ?: return@AddButton
-                                    val at = model.payAt(ctx)
-                                    Payer.hold(Payer.Pending(
-                                        T("${km(f.radius.toDouble())} km", "${km(f.radius.toDouble())} ק\"מ"), qr, f.code, f.regionId,
-                                        at.first, at.second, sum.count, tripLeg, tripKey,
-                                    ))
-                                    offer = null; chosen = null; guests = 0; tripLeg = null
-                                    leave()
-                                }
-                                CancelLink { backOut() }
+                }
+                PayStage.BUS -> {
+                    val b = bus
+                    val run = runs?.getOrNull(runIndex)
+                    val picks = suggestions
+                    val around = lines
+                    when {
+                        b == null || fetching != null -> LoadingBlock(T("Finding your bus…", "מאתרים את האוטובוס…"))
+                        again != null -> PayStep { LineCard(b) }
+                        picks != null -> PayStep {
+                            LineCard(b)
+                            RidePicks(picks) { pick(it) }
+                            Text(T("Another line? See the lines around you", "קו אחר? הקווים סביבכם"), fontSize = 14.sp, color = K.accent,
+                                modifier = Modifier.clickable(role = Role.Button) { look { around(b) } }.padding(vertical = K.gap1))
+                            CancelLink { backOut() }
+                        }
+                        around != null -> PayStep {
+                            LineCard(b)
+                            LinePicks(around, found, lineQuery, { lineQuery = it }) { pickLine(it) }
+                            CancelLink { backOut() }
+                        }
+                        b.routeId == null -> PayStep {
+                            LineCard(b)
+                            Note(T("HopOn couldn't tell which line this bus is on. Scan its code again once you're on it.",
+                                "הופ-און לא זיהתה באיזה קו האוטובוס הזה. סרקו את הקוד שוב כשאתם בתוכו."), color = K.problem)
+                            CancelLink { backOut() }
+                        }
+                        else -> PinnedStep(top = {
+                            LineCard(b)
+                            if (run == null || fixedEnd) StopCard(T("Boarding stop", "תחנת עלייה"), b.from?.name ?: T("Not found", "לא נמצאה"))
+                            else StopDropdown(T("Boarding stop", "תחנת עלייה"), run.stops, b.from) { s -> bus = b.boardingAt(s) }
+                            if (fixedEnd) StopCard(T("Getting off at", "תחנת ירידה"), to?.name?.ifBlank { null } ?: T("Where HopOn says", "לפי הופ-און"))
+                            if ((runs?.size ?: 0) > 1) Text(T("Other direction", "לכיוון השני"), fontSize = 14.sp, color = K.accent,
+                                modifier = Modifier.clickable(role = Role.Button) { switchRun() }.padding(vertical = K.gap1))
+                            val choices = if (fixedEnd || run == null) emptyList() else b.from?.let { bandsFor(b.bands, run.stops, it.code) }.orEmpty()
+                            if (choices.isNotEmpty()) BandDropdown(choices, band) { band = it }
+                            Passengers(guests, if (guestsBlocked) 0 else Payer.settings?.guestsMax ?: 10) { guests = it }
+                            FareNotes(quote)
+                        }) {
+                            PriceLine(quote, to != null, priceError)
+                            PayButton(T("Validate ride and charge me", "צרו לי כרטיס נסיעה וחייבו אותי בתשלום"), busy,
+                                enabled = quote?.total != null) { pay() }
+                            AddButton(T("Asshole mode", "מצב מנייאק"), detail = T(
+                                "have a popup in the app/a \"PAY QUICK\" button in the notification so you can pay quickly when you see an inspector on the line",
+                                "חלונית באפליקציה / כפתור \"תשלום מהיר!\" בהתראה, כדי שתוכלו לשלם במהירות כשרואים פקח בקו",
+                            ), modifier = Modifier.border(1.dp, K.accent, RoundedCornerShape(K.rPill))) {
+                                val route = b.routeId ?: return@AddButton
+                                val from = b.from ?: return@AddButton
+                                val end = to ?: return@AddButton
+                                if (quote?.total == null) return@AddButton
+                                Payer.hold(Payer.Pending(b.line, b.qr, route, b.officeLineId, from.code, end.code, guests, tripLeg, tripKey))
+                                clearBus(); tripLeg = null
+                                leave()
                             }
+                            CancelLink { backOut() }
                         }
                     }
-                    PayStage.EXIT -> if (picks.isEmpty() && exit?.pick?.isEmpty() != true) LoadingBlock(T("Loading…", "טוען…")) else PayStep {
-                        val e = exit
-                        Text(T("Exit Station", "תחנת יציאה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                        if (picks.isNotEmpty()) StopPicks(e?.title, picks) { pickExit(it) }
-                        else if (e != null) {
-                            StationCard(T("Exit station:", "תחנת יציאה:"), e.name)
-                            e.price?.let { p ->
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(T("Estimated fare for this ride:", "המחיר המשוער לנסיעה:"), fontSize = 15.sp, color = K.muted,
-                                        modifier = Modifier.weight(1f))
-                                    PriceText(p, e.full, 15.sp)
+                }
+                PayStage.STATION -> {
+                    val m = stationMode ?: StationMode.TRAIN
+                    val st = station
+                    when {
+                        choosing -> PayStep {
+                            Text(m.label, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                            StationList(m, lastFix) { stationAtPosition(m, it) }
+                            CancelLink { backOut() }
+                        }
+                        st == null -> LoadingBlock(T("Finding your station…", "מאתרים את התחנה…"))
+                        else -> PinnedStep(top = {
+                            Text(m.label, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                            StopCard(T("Entry station", "תחנת כניסה"), st.stop?.name ?: T("Not found", "לא נמצאה"))
+                            Text(T("Not this station? Choose it", "לא התחנה הזו? בחרו אותה"), fontSize = 14.sp, color = K.accent,
+                                modifier = Modifier.clickable(role = Role.Button) { choosing = true }.padding(vertical = K.gap1))
+                            if (m.kind == RavPass.Kind.OTHER) Passengers(guests, if (guestsBlocked) 0 else Payer.settings?.guestsMax ?: 10) { guests = it }
+                            FareNotes(quote)
+                        }) {
+                            StationPrice(m, st, quote)
+                            PayButton(if (m == StationMode.TRAIN) T("Create entry ticket", "יצירת כרטיס כניסה")
+                                else T("Validate ride and charge me", "צרו לי כרטיס נסיעה וחייבו אותי בתשלום"), busy) {
+                                if (m == StationMode.TRAIN) confirmEntry = true else payStation()
+                            }
+                            CancelLink { backOut() }
+                        }
+                    }
+                }
+                PayStage.EXIT -> {
+                    val e = exitStation
+                    when {
+                        choosing -> PayStep {
+                            Text(T("Exit station", "תחנת יציאה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                            entranceStation?.let { s ->
+                                Column(Modifier.fillMaxWidth().panel(K.rCard).clickable(role = Role.Button) { exitAtPosition(s.lat to s.lon) }
+                                    .padding(horizontal = K.gap4, vertical = K.gap3)) {
+                                    Text(s.name, fontSize = 15.sp, color = K.text)
+                                    Text(T("Where you entered: leaving here closes the ride with no distance travelled",
+                                        "התחנה שבה נכנסתם: יציאה כאן סוגרת את הנסיעה בלי מרחק נסיעה"), fontSize = 12.sp, color = K.dim)
                                 }
+                            }
+                            StationList(StationMode.TRAIN, lastFix) { exitAtPosition(it) }
+                            CancelLink { backOut() }
+                        }
+                        e == null -> LoadingBlock(T("Finding your station…", "מאתרים את התחנה…"))
+                        else -> PayStep {
+                            Text(T("Exit station", "תחנת יציאה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                            StopCard(T("Exit station", "תחנת יציאה"), e.stop?.name ?: T("Not found", "לא נמצאה"))
+                            Text(T("Not this station? Choose it", "לא התחנה הזו? בחרו אותה"), fontSize = 14.sp, color = K.accent,
+                                modifier = Modifier.clickable(role = Role.Button) { choosing = true }.padding(vertical = K.gap1))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(T("Estimated fare for this ride:", "המחיר המשוער לנסיעה:"), fontSize = 15.sp, color = K.muted,
+                                    modifier = Modifier.weight(1f))
+                                LtrText(quote?.total?.text ?: "…", 18.sp, K.text, FontWeight.Medium)
                             }
                             PayButton(T("Create exit ticket", "יצירת כרטיס יציאה"), busy) { confirmExit = true }
-                        }
-                        CancelLink { backOut() }
-                    }
-                    PayStage.STATION -> {
-                        val m = stationMode ?: StationMode.TRAIN
-                        val st = step?.station
-                        if (choosing || picks.isNotEmpty()) PayStep {
-                            Text(m.label, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                            if (choosing) StationList(m, lastFix) { chooseStation(m, it) }
-                            else StopPicks(step?.title, picks) { pickStation(it) }
                             CancelLink { backOut() }
-                        } else if (st == null) LoadingBlock(T("Loading…", "טוען…"))
-                        else {
-                            val sum = MoovitPay.summary(stationQuote, st.cost, guests)
-                            PinnedStep(top = {
-                                Text(m.label, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                                StationCard(T("Entry station:", "תחנת כניסה:"), st.name)
-                                Text(T("Not this station? Choose it", "לא התחנה הזו? בחרו אותה"), fontSize = 14.sp, color = K.accent,
-                                    modifier = Modifier.clickable(role = Role.Button) { choosing = true }.padding(vertical = K.gap1))
-                                Passengers(null, sum, canAdd = true, onAdd = { picking = true }) { guests = 0 }
-                            }) {
-                                Total(sum, busy) {
-                                    val at = stationAt ?: return@Total
-                                    run {
-                                        val bought = Payer.purchase {
-                                            Payer.call { MoovitPay.enter(it, st, at, m.routeType, sum.count, picked = origin != 0) }
-                                        }
-                                        val key = bought.first().ref
-                                        runCatching {
-                                            bought.map { it.ref }.distinct().forEach { ref ->
-                                                Payer.noteRide(ref, Payer.Ride("", at.first, at.second, System.currentTimeMillis(), key, mode = m.routeType))
-                                            }
-                                        }
-                                        runCatching { Payer.refresh() }
-                                        fresh = bought; shownKey = key
-                                        forTrip(key)
-                                        clearStation(); guests = 0
-                                    }
+                        }
+                    }
+                }
+                PayStage.HOME -> PayStep {
+                    Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(K.rCard)).background(K.surface4),
+                        contentAlignment = Alignment.Center) {
+                        if (stage == PayStage.HOME && openEntrance == null && !busy && !Payer.purchasing && !Payer.payingLater) {
+                            when {
+                                !cameraAllowed -> Column(Modifier.padding(K.gap4), verticalArrangement = Arrangement.spacedBy(K.gap3)) {
+                                    Note(T("Allow camera access to scan the bus QR code.", "אפשרו גישה למצלמה כדי לסרוק את קוד ה-QR באוטובוס."))
+                                    AddButton(T("Allow camera", "אישור גישה למצלמה")) { scan() }
                                 }
-                                CancelLink { backOut() }
+                                scanFailed -> AddButton(T("Scan again", "סריקה מחדש"), modifier = Modifier.padding(K.gap4)) {
+                                    scanFailed = false; error = null
+                                }
+                                cameraBroken -> Note(T(
+                                    "The camera wouldn't start. Close other apps using it and open this page again.",
+                                    "המצלמה לא נפתחה. סגרו אפליקציות אחרות שמשתמשות בה ופתחו את הדף שוב.",
+                                ), modifier = Modifier.padding(K.gap4))
+                                else -> QrScanner(Modifier.matchParentSize(), onFail = { cameraBroken = true }) { qr ->
+                                    beforeNew { onScanned(qr) }
+                                }
                             }
                         }
                     }
-                    PayStage.HOME -> PayStep {
-                        Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(K.rCard)).background(K.surface4),
-                            contentAlignment = Alignment.Center) {
-                            if (stage == PayStage.HOME && openEntrance == null && !busy && !Payer.purchasing && !Payer.payingLater) {
-                                when {
-                                    !cameraAllowed -> Column(Modifier.padding(K.gap4), verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-                                        Note(T("Allow camera access to scan the bus QR code.", "אפשרו גישה למצלמה כדי לסרוק את קוד ה-QR באוטובוס."))
-                                        AddButton(T("Allow camera", "אישור גישה למצלמה")) { scan() }
-                                    }
-                                    scanFailed -> AddButton(T("Scan again", "סריקה מחדש"), modifier = Modifier.padding(K.gap4)) {
-                                        scanFailed = false; error = null
-                                    }
-                                    cameraBroken -> Note(T(
-                                        "The camera wouldn't start. Close other apps using it and open this page again.",
-                                        "המצלמה לא נפתחה. סגרו אפליקציות אחרות שמשתמשות בה ופתחו את הדף שוב.",
-                                    ), modifier = Modifier.padding(K.gap4))
-                                    else -> QrScanner(Modifier.matchParentSize(), onFail = { cameraBroken = true }) { qr ->
-                                        beforeNew { onScanned(qr) }
-                                    }
-                                }
-                            }
+                    Note(T("Scan the QR code by the driver or the doors.", "סורקים את הברקוד שליד הנהג או הדלתות."), color = K.muted)
+                    Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+                        Text(T("At a station", "בתחנה"), fontSize = 14.sp, color = K.muted)
+                        Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+                            StationMode.entries.forEach { m -> Chip(m.label, false) { beforeNew { startStation(m) } } }
                         }
-                        Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
-                            Text(T("At a station", "בתחנה"), fontSize = 14.sp, color = K.muted)
-                            Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                                StationMode.entries.forEach { m -> Chip(m.label, false) { beforeNew { startStation(m) } } }
-                            }
-                        }
-                        if (!linked) {
-                            Note(T(
-                                "Your Moovit account isn't connected to Kav any more, for example after paying in " +
-                                    "Moovit's app. Sign in again to bring it back.",
-                                "חשבון ה-Moovit שלכם כבר לא מחובר ל-Kav, למשל אחרי תשלום באפליקציה של Moovit. " +
-                                    "התחברו מחדש כדי להחזיר אותו.",
-                            ), color = K.problem)
-                            AddButton(T("Sign in again", "התחברות מחדש")) { Payer.signOut() }
-                        }
+                    }
+                    if (!located) Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+                        Note(T("Kav needs your location to pay. HopOn gets it only at the moment you scan or pay, as in its own app.",
+                            "Kav צריכה את המיקום שלכם כדי לשלם. הופ-און מקבלת אותו רק ברגע הסריקה או התשלום, כמו באפליקציה שלה."),
+                            color = K.problem)
+                        AddButton(T("Allow location", "אישור גישה למיקום")) { askLocation.launch(LOCATION_PERMISSIONS) }
                     }
                 }
             }
         }
-        if (picking) GuestsSheet(guests, onDismiss = { picking = false }) { guests = it; picking = false }
-        if (adding != null && stage == PayStage.RIDE) AddSheet(again, addGuests, busy, addError, added,
-            onGuests = { addGuests = it }, onDismiss = { stopAdding() }) { buyAdded() }
     }
 
     openEntrance?.let { t ->
-        MoovitDialog(
+        PayDialog(
             T("Important!", "חשוב!"),
-            endTrainRide, T("End active ride", "סיום הנסיעה הפעילה"), onDismiss = { openEntrance = null },
+            T("Your train ride is still open. End it at your exit station before paying for a new ride.",
+                "הנסיעה ברכבת עדיין פתוחה. סיימו אותה בתחנת היציאה לפני תשלום על נסיעה חדשה."),
+            T("End the train ride", "סיום הנסיעה ברכבת"), onDismiss = { openEntrance = null },
         ) { openEntrance = null; startExit(t) }
     }
-    if (confirmExit) MoovitDialog(
+    // HopOn's app stops here when the same company was paid for minutes ago: a new ride needs a new ticket, and others
+    // riding along can't join a ticket already made.
+    again?.let { b ->
+        PayDialog(
+            T("Hold on!", "רגע!"),
+            if (b.agencyId == "22") T(
+                "You already have a light rail ride from the last few minutes, on the home screen. If you've changed trains since, make a new ticket. Others riding with you can't be added to a ticket already made; next time, choose how many before paying.",
+                "כבר יש לכם נסיעה ברכבת הקלה מהדקות האחרונות, במסך הבית. אם החלפתם רכבת מאז, צרו כרטיס חדש. אי אפשר לצרף נוסעים לכרטיס שכבר נוצר; בפעם הבאה בחרו כמה נוסעים לפני התשלום.")
+            else T(
+                "You paid for a ride with this company in the last few minutes; the ticket is on the home screen. If you've changed buses since, make a new ticket. Others riding with you can't be added to a ticket already made; next time, choose how many before paying.",
+                "כבר שילמתם על נסיעה עם החברה הזו בדקות האחרונות, והכרטיס במסך הבית. אם החלפתם אוטובוס מאז, צרו כרטיס חדש. אי אפשר לצרף נוסעים לכרטיס שכבר נוצר; בפעם הבאה בחרו כמה נוסעים לפני התשלום."),
+            T("Make a new ticket", "ליצור כרטיס חדש"), no = T("Got it", "הבנתי"),
+            onDismiss = { again = null; backOut() },
+        ) { again = null; Payer.forgetPaidBus(); look { follow(b) } }
+    }
+    if (confirmEntry) PayDialog(
+        T("Start a train ride?", "להתחיל נסיעה ברכבת?"),
+        T("Rav-Pass can't cancel a train entrance. Once created, the ride ends only with an exit ticket at your exit " +
+            "station, or through Rav-Pass's customer service.",
+            "רב-פס לא יכולה לבטל כרטיס כניסה לרכבת. אחרי שנוצר, הנסיעה מסתיימת רק בכרטיס יציאה בתחנת היציאה, " +
+                "או דרך שירות הלקוחות של רב-פס."),
+        T("Create entry ticket", "יצירת כרטיס כניסה"), onDismiss = { confirmEntry = false },
+    ) { confirmEntry = false; payStation() }
+    if (confirmExit) PayDialog(
         T("Is this your exit station?", "זו תחנת היציאה שלכם?"),
-        T("Choose 'Yes' to create an exit ticket, valid only for this station",
-            "בחרו 'כן' כדי ליצור כרטיס יציאה, שתקף רק בתחנה הזו"),
+        T("The exit ticket is valid only at this station.", "כרטיס היציאה תקף רק בתחנה הזו."),
         T("Yes, this is my station", "כן, זו התחנה שלי"), onDismiss = { confirmExit = false },
     ) {
         confirmExit = false
         val t = exiting
-        val at = exitAt
-        val e = exit
-        if (t != null && at != null && e != null) run {
-            val out = Payer.purchase(allowOpenTrain = true) { Payer.call { MoovitPay.exit(it, at, t.fromStopId, t.ref, manualExit) } }
-            runCatching { Payer.refresh() }
-            fresh = out
-            shownKey = out.firstOrNull()?.let { Payer.rideKey(it) } ?: Payer.rideKey(t)
+        val e = exitStation
+        if (t != null && e != null) run {
+            val out = Payer.purchase(e.qr, prepare = { Payer.call { RavPass.exitQuote(it, e, t) } }) { Payer.call { RavPass.exit(it, e, t.id) } }
+            shownKey = out.id.toString()
             clearStation()
-        }
-    }
-    cancelling?.let { t ->
-        MoovitDialog(
-            T("Cancel your purchase?", "לבטל את הרכישה?"),
-            T("Your entrance tickets will be canceled and unusable. You won't be charged.",
-                "כרטיסי הכניסה שלכם יבוטלו ולא יהיה אפשר להשתמש בהם. לא תחויבו."),
-            T("Yes, cancel (0.00 ILS)", "כן, לבטל (0.00 ₪)"),
-            no = T("No, keep ticket", "לא, להשאיר את הכרטיס"), onDismiss = { cancelling = null },
-        ) {
-            cancelling = null
-            run {
-                val at = Payer.ride(t.ref)?.takeIf { !it.lat.isNaN() }?.let { it.lat to it.lon } ?: model.payAt(ctx)
-                val out = try {
-                    Payer.purchase(allowOpenTrain = true) {
-                        Payer.call { MoovitPay.exit(it, at, t.fromStopId, t.ref, manual = false, cancel = true) }
-                    }
-                } catch (e: CancellationException) { throw e } catch (e: Exception) { shownKey = null; throw e }
-                (listOf(t) + out).forEach { Payer.noteCancelled(it) }
-                val key = Payer.rideKey(t)
-                model.activeJourney?.let { j ->
-                    val legs = j.paid.filterValues { it == key }.keys
-                    if (legs.isNotEmpty()) model.activeJourney = j.copy(paid = j.paid - legs)
-                }
-                runCatching { Payer.refresh() }
-                shownKey = null; fresh = emptyList()
-                if (returnOnClose) leave()
-            }
         }
     }
 }
 
-private enum class PayStage { HOME, FARE, STATION, EXIT, RIDE }
+// HopOn's words on how the fare is reached, under the price.
+@Composable
+private fun FareNotes(q: RavPass.Quote?) {
+    val notes = q?.notes?.takeIf { it.isNotEmpty() } ?: return
+    Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
+        Text(T("Fare information:", "כיצד המחיר מחושב?"), fontSize = 13.sp, color = K.dim)
+        notes.forEach { Note(it, color = K.muted) }
+    }
+}
+
+// What a ride from the station costs: HopOn's price when it gives one, and for the train the most it can cost until the
+// exit station sets it.
+@Composable
+private fun StationPrice(m: StationMode, st: RavPass.Station, q: RavPass.Quote?) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
+        // A train entrance is priced at nothing until its exit station is known.
+        q?.total?.takeIf { m != StationMode.TRAIN || it.agorot > 0 }?.let { total ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(q.km?.let { T("Up to $it km ride price", "מחיר לנסיעה עד $it ק\"מ") } ?: T("Ride price", "מחיר הנסיעה"),
+                    fontSize = 15.sp, color = K.muted, modifier = Modifier.weight(1f))
+                LtrText(total.text, 22.sp, K.text, FontWeight.Medium)
+            }
+        }
+        if (m == StationMode.TRAIN) Note(st.maxPrice?.let {
+            T("The fare is set by your exit station, up to ${it.text}.", "המחיר נקבע לפי תחנת היציאה, עד ${it.text}.")
+        } ?: T("The fare is set by your exit station.", "המחיר נקבע לפי תחנת היציאה."))
+    }
+}
 
 @Composable
 private fun PayStep(content: @Composable ColumnScope.() -> Unit) {
@@ -1354,8 +1648,8 @@ private fun PayStep(content: @Composable ColumnScope.() -> Unit) {
     )
 }
 
-// A step whose end stays at the bottom of the screen, as Moovit's fare summary keeps its total and button there. Only
-// what is above it scrolls, so the fare list opening or closing moves that part alone.
+// A step whose end stays at the bottom of the screen, the price and the pay button. Only what is above it scrolls, so
+// the stop list opening or closing moves that part alone.
 @Composable
 private fun PinnedStep(top: @Composable ColumnScope.() -> Unit, bottom: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxSize().padding(bottom = K.gap6 + LocalBottomBarInset.current)) {
@@ -1378,79 +1672,173 @@ private fun CancelLink(onClick: () -> Unit) {
         modifier = Modifier.clickable(role = Role.Button, onClick = onClick).padding(K.gap2))
 }
 
-// Moovit's fare summary (MotPricesSummaryFragment), in Moovit's words: my ticket and the other passengers, whose cross
-// takes them off, then the button that adds them. subtitle is Moovit's line under each passenger on a bus.
-@Composable
-private fun Passengers(subtitle: String?, s: MoovitPay.Summary, canAdd: Boolean, onAdd: () -> Unit, onClear: () -> Unit) {
-    Column(Modifier.fillMaxWidth().animateContentSize(), verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-        PassengerRow(T("My ticket", "הכרטיס שלי"), subtitle, s.me, null)
-        if (s.guests > 0) PassengerRow(T("Other passenger", "נוסע נוסף"), subtitle, s.other, s.guests, onClear)
-        if (canAdd) AddButton(
-            if (s.count > 1) T("Edit passengers", "עריכת נוסעים") else T("+ Add a passenger", "+ הוספת נוסע"), onClick = onAdd,
-        )
-    }
-}
+// The agency's colour, or Kav's accent.
+private fun agencyColor(hex: String?): Color =
+    runCatching { Color(android.graphics.Color.parseColor(if (hex!!.startsWith("#")) hex else "#$hex")) }.getOrDefault(K.accent)
 
-// The summary's end, kept at the bottom of the screen as Moovit keeps it: the estimated total and the validate button.
+// The line the code belongs to, as HopOn names it: its number and where it goes.
 @Composable
-private fun Total(s: MoovitPay.Summary, busy: Boolean, onPay: () -> Unit) {
-    s.total?.let { total ->
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                Text(T("Total (estimate):", "סה\"כ (הערכה):"), fontSize = 15.sp, color = K.muted)
-                LtrText("X ${s.count}", 13.sp, K.dim)
-                Spacer(Modifier.weight(1f))
-                PriceText(total, s.full, 22.sp)
-            }
-            Note(T("Final fare calculated at the end of the day", "המחיר הסופי מחושב בסוף היום"))
+private fun LineCard(b: RavPass.Bus) {
+    Row(
+        Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap4),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(K.gap3),
+    ) {
+        Box(Modifier.clip(RoundedCornerShape(K.rControl)).background(agencyColor(b.color)).padding(horizontal = K.gap3, vertical = K.gap1)) {
+            LtrText(b.line.ifBlank { "?" }, 18.sp, Color.White, FontWeight.SemiBold)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(T("Towards", "לכיוון"), fontSize = 12.sp, color = K.dim)
+            Text(b.towards.ifBlank { "-" }, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
-    PayButton(validateText(s), busy, onClick = onPay)
 }
 
-// Moovit's validate button: free when the total is nothing, and counted when others ride along.
-private fun validateText(s: MoovitPay.Summary): String {
-    val free = s.total?.agorot == 0L
-    return when {
-        free && s.count == 1 -> T("Validate - no charge", "תיקוף - ללא חיוב")
-        free -> T("Free rides for ${s.count} passengers", "נסיעות חינם ל-${s.count} נוסעים")
-        s.count == 1 -> T("Pay for my ride", "תשלום על הנסיעה שלי")
-        else -> T("Pay for ${s.count} passengers", "תשלום עבור ${s.count} נוסעים")
+@Composable
+private fun StopCard(label: String, name: String) {
+    Column(Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap4), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
+        Text(label, fontSize = 12.sp, color = K.dim)
+        Text(name, fontSize = 15.sp, color = K.text)
     }
 }
 
-// One passenger card of Moovit's summary, with the first discount reason Moovit gives above it; onRemove adds a cross.
+// The fare's reach, one line that opens into HopOn's others, as Moovit's fare picker: "Up to 15 km · ₪8".
 @Composable
-private fun PassengerRow(title: String, subtitle: String?, cost: MoovitPay.Cost?, count: Int?, onRemove: (() -> Unit)? = null) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-        cost?.reasons?.firstOrNull()?.let { Text(it, fontSize = 12.sp, color = K.accent) }
+private fun BandDropdown(bands: List<RavPass.Band>, chosen: Int, onChoose: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val turn by animateFloatAsState(if (open) 180f else 0f, label = "bandChevron")
+    val current = bands.firstOrNull { it.km == chosen } ?: bands.first()
+    Column(Modifier.fillMaxWidth().panel(K.rCard)) {
         Row(
-            Modifier.fillMaxWidth().panel(K.rCard).padding(horizontal = K.gap4, vertical = K.gap3),
+            Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.DropdownList) { open = !open }
+                .padding(horizontal = K.gap4, vertical = K.gap3),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(K.gap3),
         ) {
             Column(Modifier.weight(1f)) {
-                Text(title, fontSize = 15.sp, color = K.text)
-                subtitle?.let { Text(it, fontSize = 13.sp, color = K.dim) }
+                Text(T("Fare", "תעריף"), fontSize = 12.sp, color = K.dim)
+                Text(T("Up to ${current.km} km", "עד ${current.km} ק\"מ"), fontSize = 15.sp, color = K.text)
             }
-            cost?.let { PriceText(it.price, it.full, 15.sp) }
-            count?.let { LtrText("X $it", 13.sp, K.muted) }
-            onRemove?.let {
-                Box(
-                    Modifier.size(28.dp).clip(RoundedCornerShape(K.rPill)).background(K.plateStrong)
-                        .clickable(role = Role.Button, onClickLabel = T("Remove", "הסרה"), onClick = it),
-                    contentAlignment = Alignment.Center,
-                ) { Text("✕", fontSize = 12.sp, color = K.muted) }
+            LtrText(current.price.text, 15.sp, K.text, FontWeight.Medium)
+            Canvas(Modifier.size(14.dp).graphicsLayer { rotationZ = turn }) {
+                val w = size.width
+                drawLine(K.muted, Offset(w * .2f, w * .38f), Offset(w * .5f, w * .66f), w * .12f, StrokeCap.Round)
+                drawLine(K.muted, Offset(w * .5f, w * .66f), Offset(w * .8f, w * .38f), w * .12f, StrokeCap.Round)
+            }
+        }
+        androidx.compose.animation.AnimatedVisibility(open) {
+            Column {
+                bands.filter { it.km != current.km }.forEach { band ->
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(role = Role.Button) { onChoose(band.km); open = false }
+                            .padding(horizontal = K.gap4),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(T("Up to ${band.km} km", "עד ${band.km} ק\"מ"), fontSize = 15.sp, color = K.muted, modifier = Modifier.weight(1f))
+                        LtrText(band.price.text, 15.sp, K.text)
+                    }
+                }
             }
         }
     }
 }
 
+// HopOn's suggested rides on a bus it couldn't place the rider on, as its app lists them: the line, from where, to where.
 @Composable
-private fun PriceText(price: MoovitPay.Price, full: MoovitPay.Price?, size: TextUnit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-        if (full != null && full.agorot > price.agorot) LtrText(full.text, size * 0.75f, K.dim, decoration = TextDecoration.LineThrough)
-        LtrText(price.text, size, K.text, FontWeight.Medium)
+private fun RidePicks(picks: List<RavPass.Suggestion>, onPick: (RavPass.Suggestion) -> Unit) {
+    Text(T("Which ride is this?", "באיזו נסיעה מדובר?"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+    Column(Modifier.fillMaxWidth().panel(K.rCard)) {
+        picks.forEach { s ->
+            Row(
+                Modifier.fillMaxWidth().clickable(role = Role.Button) { onPick(s) }.padding(horizontal = K.gap4, vertical = K.gap3),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(K.gap3),
+            ) {
+                LtrText(s.line.ifBlank { "?" }, 17.sp, K.text, FontWeight.SemiBold)
+                Column(Modifier.weight(1f)) {
+                    Text(listOf(s.from.name, s.fromCity).filter { it.isNotBlank() }.joinToString(", "), fontSize = 14.sp, color = K.text,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    s.to?.let { end ->
+                        Text("→ " + listOf(end.name, s.toCity).filter { it.isNotBlank() }.joinToString(", "), fontSize = 13.sp,
+                            color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A stop on the line: one line that opens into the stops to choose from.
+@Composable
+private fun StopDropdown(label: String, stops: List<RavPass.Stop>, chosen: RavPass.Stop?, onChoose: (RavPass.Stop) -> Unit) {
+    var open by remember { mutableStateOf(chosen == null) }
+    val turn by animateFloatAsState(if (open) 180f else 0f, label = "stopChevron")
+    Column(Modifier.fillMaxWidth().panel(K.rCard)) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.DropdownList) { open = !open }
+                .padding(horizontal = K.gap4, vertical = K.gap3),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(K.gap3),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(label, fontSize = 12.sp, color = K.dim)
+                Text(chosen?.name ?: T("Choose your stop", "בחרו את התחנה שלכם"), fontSize = 15.sp,
+                    color = if (chosen == null) K.accent else K.text)
+            }
+            Canvas(Modifier.size(14.dp).graphicsLayer { rotationZ = turn }) {
+                val w = size.width
+                drawLine(K.muted, Offset(w * .2f, w * .38f), Offset(w * .5f, w * .66f), w * .12f, StrokeCap.Round)
+                drawLine(K.muted, Offset(w * .5f, w * .66f), Offset(w * .8f, w * .38f), w * .12f, StrokeCap.Round)
+            }
+        }
+        androidx.compose.animation.AnimatedVisibility(open) {
+            Column {
+                stops.forEach { s ->
+                    Text(s.name, fontSize = 15.sp, color = if (s.code == chosen?.code) K.accent else K.muted,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Button) { onChoose(s); open = false }
+                            .padding(horizontal = K.gap4, vertical = K.gap3))
+                }
+            }
+        }
+    }
+}
+
+// The number of passengers, as HopOn's app counts them: the rider and up to `max` more.
+@Composable
+private fun Passengers(guests: Int, max: Int, onChange: (Int) -> Unit) {
+    Column(Modifier.fillMaxWidth().animateContentSize(), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+        Row(
+            Modifier.fillMaxWidth().panel(K.rCard).padding(horizontal = K.gap4, vertical = K.gap2),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(K.gap3),
+        ) {
+            Text(T("Number of passengers", "מספר נוסעים"), fontSize = 15.sp, color = K.text, modifier = Modifier.weight(1f))
+            if (max > 0) Chip("−", false) { if (guests > 0) onChange(guests - 1) }
+            androidx.compose.animation.AnimatedContent(guests + 1, label = "passengers") { Text("$it", fontSize = 16.sp, color = K.text) }
+            if (max > 0) Chip("+", false) { if (guests < max) onChange(guests + 1) }
+        }
+        if (guests > 0) Note(T("Occasional passengers pay full price, according to the Ministry of Transportation",
+            "נוסעים מזדמנים משלמים מחיר מלא, בהתאם להנחיית משרד התחבורה"))
+    }
+}
+
+// HopOn's price for the ride: what it costs everyone, under the distance its fare reaches. failed: why HopOn didn't
+// price it.
+@Composable
+private fun PriceLine(q: RavPass.Quote?, chosen: Boolean, failed: String? = null) {
+    val ctx = LocalContext.current
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
+        if (failed != null && q == null) Note(failed, color = K.critical)
+        else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+            Text(q?.km?.let { T("Up to $it km ride price", "מחיר לנסיעה עד $it ק\"מ") }
+                ?: if (chosen) T("Pricing…", "מחשבים מחיר…") else T("Choose your stop to see the price", "בחרו תחנה כדי לראות את המחיר"),
+                fontSize = 15.sp, color = K.muted, modifier = Modifier.weight(1f))
+            q?.total?.let { LtrText(it.text, 22.sp, K.text, FontWeight.Medium) }
+        }
+        Payer.settings?.pricesUrl?.let { url ->
+            Text(T("How is the price calculated?", "כיצד המחיר מחושב?"), fontSize = 13.sp, color = K.accent,
+                modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
+        }
     }
 }
 
@@ -1469,88 +1857,8 @@ private fun AddButton(text: String, detail: String? = null, modifier: Modifier =
     }
 }
 
-// Moovit's station header on its entry and exit screens: "Entry station:" and the station's name.
 @Composable
-private fun StationCard(label: String, name: String) {
-    Column(Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap5), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-        Text(label, fontSize = 13.sp, color = K.dim)
-        Text(name, fontSize = 17.sp, color = K.text)
-    }
-}
-
-@Composable
-private fun GuestStepper(n: Int, least: Int, onChange: (Int) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().panel(K.rCard).padding(horizontal = K.gap4, vertical = K.gap2),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(K.gap3),
-    ) {
-        Text(T("Other passenger", "נוסע נוסף"), fontSize = 15.sp, color = K.text, modifier = Modifier.weight(1f))
-        Chip("−", false) { if (n > least) onChange(n - 1) }
-        androidx.compose.animation.AnimatedContent(n, label = "guests") { Text("$it", fontSize = 16.sp, color = K.text) }
-        Chip("+", false) { if (n < 8) onChange(n + 1) }
-    }
-}
-
-@Composable
-private fun GuestsSheet(guests: Int, onDismiss: () -> Unit, onDone: (Int) -> Unit) {
-    var n by remember { mutableIntStateOf(guests) }
-    BottomSheet(onDismiss) { close ->
-        Text(T("Guests", "אורחים"), fontSize = 13.sp, color = K.dim)
-        Spacer(Modifier.height(K.gap2))
-        GuestStepper(n, 0) { n = it }
-        Spacer(Modifier.height(K.gap4))
-        PayButton(T("Continue", "המשך"), false) { close { onDone(n) } }
-    }
-}
-
-// Passengers added to a ride are bought on its own bus code or station again: Moovit's prices for my ticket and each
-// guest's, and the purchase for that many riders.
-private class Again(val quote: MoovitPay.Quote?, val cost: MoovitPay.Cost?, val buy: suspend (Int) -> List<MoovitPay.Ticket>)
-
-// Adding passengers in place, over the ride. Moovit buys my own ticket again with every purchase; inside the ride's free
-// window that costs nothing, so it is shown only when it costs something. The math is Moovit's fare summary.
-@Composable
-private fun AddSheet(
-    again: Again?, guests: Int, busy: Boolean, error: String?, done: Boolean,
-    onGuests: (Int) -> Unit, onDismiss: () -> Unit, onBuy: () -> Unit,
-) {
-    BottomSheet(onDismiss, scrolls = true) { close ->
-        if (done) LaunchedEffect(Unit) { close(onDismiss) }
-        Text(T("Add passengers", "הוספת נוסעים"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(K.gap3))
-        GuestStepper(guests, 1) { if (!busy && !Payer.purchasing) onGuests(it) }
-        Spacer(Modifier.height(K.gap3))
-        val s = again?.let { MoovitPay.summary(it.quote, it.cost, guests) }
-        val total = s?.total
-        if (s == null) { if (error == null) Note(T("Pricing…", "מחשבים מחיר…")) }
-        else Column(verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-            PassengerRow(T("Other passenger", "נוסע נוסף"), null, s.other, guests)
-            val mine = s.me?.takeIf { it.price.agorot > 0 }
-            if (mine != null) {
-                PassengerRow(T("My ticket", "הכרטיס שלי"), null, mine, null)
-                Note(T("Moovit includes your own ticket again with this purchase.",
-                    "Moovit כוללת מחדש גם את הכרטיס שלכם ברכישה הזו."))
-            }
-            total?.let {
-                // The full fare struck beside it is for the tickets listed here.
-                val full = if (mine != null) s.full else s.other?.full?.let { f -> MoovitPay.Price(f.agorot * guests, f.code) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(T("Total (estimate):", "סה\"כ (הערכה):"), fontSize = 15.sp, color = K.muted, modifier = Modifier.weight(1f))
-                    PriceText(it, full, 22.sp)
-                }
-            }
-            Note(T("Final fare calculated at the end of the day", "המחיר הסופי מחושב בסוף היום"))
-        }
-        error?.let { Spacer(Modifier.height(K.gap2)); Note(it, color = K.critical) }
-        Spacer(Modifier.height(K.gap4))
-        val what = if (guests == 1) T("Add a passenger", "הוספת נוסע") else T("Add $guests passengers", "הוספת $guests נוסעים")
-        PayButton(total?.let { "$what · ${it.text}" } ?: what, busy || total == null, onClick = onBuy)
-    }
-}
-
-@Composable
-private fun MoovitDialog(
+private fun PayDialog(
     title: String, text: String, yes: String, no: String = T("Cancel", "ביטול"), onDismiss: () -> Unit, onYes: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -1565,160 +1873,54 @@ private fun MoovitDialog(
     }
 }
 
-// Moovit's line under each passenger on a bus: the fare's region and how far it reaches.
-private fun reach(f: MoovitPay.Fare): String {
-    val km = km(f.radius.toDouble())
-    return listOfNotNull(f.to, T("Up to a $km km ride", "נסיעה של עד $km ק\"מ")).joinToString(" · ")
-}
-
-// The line Moovit puts above a ticket's QR, by mode.
-private fun qrNote(t: MoovitPay.Ticket): String = when (t.mode) {
-    7 -> if (t.needsExit) T("Place the QR code on the scanner at the gate", "הניחו את קוד ה-QR על הסורק בשער")
-        else T("Please scan this code, even if the exit gate is open, to set the ride fare and avoid additional charges.",
-            "סרקו את הקוד גם אם שער היציאה פתוח, כדי לקבוע את מחיר הנסיעה ולהימנע מחיובים נוספים.")
-    5, 6, 8 -> T("Please note this QR code can be used to enter this station only", "שימו לב: קוד ה-QR הזה תקף לכניסה לתחנה הזו בלבד")
-    else -> T("Present this QR code for review, whenever needed", "הציגו את קוד ה-QR הזה לביקורת, בכל פעם שיידרש")
-}
-
-// The fare, one line that opens into the others; the 15 km fare is picked when the code is scanned.
-@Composable
-private fun FareDropdown(fares: List<MoovitPay.Fare>, chosen: MoovitPay.Fare?, onChoose: (MoovitPay.Fare) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    val turn by animateFloatAsState(if (open) 180f else 0f, label = "fareChevron")
-    Column(Modifier.fillMaxWidth().panel(K.rCard)) {
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.DropdownList) { open = !open }
-                .padding(horizontal = K.gap4, vertical = K.gap3),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(K.gap3),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(T("Fare", "תעריף"), fontSize = 12.sp, color = K.dim)
-                Text(chosen?.let { fareLabel(it) } ?: T("Choose a fare", "בחרו תעריף"), fontSize = 15.sp, color = K.text)
-            }
-            chosen?.let { LtrText(it.price.text, 15.sp, K.text, FontWeight.Medium) }
-            Canvas(Modifier.size(14.dp).graphicsLayer { rotationZ = turn }) {
-                val w = size.width
-                drawLine(K.muted, Offset(w * .2f, w * .38f), Offset(w * .5f, w * .66f), w * .12f, StrokeCap.Round)
-                drawLine(K.muted, Offset(w * .5f, w * .66f), Offset(w * .8f, w * .38f), w * .12f, StrokeCap.Round)
-            }
-        }
-        androidx.compose.animation.AnimatedVisibility(open) {
-            Column {
-                fares.filter { it !== chosen }.forEach { f ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(role = Role.Button) { onChoose(f); open = false }
-                            .padding(horizontal = K.gap4),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(fareLabel(f), fontSize = 15.sp, color = K.muted, modifier = Modifier.weight(1f))
-                        LtrText(f.price.text, 15.sp, K.text)
-                    }
-                }
-            }
-        }
-    }
-}
-
-internal fun ticketTime(t: MoovitPay.Ticket): String {
-    val f = clockFormat()
-    return T("Bought ", "נקנה ב-") + f.format(java.util.Date(t.boughtUtc))
-}
-
-private fun clock(ms: Long): String {
-    val s = (ms / 1000).coerceAtLeast(0)
-    return String.format(java.util.Locale.US, "%d:%02d", s / 60, s % 60)
-}
-
-private fun km(m: Double): String =
-    if (m % 1000.0 == 0.0) "${(m / 1000).toInt()}" else String.format(java.util.Locale.US, "%.1f", m / 1000)
+private fun clockOf(ms: Long): String = clockFormat().format(java.util.Date(ms))
 
 private val good get() = if (K.light) Color(0xFF2E7D4F) else Color(0xFF8FD8A0)
 
-// "90:00/42:15": the free-ride window Moovit gives and the time left in it.
-internal fun rideTime(window: MoovitPay.Window?, now: Long): AnnotatedString = buildAnnotatedString {
-    withStyle(SpanStyle(color = K.dim)) {
-        if (window != null && window.untilUtc > now) {
-            append(clock(window.untilUtc - window.fromUtc))
-            append("/")
-            append(clock(window.untilUtc - now))
-        } else append(if (window == null) T("No free transfers", "אין מעברים בחינם")
-            else T("Transfer expired", "זמן המעבר פג"))
+// "Line 18 · Tel Aviv": a ticket's line and where it goes.
+internal fun ticketName(t: RavPass.Ticket): String =
+    listOf(t.line.takeIf { it.isNotBlank() }?.let { T("Line $it", "קו $it") }, t.towards.ifBlank { null })
+        .filterNotNull().joinToString(" · ").ifBlank { t.agency.ifBlank { T("Ride", "נסיעה") } }
+
+// Whether a ticket still counts, and until when: a time today, else its day too (a train entrance lasts until tomorrow).
+internal fun ticketStatus(t: RavPass.Ticket, now: Long): String = when {
+    t.valid(now) -> T("Valid until ", "בתוקף עד ") + whenOf(t.validUntilUtc, now)
+    else -> T("No longer valid", "כבר לא בתוקף")
+}
+
+private fun whenOf(ms: Long, now: Long): String {
+    val day = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply { timeZone = ISRAEL }
+    val today = day.format(java.util.Date(now))
+    val tomorrow = day.format(java.util.Date(now + 86_400_000L))
+    return when (day.format(java.util.Date(ms))) {
+        today -> clockOf(ms)
+        tomorrow -> T("tomorrow ", "מחר ב-") + clockOf(ms)
+        else -> java.text.SimpleDateFormat("d.M", java.util.Locale.US).apply { timeZone = ISRAEL }.format(java.util.Date(ms)) + " " + clockOf(ms)
     }
 }
 
-// The account's transfer deadline can end while Moovit still keeps the validation. Preserve the receipt and
-// server-provided QR, but never turn an elapsed transfer countdown into an "Active" label.
-internal fun ticketStatus(t: MoovitPay.Ticket, window: MoovitPay.Window?, now: Long): AnnotatedString {
-    val label = when {
-        Payer.cancelled(t) -> T("Canceled", "בוטל")
-        !t.active -> T("Inactive ticket", "כרטיס לא פעיל")
-        t.anonymous || t.mode == 7 -> T("Active", "בתוקף")
-        else -> null
-    }
-    return if (label != null) buildAnnotatedString { withStyle(SpanStyle(color = K.dim)) { append(label) } }
-    else rideTime(window?.takeIf { t.boughtUtc >= it.fromUtc && t.boughtUtc < it.untilUtc }, now)
-}
-
-// The time on one line, laid out left to right. Wrapped in bidi isolates for Hebrew, Android measured it a
-// few pixels short and pushed its last digit onto a second line.
-@Composable
-private fun TicketStatus(t: MoovitPay.Ticket, window: MoovitPay.Window?, now: Long, size: TextUnit, weight: FontWeight? = null) {
-    Text(ticketStatus(t, window, now), fontSize = size, fontWeight = weight, maxLines = 1, softWrap = false,
-        style = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr))
-}
-
-// Prices and counts the same way, instead of T.ltr's bidi isolates.
+// Prices and counts laid out left to right, also in Hebrew.
 @Composable
 internal fun LtrText(
     text: String, size: TextUnit, color: Color, weight: FontWeight? = null, decoration: TextDecoration? = null,
 ) = Text(text, fontSize = size, color = color, fontWeight = weight, textDecoration = decoration, maxLines = 1,
     softWrap = false, style = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr))
 
-// A ride is named by the distance it was paid for, "15 km"; a station ticket priced by its stations keeps
-// Moovit's title.
-internal fun rideName(t: MoovitPay.Ticket): String =
-    if (t.radius > 0) T("${km(t.radius.toDouble())} km", "${km(t.radius.toDouble())} ק\"מ") else t.title.ifBlank { t.agency }
-
 @Composable
 internal fun rememberNow(): Long = produceState(System.currentTimeMillis()) {
     while (true) { value = System.currentTimeMillis(); delay(1000) }
 }.value
 
-// The tickets bought for one bus or station visit, newest first. Whether a ticket still counts is Moovit's to say:
-// validating a new ride completes the one before it.
-internal class RideGroup(val key: String, val tickets: List<MoovitPay.Ticket>) {
-    val newest get() = tickets.first()
-    val first get() = tickets.last()
-    // A ride cancelled from Kav is over, whatever Moovit's list still says of it.
-    fun live() = tickets.any { it.active && !Payer.cancelled(it) }
-    val cancelled get() = tickets.all { Payer.cancelled(it) }
-
-    // The free-transfer window controls another validation, not whether an existing QR is usable. A train entrance
-    // still needs its exit first. After the window ends, keep the active ticket and offer paying for another ride.
-    fun canPayAgain(window: MoovitPay.Window?, now: Long) = !live() ||
-        (tickets.none { it.active && it.needsExit } && (window == null || now >= window.untilUtc))
-
-    // The tickets to show: those Moovit still lists as active, all of them once the ride is over.
-    val shown get() = tickets.filter { it.active && !Payer.cancelled(it) }.ifEmpty { tickets }
-}
-
-// This benefit can keep running after a validation is replaced or a train entrance is cancelled.
+// The free transfer after a ride, while it lasts.
 @Composable
-private fun TransferWindow(window: MoovitPay.Window?, now: Long) {
-    if (window == null || window.untilUtc <= now) return
-    Text(window.title.ifBlank { T("Free transfers", "מעברים ללא תשלום") }, fontSize = 14.sp, color = K.dim,
+private fun TransferLine(until: Long) {
+    Text(T("Free transfers until ${clockOf(until)}", "מעברים ללא תשלום עד ${clockOf(until)}"), fontSize = 14.sp, color = K.dim,
         modifier = Modifier.fillMaxWidth().padding(K.gap4))
 }
 
-internal fun ridesOf(tickets: List<MoovitPay.Ticket>): List<RideGroup> =
-    tickets.groupBy { Payer.rideKey(it) }.map { (k, v) -> RideGroup(k, v.sortedByDescending { it.boughtUtc }) }
-        .sortedByDescending { it.newest.boughtUtc }
-
 @Composable
-private fun RideRow(r: RideGroup, window: MoovitPay.Window?, now: Long, inset: Dp = K.gap4, onClick: () -> Unit) {
-    val live = r.live()
-    val t = r.first
+private fun TicketRow(t: RavPass.Ticket, now: Long, inset: Dp = K.gap4, onClick: () -> Unit) {
+    val valid = t.valid(now)
     Row(
         Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = inset, vertical = K.gap3),
@@ -1727,16 +1929,16 @@ private fun RideRow(r: RideGroup, window: MoovitPay.Window?, now: Long, inset: D
     ) {
         Canvas(Modifier.size(20.dp)) { drawQr() }
         Column(Modifier.weight(1f)) {
-            Text(rideName(t) + if (r.shown.size > 1) "  ×${r.shown.size}" else "",
-                fontSize = 15.sp, color = if (live) K.text else K.dim)
-            Text(ticketTime(t), fontSize = 13.sp, color = K.dim)
+            Text(ticketName(t) + if (t.guests > 0) "  ×${t.guests + 1}" else "", fontSize = 15.sp,
+                color = if (valid) K.text else K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(T("Bought ", "נקנה ב-") + clockOf(t.boughtUtc), fontSize = 13.sp, color = K.dim)
         }
-        TicketStatus(r.shown.firstOrNull { !it.anonymous } ?: r.shown.first(), window, now, 13.sp)
+        Text(ticketStatus(t, now), fontSize = 13.sp, color = if (valid) good else K.dim, maxLines = 1)
     }
 }
 
-// Under "Pay for a ride" on the home screen: every ride still usable, newest first, then More for the
-// payment history. Moovit is asked again each minute while a ride is live.
+// Under "Pay for a ride" on the home screen: every ticket still valid, newest first, then More for the payment history.
+// HopOn is asked again each minute while the card shows.
 @Composable
 internal fun PayTicketsCard(model: KavModel) {
     LaunchedEffect(Unit) {
@@ -1745,13 +1947,12 @@ internal fun PayTicketsCard(model: KavModel) {
             delay(60_000)
         }
     }
-    val wallet = Payer.wallet
     val now = rememberNow()
-    val live = ridesOf(wallet?.tickets.orEmpty()).filter { it.live() }
+    val live = Payer.tickets.filter { it.valid(now) }
     Column(Modifier.fillMaxWidth().animateContentSize()) {
-        TransferWindow(wallet?.window, now)
-        live.forEachIndexed { i, r ->
-            Box(Modifier.popIn(i, r.key)) { RideRow(r, wallet?.window, now) { Payer.showRef = r.key; model.payOpen = true } }
+        Payer.transferUntil(now)?.let { TransferLine(it) }
+        live.forEachIndexed { i, t ->
+            Box(Modifier.popIn(i, t.id)) { TicketRow(t, now) { Payer.showRef = t.id.toString(); model.payOpen = true } }
         }
         Text(T("More", "עוד"), fontSize = 15.sp, color = K.accent,
             modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { model.payHistoryOpen = true }
@@ -1759,8 +1960,8 @@ internal fun PayTicketsCard(model: KavModel) {
     }
 }
 
-// Asshole mode floating over every screen: a compact rounded popup with the kept purchase, paid with one
-// tap or dropped with the red cross; then "Paid", which opens the ticket. It can be dragged out of the way.
+// Asshole mode floating over every screen: a compact rounded popup with the kept ride, paid with one tap or dropped
+// with the red cross; then "Paid", which opens the ticket. It can be dragged out of the way.
 @Composable
 internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
@@ -1772,7 +1973,7 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
         if (Payer.paidLater == paid) Payer.paidLater = null
     }
     var dropping by remember { mutableStateOf(false) }
-    if (dropping && p != null) MoovitDialog(
+    if (dropping && p != null) PayDialog(
         T("Close quick pay?", "לסגור את התשלום המהיר?"),
         T("To pay for this ride after closing it, you'll have to scan the bus's code again.",
             "כדי לשלם על הנסיעה אחרי הסגירה, תצטרכו לסרוק שוב את הקוד של האוטובוס."),
@@ -1805,8 +2006,8 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap1),
                         modifier = Modifier.padding(end = 26.dp).heightIn(min = 26.dp)) {
                         Canvas(Modifier.size(14.dp)) { drawQr() }
-                        Text(T("Bus", "אוטובוס") + " · " + p.title, fontSize = 13.sp, color = K.text, fontWeight = FontWeight.Medium,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(T("Bus", "אוטובוס") + " · " + T("Line ${p.line}", "קו ${p.line}"), fontSize = 13.sp, color = K.text,
+                            fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Payer.laterError?.let {
                         Text(it, fontSize = 11.sp, lineHeight = 13.sp, color = K.critical,
@@ -1816,7 +2017,7 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
                         Modifier.fillMaxWidth().heightIn(min = 36.dp).clip(RoundedCornerShape(K.rPill))
                             .background(if (Payer.payingLater) K.surface4 else K.accent)
                             .clickable(enabled = !Payer.payingLater, role = Role.Button) {
-                                Payer.payLater({ key, leg, journey -> TripService.notePaid(ctx, key, leg, journey) })
+                                Payer.payLater(ctx, { key, leg, journey -> TripService.notePaid(ctx, key, leg, journey) })
                             },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -1848,12 +2049,12 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
     }
 }
 
-// What a trip card's pay row asks Pay for: its leg, the station mode (none for a bus, paid by its code) and the
-// trip's own boarding station, used instead of finding the station from the phone's fix.
+// What a trip card's pay row asks Pay for: its leg, so the ticket goes back to that ride's card; the station mode (none
+// for a bus, paid by its code); and the trip's own boarding station, sent by its own position.
 internal class PayFor(val leg: Int, val station: StationMode?, val at: Pair<Double, Double>?, val journey: String?)
 
-// A ride's own payment inside its trip's cards, paid the way its mode is: the code on board a bus; light rail, train
-// and Carmelit at the station. Once bought, its ticket, as on the home screen.
+// A ride's own payment inside its trip's cards, paid the way its mode is: the code on board a bus; light rail, train and
+// Carmelit at the station. Once bought, its ticket, as on the home screen.
 @Composable
 internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit.Resolved) {
     val agency = r.line(ride.lineId)?.agencyId ?: -1
@@ -1869,86 +2070,49 @@ internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit
     }
     val board = r.stop(ride.fromStop) ?: r.stop(ride.stops.firstOrNull() ?: -1)
     val key = model.activeJourney?.paid?.get(legIndex)
-    val wallet = Payer.wallet
     val now = rememberNow()
-    val bought = key?.let { k -> ridesOf(wallet?.tickets.orEmpty()).firstOrNull { it.key == k } }?.takeIf { !it.cancelled }
+    val bought = key?.let { k -> Payer.tickets.firstOrNull { it.id.toString() == k } }
     LaunchedEffect(key) { if (key != null) runCatching { Payer.refresh() } }
     // Paying gets a card of its own under the ride's line.
     Spacer(Modifier.height(K.gap3))
     Column(Modifier.fillMaxWidth().panel(K.rControl)) {
-    if (bought != null) RideRow(bought, wallet?.window, now, inset = K.gap3) { Payer.showRef = bought.key; model.payOpen = true }
-    if (bought == null || bought.canPayAgain(wallet?.window, now)) Row(
-        Modifier.fillMaxWidth()
-            .clickable(role = Role.Button) {
-                model.payFor = PayFor(legIndex, station, if (station != null) board?.point else null, model.activeJourney?.paymentKey)
-                model.payOpen = true
+        if (bought != null) TicketRow(bought, now, inset = K.gap3) { Payer.showRef = bought.id.toString(); model.payOpen = true }
+        if (bought == null || (!bought.valid(now) && !bought.needsExit)) Row(
+            Modifier.fillMaxWidth()
+                .clickable(role = Role.Button) {
+                    model.payFor = PayFor(legIndex, station, if (station != null) board?.point else null, model.activeJourney?.paymentKey)
+                    model.payOpen = true
+                }
+                // The title's font keeps room above its capitals, so half a dp less on top centres the text you see.
+                .padding(start = K.gap3, end = K.gap3, top = 11.5.dp, bottom = 12.5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(K.gap3),
+        ) {
+            Canvas(Modifier.size(20.dp)) { drawQr() }
+            Column(Modifier.weight(1f)) {
+                Text(when (station) {
+                    null -> if (bought == null) T("Pay for this ride", "תשלום על הנסיעה") else T("Pay again", "תשלום מחדש")
+                    StationMode.TRAIN -> T("Pay at the train station", "תשלום בתחנת הרכבת")
+                    StationMode.LIGHT_RAIL -> T("Pay at the light rail station", "תשלום בתחנת הרכבת הקלה")
+                    StationMode.CARMELIT -> T("Pay at the Carmelit station", "תשלום בתחנת הכרמלית")
+                }, fontSize = 15.sp, color = K.accent, fontWeight = FontWeight.Medium)
+                Text(if (station == null) T("Scan the QR code on the bus", "סורקים את קוד ה-QR באוטובוס")
+                    else board?.name ?: T("Kav finds the station you're at", "Kav מאתרת את התחנה שבה אתם נמצאים"),
+                    fontSize = 12.sp, color = K.dim)
             }
-            // The title's font keeps room above its capitals, so half a dp less on top centres the text you see.
-            .padding(start = K.gap3, end = K.gap3, top = 11.5.dp, bottom = 12.5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(K.gap3),
-    ) {
-        Canvas(Modifier.size(20.dp)) { drawQr() }
-        Column(Modifier.weight(1f)) {
-            Text(when (station) {
-                null -> if (bought == null) T("Pay for this ride", "תשלום על הנסיעה") else T("Pay again", "תשלום מחדש")
-                StationMode.TRAIN -> T("Pay at the train station", "תשלום בתחנת הרכבת")
-                StationMode.LIGHT_RAIL -> T("Pay at the light rail station", "תשלום בתחנת הרכבת הקלה")
-                StationMode.CARMELIT -> T("Pay at the Carmelit station", "תשלום בתחנת הכרמלית")
-            }, fontSize = 15.sp, color = K.accent, fontWeight = FontWeight.Medium)
-            Text(if (station == null) T("Scan the QR code on the bus", "סורקים את קוד ה-QR באוטובוס")
-                else board?.name ?: T("Kav finds the station you're at", "Kav מאתרת את התחנה שבה אתם נמצאים"),
-                fontSize = 12.sp, color = K.dim)
         }
-    }
     }
 }
 
-// Modes paid at a station: Moovit's route type for the request, and the timetable's own type to find
-// the station on the phone.
-internal enum class StationMode(val routeType: Int, val gtfs: Int) {
-    LIGHT_RAIL(MoovitPay.TRAM, 0), TRAIN(MoovitPay.RAIL, 2), CARMELIT(MoovitPay.CABLE, 7);
+// Modes paid at a station: HopOn's kind of ride, and the timetable's own route type to find the station on the phone.
+internal enum class StationMode(val kind: RavPass.Kind, val gtfs: Int) {
+    LIGHT_RAIL(RavPass.Kind.OTHER, 0), TRAIN(RavPass.Kind.TRAIN, 2), CARMELIT(RavPass.Kind.OTHER, 7);
 
     val label get() = when (this) {
         LIGHT_RAIL -> T("Light rail", "רכבת קלה")
         TRAIN -> T("Train", "רכבת")
         CARMELIT -> T("Carmelit", "כרמלית")
     }
-
-    val noneNear get() = when (this) {
-        LIGHT_RAIL -> T("No light rail station near you.", "אין תחנת רכבת קלה לידכם.")
-        TRAIN -> T("No train station near you.", "אין תחנת רכבת לידכם.")
-        CARMELIT -> T("No Carmelit station near you.", "אין תחנת כרמלית לידכם.")
-    }
-}
-
-// The nearest stop served by that mode, within a walk of the platform.
-internal fun nearestStation(net: Net, at: Pair<Double, Double>, m: StationMode): Pair<Double, Double>? {
-    var best = -1
-    var bestM = 1_500.0
-    for (i in net.lat.indices) {
-        if (net.stopType[i] != m.gtfs) continue
-        val d = metres(at.first, at.second, net.lat[i], net.lon[i])
-        if (d < bestM) { bestM = d; best = i }
-    }
-    return if (best < 0) null else net.lat[best] to net.lon[best]
-}
-
-// Names and places for the stops Moovit offers to pick from, read anonymously: stops are public data.
-private suspend fun stopNames(ids: List<Int>): List<Moovit.StopInfo> = withContext(Dispatchers.IO) {
-    val anon = Online.open()
-    ids.take(40).mapNotNull { runCatching { Moovit.stopInfo(anon, it) }.getOrNull() }
-}
-
-// Where the phone is now. The first answer can be the last known fix from up to two minutes ago, so the
-// better fixes of the next few seconds replace it.
-private suspend fun freshFix(ctx: Context): Pair<Double, Double>? {
-    var latest: Pair<Double, Double>? = null
-    val first = CompletableDeferred<Unit>()
-    requestLocationOnce(ctx, onFail = { first.complete(Unit) }) { latest = it; first.complete(Unit) }
-    withTimeoutOrNull(20_000) { first.await() } ?: return null
-    delay(4_000)
-    return latest
 }
 
 // A station of a mode from the timetable, and how far it is from the last fix when there is one.
@@ -1966,7 +2130,7 @@ private fun stationsOf(net: Net, m: StationMode, near: Pair<Double, Double>?): L
     return best.values.sortedWith(compareBy<Spot>({ it.metres ?: 0.0 }, { it.name }))
 }
 
-// Choosing the station by hand. Only the chosen station's own position goes to Moovit, which names it back.
+// Choosing the station by hand. Its own position goes to HopOn, which names it back.
 @Composable
 private fun StationList(m: StationMode, near: Pair<Double, Double>?, onPick: (Pair<Double, Double>) -> Unit) {
     val ctx = LocalContext.current
@@ -1993,25 +2157,79 @@ private fun StationList(m: StationMode, near: Pair<Double, Double>?, onPick: (Pa
     }
 }
 
+// The company's lines around the rider, as HopOn's app lists them to choose the ride by hand, with its search by number.
 @Composable
-private fun StopPicks(title: String?, stops: List<Moovit.StopInfo>, onPick: (Moovit.StopInfo) -> Unit) {
-    Note(title?.ifBlank { null } ?: T("Which station?", "באיזו תחנה?"))
-    Column(Modifier.fillMaxWidth().panel(K.rCard)) {
-        stops.forEach { s ->
-            Text(s.name, fontSize = 15.sp, color = K.text,
-                modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { onPick(s) }
-                    .padding(horizontal = K.gap4, vertical = K.gap3))
+private fun LinePicks(
+    around: List<RavPass.Nearby>, found: List<RavPass.Nearby>?, query: String, onQuery: (String) -> Unit,
+    onPick: (RavPass.Nearby) -> Unit,
+) {
+    Text(T("Which line are you on?", "באיזה קו אתם?"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+    KavField(query, onQuery, T("Line number", "מספר קו"), keyboard = KeyboardType.Number)
+    val shown = if (query.isBlank()) around else found
+    when {
+        shown == null -> Note(T("Searching…", "מחפשים…"))
+        shown.isEmpty() && query.isBlank() -> Note(T("HopOn has no lines around you right now. Search for yours by its number.",
+            "להופ-און אין עכשיו קווים סביבכם. חפשו את הקו שלכם לפי המספר."))
+        shown.isEmpty() -> Note(T("HopOn has no line by that number.", "להופ-און אין קו במספר הזה."))
+        else -> Column(Modifier.fillMaxWidth().panel(K.rCard)) {
+            shown.forEach { n ->
+                Row(
+                    Modifier.fillMaxWidth().clickable(role = Role.Button) { onPick(n) }.padding(horizontal = K.gap4, vertical = K.gap3),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(K.gap3),
+                ) {
+                    LtrText(n.line, 17.sp, K.text, FontWeight.SemiBold)
+                    Column(Modifier.weight(1f)) {
+                        if (n.from.isNotBlank()) Text(n.from, fontSize = 14.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (n.to.isNotBlank()) Text("→ " + n.to, fontSize = 13.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
         }
     }
 }
 
-// A ride for the inspector, as Moovit's QR viewer shows it: every ticket of the ride, one QR a page, bright and with
-// no screenshots. Add a passenger buys on the same bus code or station again, through Moovit's fare summary.
+// How far a stop is from where the ride starts, as HopOn's app measures it: as the crow flies, with Android's
+// Location.distanceBetween, and nothing for a stop HopOn gives no position for.
+private fun crow(a: RavPass.Stop, b: RavPass.Stop): Double {
+    if (a.lat.isNaN() || a.lon.isNaN() || b.lat.isNaN() || b.lon.isNaN()) return 0.0
+    val out = FloatArray(1)
+    Location.distanceBetween(a.lat, a.lon, b.lat, b.lon, out)
+    return out[0].toDouble()
+}
+
+// The run's stops from the boarding one on, by their place on the line, as HopOn's app takes them.
+private fun ahead(run: List<RavPass.Stop>, start: RavPass.Stop) = run.filter { maxOf(it.sequence, 0) >= maxOf(start.sequence, 0) }
+
+// HopOn's app lets the run's farthest stop decide: within 15 km of the boarding stop it prices the ride to the run's
+// last stop without asking, and beyond that it asks where the ride ends. Kav asks how far instead, as Moovit does:
+// HopOn's fares up to the first that reaches the farthest stop, or none when HopOn's app wouldn't ask.
+internal fun bandsFor(
+    bands: List<RavPass.Band>, run: List<RavPass.Stop>, from: String,
+    dist: (RavPass.Stop, RavPass.Stop) -> Double = ::crow,
+): List<RavPass.Band> {
+    val start = run.firstOrNull { it.code == from } ?: return emptyList()
+    val far = ahead(run, start).maxOfOrNull { dist(start, it) } ?: 0.0
+    if (far < 15_000.0) return emptyList()
+    return bands.filterIndexed { i, _ -> i == 0 || bands[i - 1].km * 1000.0 <= far }
+}
+
+// Where a ride of up to `km` ends on the run, by HopOn's app's own rule: the run's last stop when every stop from the
+// boarding one on is within reach, else the last stop before the first one beyond it, or that one when it is the next.
+internal fun reach(
+    run: List<RavPass.Stop>, from: String, km: Int, dist: (RavPass.Stop, RavPass.Stop) -> Double = ::crow,
+): RavPass.Stop? {
+    val start = run.firstOrNull { it.code == from } ?: return null
+    val stops = ahead(run, start)
+    val beyond = stops.indexOfFirst { dist(start, it) >= km * 1000.0 }
+    if (beyond < 0) return run.lastOrNull()
+    return stops.take(beyond).lastOrNull { it.code != start.code } ?: stops[beyond]
+}
+
+// A ticket for the inspector, as HopOn's app shows it: each passenger's code, one a page, with its reference under it,
+// bright and with no screenshots.
 @Composable
-private fun RideView(
-    r: RideGroup, window: MoovitPay.Window?, onAdd: (() -> Unit)?,
-    onExit: ((MoovitPay.Ticket) -> Unit)?, onCancel: ((MoovitPay.Ticket) -> Unit)?, onPayAgain: () -> Unit, onClose: () -> Unit,
-) {
+private fun TicketView(t: RavPass.Ticket, onExit: () -> Unit, onAgain: () -> Unit, onClose: () -> Unit) {
     val activity = LocalContext.current as? android.app.Activity
     DisposableEffect(activity) {
         val w = activity?.window
@@ -2029,57 +2247,44 @@ private fun RideView(
     }
     androidx.activity.compose.BackHandler(onBack = onClose)
     val now = rememberNow()
-    val live = r.live()
-    val ordered = r.shown.sortedWith(compareBy<MoovitPay.Ticket>({ it.anonymous }, { it.boughtUtc }))
-    val pager = rememberPagerState { ordered.size }
+    val valid = t.valid(now)
+    val pager = rememberPagerState { t.codes.size.coerceAtLeast(1) }
     val day = java.text.SimpleDateFormat("d.M.yyyy", java.util.Locale.US).apply { timeZone = ISRAEL }
-    val shown = ordered.getOrNull(pager.currentPage) ?: r.newest
-    val entrance = r.tickets.firstOrNull { it.active && it.needsExit && !Payer.cancelled(it) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(K.gap4)
             .padding(bottom = LocalBottomBarInset.current).animateContentSize(),
         verticalArrangement = Arrangement.spacedBy(K.gap3),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (live && shown.active) Note(qrNote(shown), color = K.muted)
+        if (valid) Note(if (t.needsExit) T("Place the QR code on the scanner at the gate", "הניחו את קוד ה-QR על הסורק בשער")
+            else T("Present this QR code for review, whenever needed", "הציגו את קוד ה-QR הזה לביקורת, בכל פעם שיידרש"),
+            color = K.muted)
         HorizontalPager(pager, Modifier.fillMaxWidth()) { i ->
-            val ticket = ordered[i]
-            // As in Moovit, a completed ticket has no QR to show, only its details.
-            if (ticket.active && !Payer.cancelled(ticket) && ticket.qr.isNotBlank())
-                QrCode(ticket.qr, Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl)))
+            val code = t.codes.getOrNull(i)
+            if (valid && code != null) QrCode(code, Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl)))
             else Box(Modifier.fillMaxWidth().heightIn(min = 120.dp).panel(K.rControl), contentAlignment = Alignment.Center) {
-                Text(if (r.cancelled) T("This ticket was canceled", "הכרטיס הזה בוטל")
-                    else T("This ticket is no longer active", "הכרטיס הזה כבר לא פעיל"), fontSize = 16.sp, color = K.dim)
+                Text(T("This ticket is no longer valid", "הכרטיס הזה כבר לא בתוקף"), fontSize = 16.sp, color = K.dim)
             }
         }
-        if (ordered.size > 1) LtrText("${pager.currentPage + 1} / ${ordered.size}", 14.sp, K.muted)
-        Text(rideName(shown), fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-        TicketStatus(shown, window, now, 16.sp, FontWeight.Medium)
-        if (!live && !shown.anonymous) TransferWindow(window, now)
-        if (live && !shown.anonymous && window != null && window.untilUtc > now)
-            window.title.takeIf { it.isNotBlank() }?.let { Note(it, color = K.muted) }
+        if (t.codes.size > 1) LtrText("${pager.currentPage + 1} / ${t.codes.size}", 14.sp, K.muted)
+        if (t.utn.isNotBlank()) LtrText(t.utn, 14.sp, K.muted)
+        Text(ticketName(t), fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        Text(ticketStatus(t, now), fontSize = 16.sp, color = if (valid) good else K.dim, fontWeight = FontWeight.Medium)
+        t.transferUntilUtc.takeIf { it > now }?.let { Note(T("Free transfers until ${clockOf(it)}", "מעברים ללא תשלום עד ${clockOf(it)}"), color = K.muted) }
         listOfNotNull(
-            shown.agency.takeIf { it.isNotBlank() && it != shown.title },
-            shown.passenger.takeIf { it.isNotBlank() } ?: T("Other passenger", "נוסע נוסף"),
-            shown.profile.takeIf { it.isNotBlank() },
-            day.format(java.util.Date(shown.boughtUtc)) + "  " + ticketTime(shown),
+            t.from.ifBlank { null }?.let { T("Boarded at $it", "עלייה ב$it") },
+            t.passenger.ifBlank { null },
+            t.profile.ifBlank { null },
+            t.guests.takeIf { it > 0 }?.let { T("${it + 1} passengers", "${it + 1} נוסעים") },
+            day.format(java.util.Date(t.boughtUtc)) + "  " + clockOf(t.boughtUtc),
         ).forEach { Note(it, color = K.muted) }
-        shown.price?.let { LtrText(it.text, 14.sp, K.muted) }
-        shown.ref.takeIf { it.isNotBlank() }?.let { Note(T("Reference number ", "מספר אסמכתא ") + it.take(12), color = K.muted) }
-        if (live && onAdd != null) AddButton(T("+ Add a passenger", "+ הוספת נוסע"), onClick = onAdd)
-        if (r.canPayAgain(window, now)) AddButton(T("Pay again", "תשלום מחדש"), onClick = onPayAgain)
-        if (entrance != null) {
-            Note(T(
-                "Important: Upon arriving at your destination station, tap “Create exit ticket” to calculate the fare, " +
-                    "otherwise you’ll be charged with the maximum daily rate.",
-                "חשוב: כשתגיעו לתחנת היעד, הקישו על “יצירת כרטיס יציאה” כדי לחשב את המחיר, אחרת תחויבו בתעריף היומי המרבי.",
-            ), color = K.problem)
-            onExit?.let { PayButton(T("Create exit ticket", "יצירת כרטיס יציאה"), false) { it(entrance) } }
-            onCancel?.let {
-                Text(T("Cancel my ticket", "ביטול הכרטיס שלי"), fontSize = 14.sp, color = K.muted,
-                    modifier = Modifier.clickable(role = Role.Button) { it(entrance) }.padding(K.gap2))
-            }
+        t.cost?.let { LtrText(it.text, 14.sp, K.muted) }
+        if (valid && t.needsExit) {
+            Note(T("Important: at your destination station, tap “Create exit ticket” so the fare is set by where you got off.",
+                "חשוב: בתחנת היעד הקישו על “יצירת כרטיס יציאה” כדי שהמחיר ייקבע לפי התחנה שבה ירדתם."), color = K.problem)
+            PayButton(T("Create exit ticket", "יצירת כרטיס יציאה"), false, onClick = onExit)
         }
+        if (!valid) AddButton(T("Pay for another ride", "תשלום על נסיעה נוספת"), onClick = onAgain)
     }
 }
 

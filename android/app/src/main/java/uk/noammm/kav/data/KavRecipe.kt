@@ -18,9 +18,6 @@ internal object KavRecipe {
         val apiKey: String,
         val clientVersion: String,
         val storeAppId: String,
-        // The payment context Kav pays in, and the one its sign-in uses when Moovit's own setting can't be read.
-        val payContext: String,
-        val payLoginContext: String,
         val app4: String,
         val app5: String,
         val app4cdn: String,
@@ -34,8 +31,6 @@ internal object KavRecipe {
         apiKey = "moovit_2751703405",
         clientVersion = "5.201.5.1810",
         storeAppId = "com.tranzmate",
-        payContext = "IsraelMot",
-        payLoginContext = "Login@Default",
         app4 = "https://app4.moovitapp.com/services-app/services/",
         app5 = "https://app5.moovitapp.com/services-app/services/",
         app4cdn = "https://app4cdn.moovitapp.com/services-app/services/",
@@ -50,8 +45,9 @@ internal object KavRecipe {
     var moovit = DEFAULT
         private set
 
-    // The copy kept from an earlier check, then the published one at most once a day. Blocks, so off the main thread.
-    fun refresh(ctx: Context) = FILE.refresh(ctx) { body ->
+    // The copy kept from an earlier check, then the published one at most once a day, or now when forced. Blocks, so
+    // off the main thread.
+    fun refresh(ctx: Context, force: Boolean = false) = FILE.refresh(ctx, force) { body ->
         val o = runCatching { JSONObject(body.toString(Charsets.UTF_8)) }.getOrNull() ?: return@refresh false
         val v = o.optInt("version", 0)
         if (v <= version) return@refresh false
@@ -76,8 +72,6 @@ internal object KavRecipe {
             apiKey = text("apiKey", DEFAULT.apiKey),
             clientVersion = text("clientVersion", DEFAULT.clientVersion),
             storeAppId = text("storeAppId", DEFAULT.storeAppId),
-            payContext = text("payContext", DEFAULT.payContext),
-            payLoginContext = text("payLoginContext", DEFAULT.payLoginContext),
             app4 = host("app4", DEFAULT.app4),
             app5 = host("app5", DEFAULT.app5),
             app4cdn = host("app4cdn", DEFAULT.app4cdn),

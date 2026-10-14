@@ -40,6 +40,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.text.HtmlCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Net
@@ -534,11 +535,19 @@ internal fun StopGlyphOrPhoto(stopId: Int, mode: Mode?, thumb: Dp = 40.dp, mark:
     var bmp by remember(stopId) { mutableStateOf(StopPhotos.thumbNow(stopId)) }
     var has by remember(stopId) { mutableStateOf(StopPhotos.hasPhotosNow(stopId)) }
     var busy by remember(stopId) { mutableStateOf(bmp == null && stopId > 0) }
+    // Moovit's list of the stop's photos, then the thumbnail: on a weak connection either can fail, and is asked
+    // again, less and less often, for as long as the stop is on screen.
     LaunchedEffect(stopId) {
         if (bmp != null || stopId <= 0) return@LaunchedEffect
-        has = StopPhotos.hasPhotos(stopId)
-        if (has == true) bmp = StopPhotos.thumb(stopId)
-        busy = false
+        var wait = 2_000L
+        while (true) {
+            has = StopPhotos.hasPhotos(stopId)
+            if (has == true) bmp = StopPhotos.thumb(stopId)
+            busy = false
+            if (bmp != null || has == false) break
+            delay(wait)
+            wait = (wait * 2).coerceAtMost(60_000L)
+        }
     }
     val shot = bmp
     if (shot == null) {
@@ -547,7 +556,7 @@ internal fun StopGlyphOrPhoto(stopId: Int, mode: Mode?, thumb: Dp = 40.dp, mark:
             (busy || resolving) && (mode == null || has == true) ->
                 PhotoBox(thumb, T("Loading the stop's photo", "טוענים את תמונת התחנה")) { Spinner(thumb * 0.4f) }
             mode != null -> StationMark(mode, mark)
-            has == null && stopId > 0 -> PhotoBox(thumb, null) {}
+            has != false && stopId > 0 -> PhotoBox(thumb, null) {}
             else -> PhotoBox(thumb, null) {
                 Text(
                     T("No image", "אין תמונה"), fontSize = 10.sp, lineHeight = 12.sp, color = K.dim,

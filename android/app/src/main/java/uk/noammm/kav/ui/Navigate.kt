@@ -133,6 +133,17 @@ internal fun chosenLegs(trip: Moovit.Itinerary, chosen: Map<Int, Int>): List<Moo
         ).first
     }
 
+// When the trip gets there as things stand. On board, the time left on the ride and the plan after it, the same count
+// the ride's card shows; otherwise the plan, moved by how far its last ride runs from it.
+internal fun tripArrival(
+    trip: Moovit.Itinerary, r: Moovit.Resolved, chosen: Map<Int, Int>,
+    riding: Moovit.Leg? = null, fix: Fix? = null, now: Long = 0,
+): Long {
+    if (riding != null) return now + minutesToAlight(riding, r, fix, now) * 60 + (trip.arr - riding.arr)
+    val last = chosenLegs(trip, chosen).lastOrNull { it.kind == Moovit.LegKind.RIDE } ?: return trip.arr
+    return trip.arr + (r.alightAt(last) - last.arr)
+}
+
 @Composable
 fun StartButton(onClick: () -> Unit) {
     Row(
@@ -221,8 +232,11 @@ fun NavigateScreen(
                         Text(T.backward, fontSize = 28.sp, color = K.text)
                     }
                     Column(Modifier.weight(1f)) {
+                        val riding = (steps.getOrNull(currentStep) as? Step.Ride)
+                            ?.let { boardingChoice(it.ride, it.wait, chosen[it.legIndex] ?: 0).first }
+                        val arrive = tripArrival(trip, r, chosen, riding, fix, now)
                         Text(T("Your trip", "הנסיעה שלכם"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                        Text("${dur((trip.arr - now).toInt().coerceAtLeast(0))} · ${hm.format(Date(trip.arr * 1000))}",
+                        Text("${dur((arrive - now).toInt().coerceAtLeast(0))} · ${hm.format(Date(arrive * 1000))}",
                             fontSize = 12.sp, color = K.muted, maxLines = 1)
                     }
                     Box(
@@ -470,10 +484,12 @@ internal fun StepCard(
             val names = r.stops + rememberStopNames(stops)
             val alight = r.stop(ride.toStop) ?: names[ride.toStop]
             val arrival = r.arrival(ride)
+            // On board, the time left until the rider's stop; before, how long the ride takes.
+            val mins = if (active) minutesToAlight(ride, r, fix, now) else ride.minutes.toLong()
             Card(
                 T("Ride ${stops.size - 1} stops to", "נסיעה ${stops.size - 1} תחנות אל").takeIf { stops.size > 1 } ?: T("Ride to", "נסיעה אל"),
                 active,
-                trailing = T("${ride.minutes} min", "${ride.minutes} דק׳"),
+                trailing = T("$mins min", "$mins דק׳"),
             ) {
                 StopLine(alight?.name ?: T("your stop", "התחנה שלכם"), alight?.code, legMode(ride, r), stopId = ride.toStop)
                 Spacer(Modifier.height(K.gap2))
@@ -606,7 +622,7 @@ private fun LineRow(ride: Moovit.Leg, r: Moovit.Resolved) {
                 AgencyMark(rt, agency, plate?.ink ?: K.muted, 15.dp)
                 Spacer(Modifier.width(5.dp))
                 Text(
-                    ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "#${ride.lineId}",
+                    ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…",
                     fontSize = 16.sp, color = plate?.ink ?: K.text, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp),
                 )
@@ -679,11 +695,11 @@ private fun followFor(
             val along = bearingAlong(at.lat, at.lon, path)
             Follow(at.lat, at.lon, heading ?: along ?: 0f, zoom = 19.1f)
         }
-        // On board, the same view as walking: the map turns with the phone.
+        // On board the map turns with the ride, not the phone: a seat facing backwards would point it the wrong way.
         is Step.Ride -> {
             val ride = chosenRide ?: return null
             val at = recent?.takeIf { it.isFresh(now) && it.aboard(ride.shape) } ?: return null
-            Follow(at.lat, at.lon, heading ?: bearingAlong(at.lat, at.lon, ride.shape) ?: 0f, zoom = 18.3f)
+            Follow(at.lat, at.lon, bearingAlong(at.lat, at.lon, ride.shape) ?: heading ?: 0f, zoom = 18.3f)
         }
         else -> null
     }
@@ -794,7 +810,8 @@ private fun NavigateMap(
         )
     }
 
-    val walkArrow = follow != null && heading != null
+    // Walking, the arrow is the way the phone faces; riding, the way the vehicle goes.
+    val arrow = if (follow == null) null else if (step is Step.Ride) follow.bearing else heading
     val vehicleMarks = vehicles.map { v ->
         val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
         v to ringedMark(vehicleModes[v.tripId] ?: Mode.BUS, tint, 12f, 10f, density)
@@ -803,15 +820,15 @@ private fun NavigateMap(
         dots = buildList {
             here?.let { (lat, lon) ->
                 add(MapDot(lat, lon, K.text.copy(alpha = 0.16f * mePulse.value), 15f))
-                if (!walkArrow) {
+                if (arrow == null) {
                     add(MapDot(lat, lon, K.bg.copy(alpha = mePulse.value), 8f))
                     add(MapDot(lat, lon, K.text.copy(alpha = mePulse.value), 5f))
                 }
             }
         },
         markers = (
-            if (walkArrow) here?.let { (lat, lon) ->
-                listOf(MapMarker(lat, lon, MAP_ARROW_ICON, heading ?: 0f, mePulse.value, turns = true))
+            if (arrow != null) here?.let { (lat, lon) ->
+                listOf(MapMarker(lat, lon, MAP_ARROW_ICON, arrow, mePulse.value, turns = true))
             }.orEmpty() else emptyList()
         ) + vehicleMarks.map { (v, mark) -> MapMarker(v.lat, v.lon, mark.first, alpha = vehicleAlpha.value) },
         halos = vehicles.map { v ->

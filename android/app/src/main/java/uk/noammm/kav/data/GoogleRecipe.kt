@@ -79,8 +79,9 @@ internal class GoogleRecipe private constructor(
         var current = DEFAULT
             private set
 
-        // The copy kept from an earlier check, then Vela's latest at most once a day. Blocks, so off the main thread.
-        fun refresh(ctx: Context) = VELA.refresh(ctx) { body ->
+        // The copy kept from an earlier check, then Vela's latest at most once a day, or now when forced. Blocks, so
+        // off the main thread.
+        fun refresh(ctx: Context, force: Boolean = false) = VELA.refresh(ctx, force) { body ->
             val recipe = runCatching { parse(JSONObject(body.toString(Charsets.UTF_8)), DEFAULT) }.getOrNull()
             if (recipe == null || recipe.version <= vela.version) return@refresh false
             vela = recipe

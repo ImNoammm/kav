@@ -230,7 +230,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     var settingsOpen by mutableStateOf(false)
     var payOpen by mutableStateOf(false)
     var payHistoryOpen by mutableStateOf(false)
-    // A ride's pay row in a trip asking Pay to open on that ride's way of paying.
+    // A bus ride's pay row in a trip asking Pay to scan for that ride.
     internal var payFor by mutableStateOf<uk.noammm.kav.ui.PayFor?>(null)
     var activeJourney by mutableStateOf<ActiveJourney?>(null)
     var returnHome by mutableStateOf(false)
@@ -361,13 +361,6 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     }
 
     fun lastCity(ctx: Context): Moovit.Place? = city ?: Prefs.seenCity(ctx).also { city = it }
-
-    // Where Moovit is told a ride is paid from: the place picked for it, or the town's centre, never the fix.
-    fun payAt(ctx: Context): Pair<Double, Double> = when (seen) {
-        Seen.PLACE -> seenPlace?.let { it.lat to it.lon }
-        Seen.NONE -> null
-        Seen.CITY -> cityAround(ctx)?.let { it.lat to it.lon }
-    } ?: Moovit.NEUTRAL
 
     var update by mutableStateOf<Updates.Release?>(null)
     var updateDismissed by mutableStateOf(false)
@@ -572,26 +565,28 @@ private fun Shell(model: KavModel) {
                     (ride.toStop > 0 && journey.resolved.stop(ride.toStop) == null)
             }
             if (needsNames) {
-                val names = withContext(Dispatchers.IO) { Moovit.hydrate(session, listOf(journey.trip)) }
+                val names = withContext(Dispatchers.IO) { Moovit.hydrate(session, listOf(journey.trip), ending = true) }
                 model.activeJourney?.takeIf { it.trip == journey.trip }?.let { current ->
                     val previous = current.resolved
                     model.activeJourney = current.copy(resolved = Moovit.Resolved(
                         previous.lines + names.lines, previous.stops + names.stops,
                         previous.routeTypes + names.routeTypes, previous.live + names.live,
                         previous.shapes + names.shapes, names.pollSecs, previous.patterns + names.patterns,
+                        previous.delays + names.delays,
                     ))
                 }
             }
             delay(journey.resolved.pollSecs.coerceIn(15, 120) * 1000L)
             val current = model.activeJourney?.takeIf { it.trip == journey.trip } ?: break
             val refreshed = withContext(Dispatchers.IO) {
-                Moovit.refreshLive(session, listOf(current.trip), current.resolved)
+                Moovit.refreshLive(session, listOf(current.trip), current.resolved, ending = true)
             }
             model.activeJourney?.takeIf { it.trip == journey.trip }?.let {
                 model.activeJourney = it.copy(resolved = Moovit.Resolved(
                     refreshed.lines + it.resolved.lines, refreshed.stops + it.resolved.stops,
                     refreshed.routeTypes + it.resolved.routeTypes, refreshed.live,
                     refreshed.shapes + it.resolved.shapes, refreshed.pollSecs, refreshed.patterns,
+                    it.resolved.delays + refreshed.delays,
                 ))
             }
         }
@@ -995,7 +990,7 @@ private const val VIEW_FIX_M = 200f
 internal fun Location.fixTime(): Long =
     System.currentTimeMillis() / 1000 - (SystemClock.elapsedRealtimeNanos() - elapsedRealtimeNanos) / 1_000_000_000
 
-private fun locationProviders(lm: LocationManager): List<String> {
+internal fun locationProviders(lm: LocationManager): List<String> {
     val available = runCatching { lm.allProviders }.getOrDefault(emptyList())
     return buildList {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(LocationManager.FUSED_PROVIDER)
@@ -1283,6 +1278,9 @@ object Prefs {
     fun showCo2(ctx: Context): Boolean = store(ctx).getBoolean("showCo2", false)
     fun setShowCo2(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showCo2", on).apply()
 
+    fun spokenAlerts(ctx: Context): Boolean = store(ctx).getBoolean("spokenAlerts", false)
+    fun setSpokenAlerts(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("spokenAlerts", on).apply()
+
     fun twelveHour(ctx: Context): Boolean = store(ctx).getBoolean("twelveHour", false)
     fun setTwelveHour(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("twelveHour", on).apply()
 
@@ -1379,6 +1377,7 @@ object Prefs {
             .put("filters", org.json.JSONObject().apply { ResultFilter.entries.forEach { put(it.name, it in on) } })
             .put("filtersOff", org.json.JSONArray(off))
             .put("showCo2", showCo2(ctx))
+            .put("spokenAlerts", spokenAlerts(ctx))
             .put("twelveHour", twelveHour(ctx))
     }
 
@@ -1397,6 +1396,7 @@ object Prefs {
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }
         if (o.has("showCo2")) e.putBoolean("showCo2", o.optBoolean("showCo2"))
+        if (o.has("spokenAlerts")) e.putBoolean("spokenAlerts", o.optBoolean("spokenAlerts"))
         if (o.has("twelveHour")) e.putBoolean("twelveHour", o.optBoolean("twelveHour"))
         val chosen = o.optJSONObject("filters")
         val oldOff = o.optJSONArray("filtersOff")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }

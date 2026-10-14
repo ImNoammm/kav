@@ -176,10 +176,7 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
     }
     var moovitId by remember(stop) { mutableStateOf(StopPhotos.idNow(net, stop) ?: -1) }
     var looked by remember(stop) { mutableStateOf(moovitId > 0) }
-    LaunchedEffect(stop) {
-        if (moovitId <= 0) moovitId = StopPhotos.idOf(net, stop) ?: -1
-        looked = true
-    }
+    LaunchedEffect(stop) { moovitId = findMoovitId(net, stop, moovitId) { looked = true } }
     // Moovit's live arrivals at this stop: line number, scheduled and live seconds of the day, and the departure that
     // colours and marks it like the search results. Refreshed with t0.
     class LiveAt(val number: String, val static: Int, val rt: Int, val dep: Moovit.Departure)
@@ -238,6 +235,10 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                 Chip(T("End here", "סיום כאן"), false) {
                     model.pendingTo = placeOf(net, stop); model.tab = uk.noammm.kav.Tab.Directions
                 }
+                val ctx = LocalContext.current
+                Chip(T("Street View", "Street View"), false) {
+                    openStreetView(ctx, net.lat[stop].toDouble(), net.lon[stop].toDouble())
+                }
             }
         }
         Spacer(Modifier.height(K.gap3))
@@ -288,11 +289,23 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
 private fun StationThumb(net: Net, stop: Int) {
     var id by remember(stop) { mutableStateOf(StopPhotos.idNow(net, stop) ?: -1) }
     var looked by remember(stop) { mutableStateOf(id > 0) }
-    LaunchedEffect(stop) {
-        if (id <= 0) id = StopPhotos.idOf(net, stop) ?: -1
-        looked = true
-    }
+    LaunchedEffect(stop) { id = findMoovitId(net, stop, id) { looked = true } }
     StopGlyphOrPhoto(id, null, resolving = !looked)
+}
+
+// The stop's Moovit id, for its photo and live times. A search that failed, as opposed to one that found nothing, is
+// tried again, less and less often, for as long as the stop is on screen.
+private suspend fun findMoovitId(net: Net, stop: Int, known: Int, onTried: () -> Unit): Int {
+    var id = known
+    var wait = 2_000L
+    while (id <= 0) {
+        id = StopPhotos.idOf(net, stop) ?: -1
+        onTried()
+        if (id > 0 || StopPhotos.knownMissing(net, stop)) break
+        delay(wait)
+        wait = (wait * 2).coerceAtMost(60_000L)
+    }
+    return id
 }
 
 internal fun placeOf(net: Net, stop: Int) = uk.noammm.kav.data.Moovit.Place(

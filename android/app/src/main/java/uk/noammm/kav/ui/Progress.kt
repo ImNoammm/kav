@@ -1,6 +1,7 @@
 package uk.noammm.kav.ui
 
 import uk.noammm.kav.data.Moovit
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -206,6 +207,25 @@ private fun rideLeftBehind(step: Step.Ride, chosen: Map<Int, Int>, fix: Fix): Bo
     val shape = rideOf(step, chosen).shape
     if (shape.size < 2) return false
     return alongPath(fix.lat, fix.lon, shape) > pathLength(shape) - 60
+}
+
+// Minutes until the ride reaches the rider's stop: Moovit's live time there, and on board the share of the route still
+// ahead of the ride's planned time; otherwise the plan moved by how far the ride runs from it. When the two disagree
+// on board, where the rider is wins: they may be on another bus of the line, or the live feed may lag.
+internal fun minutesToAlight(ride: Moovit.Leg, r: Moovit.Resolved, fix: Fix?, now: Long): Long {
+    val live = r.alightLiveAt(ride)?.let { ceil((it - now) / 60.0).toLong().coerceAtLeast(0) }
+    val aboard = fix?.takeIf { it.isFresh(now) && it.aboard(ride.shape) }
+    val length = pathLength(ride.shape)
+    val share = if (aboard != null && length > 0) {
+        val ahead = (length - alongPath(aboard.lat, aboard.lon, ride.shape)).coerceAtLeast(0.0)
+        ceil(ahead / length * (ride.arr - ride.dep) / 60.0).toLong()
+    } else null
+    return when {
+        live != null && share != null -> if (kotlin.math.abs(live - share) <= 5 + share * 3 / 10) live else share
+        live != null -> live
+        share != null -> share
+        else -> ceil((r.alightAt(ride) - now) / 60.0).toLong().coerceAtLeast(0)
+    }
 }
 
 internal fun pathLength(path: List<Pair<Double, Double>>): Double {

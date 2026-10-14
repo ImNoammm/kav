@@ -24,7 +24,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 
 @Composable
-fun LoadingPulse(label: String, modifier: Modifier = Modifier, wide: Boolean = true) {
+fun LoadingPulse(label: String, modifier: Modifier = Modifier, wide: Boolean = true, labelAbove: Boolean = false) {
     val t = rememberInfiniteTransition(label = "loading")
     val travel by t.animateFloat(
         0f, 1f, infiniteRepeatable(tween(1500, easing = FastOutSlowInEasing), RepeatMode.Restart), label = "travel",
@@ -36,6 +36,10 @@ fun LoadingPulse(label: String, modifier: Modifier = Modifier, wide: Boolean = t
         modifier.semantics { contentDescription = label },
         horizontalAlignment = if (wide) Alignment.CenterHorizontally else Alignment.Start,
     ) {
+        if (labelAbove) {
+            Text(label, fontSize = 15.sp, color = K.dim)
+            Spacer(Modifier.height(K.gap3))
+        }
         Canvas(Modifier.width(if (wide) 200.dp else 150.dp).height(32.dp)) {
             val w = size.width; val h = size.height; val y = h / 2
             val inset = 10.dp.toPx()
@@ -54,17 +58,19 @@ fun LoadingPulse(label: String, modifier: Modifier = Modifier, wide: Boolean = t
             drawCircle(K.bg, 9.dp.toPx(), Offset(x, y))
             drawCircle(K.accent, 6.dp.toPx(), Offset(x, y))
         }
-        Spacer(Modifier.height(K.gap3))
-        Text(label, fontSize = 15.sp, color = K.dim)
+        if (!labelAbove) {
+            Spacer(Modifier.height(K.gap3))
+            Text(label, fontSize = 15.sp, color = K.dim)
+        }
     }
 }
 
 @Composable
-fun LoadingBlock(label: String, modifier: Modifier = Modifier) {
+fun LoadingBlock(label: String, modifier: Modifier = Modifier, labelAbove: Boolean = false) {
     Box(
         modifier.fillMaxSize().padding(bottom = LocalBottomBarInset.current),
         contentAlignment = Alignment.Center,
-    ) { LoadingPulse(label) }
+    ) { LoadingPulse(label, labelAbove = labelAbove) }
 }
 
 @Composable

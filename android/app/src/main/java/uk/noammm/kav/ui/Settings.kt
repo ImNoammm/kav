@@ -34,6 +34,9 @@ import uk.noammm.kav.PendingBackup
 import uk.noammm.kav.Prefs
 import uk.noammm.kav.Seen
 import uk.noammm.kav.data.Backup
+import uk.noammm.kav.data.GoogleRecipe
+import uk.noammm.kav.data.KavRecipe
+import uk.noammm.kav.data.SignedFile
 import uk.noammm.kav.data.Updates
 
 @Composable
@@ -62,27 +65,16 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         .padding(bottom = LocalBottomBarInset.current)) {
         ScreenHeader(T("Your", "ההגדרות"), T("settings", "שלכם"), back = onClose)
 
-        Group(T("time format", "תבנית שעה"))
-        ClockChoice(ctx)
-
+        // Most used first, the ones set once and forgotten after.
         if (Payer.signedIn) {
-            Group(T("payments", "תשלומים"))
+            Group(T("Payments", "תשלומים"))
             PaymentsSection(model)
         }
 
-        Group(T("language", "שפה"))
-        LanguageRow(ctx)
-
-        Group(T("colour", "צבע"))
-        AccentPreview(Modifier.padding(horizontal = K.gap4))
-        Spacer(Modifier.height(K.gap4))
-        AccentPicker(wheel = 200.dp) { Prefs.setAccent(ctx, it.toArgb()) }
-        LookChoices(inset = K.gap4) { Group(it) }
-
-        Group(T("what a plan may show", "מה מסלול יכול לכלול"))
+        Group(T("What a plan may show", "מה מסלול יכול לכלול"))
         FilterRows(model.filters) { f, on -> model.setFilter(ctx, f, on) }
 
-        Group(T("what a card shows", "מה מוצג בכרטיס"))
+        Group(T("What a card shows", "מה מוצג בכרטיס"))
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
             SwitchRow(
                 T("Emissions", "פליטות"),
@@ -95,7 +87,24 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
             ) { GlobeGlyph(if (Shown.co2) K.text else K.dim, K.surface1, 18.dp) }
         }
 
-        Group(T("privacy", "פרטיות"))
+        Group(T("Trip alerts", "התראות בנסיעה"))
+        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
+            var spoken by remember { mutableStateOf(Prefs.spokenAlerts(ctx)) }
+            SwitchRow(
+                T("Say them out loud", "הקראה בקול"),
+                T(
+                    "When your bus is arriving and when to get off, spoken in Kav's language over whatever is playing.",
+                    "כשהאוטובוס שלכם מגיע וכשצריך לרדת, בקול ובשפה של Kav, גם מעל מה שמתנגן.",
+                ),
+                spoken,
+                { on ->
+                    spoken = on; Prefs.setSpokenAlerts(ctx, on)
+                    if (on) uk.noammm.kav.Speaker.say(ctx, T("Alerts will sound like this", "כך יישמעו ההתראות"))
+                },
+            ) { SpeakerGlyph(if (spoken) K.text else K.dim, 18.dp) }
+        }
+
+        Group(T("Privacy", "פרטיות"))
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
             var priv by remember(model.prefsVersion) { mutableStateOf(uk.noammm.kav.Prefs.privateSearch(ctx)) }
             SwitchRow(
@@ -116,20 +125,35 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
             if (priv) SeenChoice(model) { choosing = true }
         }
 
-        Group(T("your data", "הנתונים שלכם"))
-        BackupSection(model)
+        Group(T("Language", "שפה"))
+        LanguageRow(ctx)
 
-        Group(T("updates", "עדכונים"))
+        Group(T("Time format", "תבנית שעה"))
+        ClockChoice(ctx)
+
+        LookChoices(inset = K.gap4) { Group(it) }
+
+        Group(T("Colour", "צבע"))
+        AccentPreview(Modifier.padding(horizontal = K.gap4))
+        Spacer(Modifier.height(K.gap4))
+        AccentPicker(wheel = 200.dp) { Prefs.setAccent(ctx, it.toArgb()) }
+
+        Group(T("Updates", "עדכונים"))
+        FixCheck()
+        Spacer(Modifier.height(K.gap2))
         UpdateSection(model)
 
-        Group(T("what is not in here", "מה לא נמצא כאן"))
+        Group(T("Your data", "הנתונים שלכם"))
+        BackupSection(model)
+
+        Group(T("What is not in here", "מה לא נמצא כאן"))
         Absent(
             T("No account, unless you pay", "אין חשבון, אלא אם משלמים"),
             T(
                 "Planning, live times and search need no sign-in, profile or sync. Paying for a ride signs in to " +
-                    "your own Moovit payment account, on a Moovit user Kav keeps only for paying.",
+                    "your own Rav-Pass account, used for nothing but paying.",
                 "תכנון, זמנים בזמן אמת וחיפוש לא דורשים התחברות, פרופיל או סנכרון. תשלום על נסיעה מתחבר " +
-                    "לחשבון התשלום שלכם ב-Moovit, דרך משתמש Moovit ש-Kav שומרת רק לתשלומים.",
+                    "לחשבון רב-פס שלכם, שמשמש רק לתשלומים.",
             ),
         )
         Absent(
@@ -171,14 +195,14 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
 @Composable
 internal fun LookChoices(inset: Dp = 0.dp, heading: @Composable (String) -> Unit) {
     val ctx = LocalContext.current
-    heading(T("look", "מראה"))
+    heading(T("Look", "מראה"))
     Row(Modifier.padding(horizontal = inset).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
         for ((look, name) in listOf(Look.OLED to "OLED", Look.LIGHT to T("Light", "בהיר"), Look.DARK to T("Dark", "כהה"))) {
             Chip(name, K.look == look) { K.applyTheme(look); Prefs.setLook(ctx, look) }
         }
     }
     if (!liquidGlassReady) return
-    heading(T("glass", "זכוכית"))
+    heading(T("Glass", "זכוכית"))
     Row(Modifier.padding(horizontal = inset).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
         Chip(T("Liquid glass", "זכוכית נוזלית"), K.liquid, Modifier.border(1.5.dp, K.accent, RoundedCornerShape(K.rControl))) {
             K.liquid = true; Prefs.setLiquidGlass(ctx, true)
@@ -201,7 +225,7 @@ private fun SeenChoice(model: KavModel, onChoose: () -> Unit) {
         city = withContext(Dispatchers.Default) { model.cityAround(ctx.applicationContext)?.name }
     }
     Text(
-        T("what Moovit sees", "מה Moovit רואה"), style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+        T("What Moovit sees", "מה Moovit רואה"), style = DisplayItalic, fontSize = 12.sp, color = K.dim,
         modifier = Modifier.padding(start = K.gap1, top = K.gap4, bottom = K.gap2),
     )
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
@@ -330,6 +354,36 @@ internal fun openLink(ctx: android.content.Context, url: String) {
     }
 }
 
+// Google's panorama of a spot, in the Maps app when it's there, else on the web. Only when asked: Google learns the spot.
+internal fun openStreetView(ctx: android.content.Context, lat: Double, lon: Double) {
+    val app = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("google.streetview:cbll=$lat,$lon"))
+        .setPackage("com.google.android.apps.maps").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { ctx.startActivity(app) }.onFailure {
+        openLink(ctx, "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=$lat,$lon")
+    }
+}
+
+@Composable
+private fun SpeakerGlyph(tint: Color, size: Dp = 18.dp) {
+    Canvas(Modifier.size(size)) {
+        val w = this.size.width; val h = this.size.height; val sw = w * .09f
+        val cone = Path().apply {
+            moveTo(w * .12f, h * .38f)
+            lineTo(w * .30f, h * .38f)
+            lineTo(w * .52f, h * .18f)
+            lineTo(w * .52f, h * .82f)
+            lineTo(w * .30f, h * .62f)
+            lineTo(w * .12f, h * .62f)
+            close()
+        }
+        drawPath(cone, tint, style = Stroke(sw))
+        drawArc(tint, -45f, 90f, false, Offset(w * .46f, h * .32f), androidx.compose.ui.geometry.Size(w * .36f, h * .36f),
+            style = Stroke(sw, cap = StrokeCap.Round))
+        drawArc(tint, -45f, 90f, false, Offset(w * .40f, h * .16f), androidx.compose.ui.geometry.Size(w * .56f, h * .68f),
+            style = Stroke(sw, cap = StrokeCap.Round))
+    }
+}
+
 @Composable
 private fun ShieldGlyph(tint: Color, size: Dp = 18.dp) {
     Canvas(Modifier.size(size)) {
@@ -346,6 +400,52 @@ private fun ShieldGlyph(tint: Color, size: Dp = 18.dp) {
         drawPath(shield, tint, style = Stroke(sw))
         drawCircle(tint, w * .085f, Offset(w * .5f, h * .46f))
         drawLine(tint, Offset(w * .5f, h * .46f), Offset(w * .5f, h * .66f), sw, StrokeCap.Round)
+    }
+}
+
+// Kav's fixes for Moovit and Google are signed files it checks once a day. This asks now, for when something has just
+// stopped working and a fix may already be out.
+@Composable
+private fun FixCheck() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var result by remember { mutableStateOf<SignedFile.Check?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    Row(
+        Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(14.dp).padding(K.gap3),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(K.gap3),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(T("Fixes for Moovit and Google", "תיקונים ל-Moovit ול-Google"), fontSize = 14.sp, color = K.text)
+            Text(
+                when {
+                    checking -> T("Looking…", "בודקים…")
+                    result == SignedFile.Check.NEWER -> T("A fix arrived and is in use", "הגיע תיקון והוא כבר בשימוש")
+                    result == SignedFile.Check.SAME -> T("Kav has the latest fixes", "ל-Kav יש את התיקונים האחרונים")
+                    result == SignedFile.Check.FAILED -> T("Couldn't check. Try again online.", "לא הצלחנו לבדוק. נסו שוב כשיש חיבור.")
+                    else -> T("Checked once a day, no update needed", "נבדק פעם ביום, בלי צורך בעדכון")
+                },
+                fontSize = 12.sp, color = if (result == SignedFile.Check.NEWER) K.accent else K.dim,
+            )
+        }
+        Chip(if (checking) T("Checking…", "בודקים…") else T("Check now", "בדקו עכשיו"), false) {
+            if (checking) return@Chip
+            scope.launch {
+                checking = true
+                val (kav, google) = withContext(Dispatchers.IO) {
+                    runCatching { KavRecipe.refresh(ctx, force = true) }.getOrDefault(SignedFile.Check.FAILED) to
+                        runCatching { GoogleRecipe.refresh(ctx, force = true) }.getOrDefault(SignedFile.Check.FAILED)
+                }
+                result = when {
+                    kav == SignedFile.Check.NEWER || google == SignedFile.Check.NEWER -> SignedFile.Check.NEWER
+                    kav == SignedFile.Check.FAILED || google == SignedFile.Check.FAILED -> SignedFile.Check.FAILED
+                    else -> SignedFile.Check.SAME
+                }
+                if (result == SignedFile.Check.NEWER) Online.retryNow()
+                checking = false
+            }
+        }
     }
 }
 

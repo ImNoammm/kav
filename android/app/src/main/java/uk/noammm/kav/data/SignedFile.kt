@@ -13,22 +13,25 @@ import java.util.Base64
 // a day and the last good copy is kept on the phone. A copy counts only when its signature checks out against the key
 // Kav pins for it, so whoever holds the private half is the only one who can change what Kav does.
 internal class SignedFile(private val name: String, private val url: String, private val key: String) {
-    // Hands every copy that verifies to take, the kept one first, then the published one at most once a day. take
-    // answers whether it used the copy, and only a used copy is kept. Blocks, so off the main thread.
-    fun refresh(ctx: Context, take: (ByteArray) -> Boolean) {
+    enum class Check { NEWER, SAME, FAILED }
+
+    // Hands every copy that verifies to take, the kept one first, then the published one at most once a day, or now
+    // when forced. take answers whether it used the copy, and only a used copy is kept. Blocks, so off the main thread.
+    fun refresh(ctx: Context, force: Boolean = false, take: (ByteArray) -> Boolean): Check {
         val dir = File(ctx.filesDir, name).apply { mkdirs() }
         val kept = File(dir, "recipe.json")
         val keptSignature = File(dir, "recipe.json.sig")
         val checked = File(dir, "checked")
         runCatching { if (kept.exists() && keptSignature.exists() && verify(kept.readBytes(), keptSignature.readText())) take(kept.readBytes()) }
-        if (checked.exists() && System.currentTimeMillis() - checked.lastModified() < DAY_MS) return
-        val body = get(url) ?: return
-        val signature = get("$url.sig")?.toString(Charsets.UTF_8) ?: return
+        if (!force && checked.exists() && System.currentTimeMillis() - checked.lastModified() < DAY_MS) return Check.SAME
+        val body = get(url) ?: return Check.FAILED
+        val signature = get("$url.sig")?.toString(Charsets.UTF_8) ?: return Check.FAILED
         checked.writeText("")
-        if (verify(body, signature) && take(body)) {
-            kept.writeBytes(body)
-            keptSignature.writeText(signature)
-        }
+        if (!verify(body, signature)) return Check.FAILED
+        if (!take(body)) return Check.SAME
+        kept.writeBytes(body)
+        keptSignature.writeText(signature)
+        return Check.NEWER
     }
 
     // ECDSA P-256 over the file's exact bytes, as `openssl dgst -sha256 -sign` makes it.

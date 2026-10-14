@@ -17,24 +17,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import uk.noammm.kav.data.MoovitPay
+import uk.noammm.kav.data.RavPass
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-private class Month(val key: Int, val charges: List<MoovitPay.Charge>)
-
-internal fun currentChargeTicket(c: MoovitPay.Charge, wallet: MoovitPay.Wallet?): MoovitPay.Ticket? {
-    val near = wallet?.tickets.orEmpty().filter { kotlin.math.abs(it.boughtUtc - c.atUtc) < 30_000 }
-    val priced = near.filter { c.amount != null && it.price?.agorot == c.amount.agorot }
-    return priced.ifEmpty { near }.minByOrNull { kotlin.math.abs(it.boughtUtc - c.atUtc) }
-}
+private class Month(val key: Int, val rides: List<RavPass.Ride>)
 
 // year * 12 + month, from 0, in Israel time.
 private fun monthKey(ms: Long): Int = Calendar.getInstance(ISRAEL).run { timeInMillis = ms; get(Calendar.YEAR) * 12 + get(Calendar.MONTH) }
@@ -50,43 +45,36 @@ private fun monthName(key: Int): String = SimpleDateFormat("MMMM yyyy", if (T.rt
     .apply { timeZone = ISRAEL }
     .format(Calendar.getInstance(ISRAEL).apply { clear(); set(key / 12, key % 12, 1, 12, 0) }.time)
 
-private fun shekels(agorot: Long): String = MoovitPay.Price(agorot, "ILS").text
+private fun shekels(agorot: Long): String = RavPass.Price(agorot).text
 
-// The payment history: totals at the top, a total for any dates, then every charge month by month. A month
-// is asked for only when the list reaches it, so a long history never arrives all at once.
+private fun RavPass.Ride.paid() = if (cancelled) 0L else amount?.agorot ?: 0L
+
+// The payment history: totals at the top, a total for any dates, then every ride month by month. HopOn sends six
+// months at a time, and the next six only when the list reaches them.
 @Composable
 fun PayHistoryScreen(onClose: () -> Unit, onTicket: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     val now = remember { System.currentTimeMillis() }
-    val statusNow = rememberNow()
-    val months = remember { mutableStateListOf<Month>() }
-    val cache = remember { HashMap<Int, List<MoovitPay.Charge>>() }
-    var billing by remember { mutableStateOf<MoovitPay.Billing?>(null) }
-    var cursor by remember { mutableIntStateOf(monthKey(now)) }
-    var empty by remember { mutableIntStateOf(0) }
+    val rides = remember { mutableStateListOf<RavPass.Ride>() }
+    // The months asked for so far, counting back from this one, and whether HopOn has older ones.
+    var offset by remember { mutableIntStateOf(0) }
+    var more by remember { mutableStateOf(true) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var from by remember { mutableLongStateOf(startOfMonth(now)) }
     var to by remember { mutableLongStateOf(now) }
-    var range by remember { mutableStateOf<Pair<Long, Int>?>(null) }
     var picking by remember { mutableStateOf(false) }
 
-    suspend fun monthOf(key: Int): List<MoovitPay.Charge> =
-        cache[key] ?: Payer.call { MoovitPay.history(it, key % 12 + 1, key / 12) }.also { cache[key] = it }
-
-    // A year of empty months in a row is taken as the start of the history.
-    val done = empty >= 12
-
     suspend fun loadNext() {
-        val key = cursor
-        val list = monthOf(key)
-        months += Month(key, list)
-        empty = if (list.isEmpty()) empty + 1 else 0
-        cursor = key - 1
+        val (loaded, older) = Payer.call { RavPass.billings(it, offset) }
+        val known = rides.map { it.id }.toSet()
+        rides += loaded.filter { it.id !in known }
+        offset += 6
+        more = older
     }
 
-    fun more() {
-        if (loading || done) return
+    fun next() {
+        if (loading || !more) return
         loading = true; error = null
         scope.launch {
             try { loadNext() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = failure(e) }
@@ -94,36 +82,19 @@ fun PayHistoryScreen(onClose: () -> Unit, onTicket: (String) -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) {
-        loading = true
-        try {
-            billing = Payer.call { MoovitPay.billing(it) }
-            loadNext()
-            loadNext()
-        } catch (e: CancellationException) { throw e } catch (e: Exception) { error = failure(e) }
-        loading = false
+    LaunchedEffect(Unit) { next() }
+
+    // The dates picked reach further back than the months loaded: the older ones come too.
+    LaunchedEffect(from, offset, loading) {
+        val oldest = Calendar.getInstance(ISRAEL).apply { timeInMillis = startOfMonth(now); add(Calendar.MONTH, -offset + 1) }.timeInMillis
+        if (from < oldest && more && !loading && error == null) next()
     }
 
-    // History can be opened directly after an app restart, before Home has loaded the tickets.
-    LaunchedEffect(Unit) { runCatching { Payer.refresh() } }
-
-    LaunchedEffect(from, to) {
-        range = null
-        try {
-            var total = 0L
-            var count = 0
-            // Newest month first, never one still to come; a year of empty months in a row is the start of the
-            // history, as in the list below.
-            var empties = 0
-            for (key in minOf(monthKey(to), monthKey(now)) downTo monthKey(from)) {
-                val charges = monthOf(key)
-                empties = if (charges.isEmpty()) empties + 1 else 0
-                if (empties >= 12) break
-                charges.filter { it.atUtc in from..to }.forEach { total += it.amount?.agorot ?: 0L; count++ }
-            }
-            range = total to count
-        } catch (e: CancellationException) { throw e } catch (e: Exception) { error = failure(e) }
-    }
+    val months = rides.groupBy { monthKey(it.boardedUtc) }.toSortedMap(compareByDescending { it })
+        .map { (k, v) -> Month(k, v.sortedByDescending { it.boardedUtc }) }
+    val thisMonth = months.firstOrNull { it.key == monthKey(now) } ?: Month(monthKey(now), emptyList())
+    val lastMonth = months.firstOrNull { it.key == monthKey(now) - 1 }
+    val inRange = rides.filter { it.boardedUtc in from..to }
 
     val list = rememberLazyListState()
     val nearEnd by remember {
@@ -132,7 +103,7 @@ fun PayHistoryScreen(onClose: () -> Unit, onTicket: (String) -> Unit) {
             (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 3
         }
     }
-    LaunchedEffect(nearEnd, loading, done, months.size) { if (nearEnd && !loading && !done && error == null) more() }
+    LaunchedEffect(nearEnd, loading, more, rides.size) { if (nearEnd && !loading && more && error == null) next() }
 
     androidx.activity.compose.BackHandler(onBack = onClose)
     Column(Modifier.fillMaxSize().background(K.bg)) {
@@ -143,13 +114,17 @@ fun PayHistoryScreen(onClose: () -> Unit, onTicket: (String) -> Unit) {
             contentPadding = PaddingValues(start = K.gap4, end = K.gap4, bottom = K.gap6 + LocalBottomBarInset.current),
             verticalArrangement = Arrangement.spacedBy(K.gap3),
         ) {
-            item(key = "stats") { Stats(billing, months.firstOrNull { it.key == monthKey(now) }, months.firstOrNull { it.key == monthKey(now) - 1 }) }
-            item(key = "range") { Box(Modifier.animateContentSize()) { RangeCard(from, to, range) { picking = true } } }
+            item(key = "stats") { Stats(thisMonth.takeIf { offset > 0 }, lastMonth ?: Month(monthKey(now) - 1, emptyList()).takeIf { offset > 0 }) }
+            item(key = "range") {
+                Box(Modifier.animateContentSize()) {
+                    RangeCard(from, to, inRange.takeIf { offset > 0 }?.let { r -> r.sumOf { it.paid() } to r.count { !it.cancelled } }) { picking = true }
+                }
+            }
             // Months without rides are left out, but for this one.
-            months.filter { it.charges.isNotEmpty() || it.key == monthKey(now) }.forEach { m ->
+            (listOf(thisMonth) + months.filter { it.key != thisMonth.key }).forEach { m ->
                 item(key = "m${m.key}") { Column(Modifier.animateItem()) { MonthHeader(m) } }
-                itemsIndexed(m.charges, key = { i, _ -> "c${m.key}_$i" }) { _, c ->
-                    Box(Modifier.animateItem()) { ChargeRow(c, statusNow, onTicket) }
+                itemsIndexed(m.rides, key = { _, r -> "r${r.id}" }) { _, r ->
+                    Box(Modifier.animateItem()) { RideRow(r, onTicket) }
                 }
             }
             item(key = "end") {
@@ -157,9 +132,9 @@ fun PayHistoryScreen(onClose: () -> Unit, onTicket: (String) -> Unit) {
                     when {
                         error != null -> Text(T("Couldn't load more. Tap to try again.", "לא הצלחנו לטעון עוד. הקישו לנסות שוב."),
                             fontSize = 14.sp, color = K.critical,
-                            modifier = Modifier.clickable(role = Role.Button) { error = null; more() })
+                            modifier = Modifier.clickable(role = Role.Button) { error = null; next() })
                         loading -> Note(T("Loading…", "טוען…"))
-                        done -> Note(T("That's the whole history.", "זו כל ההיסטוריה."))
+                        !more -> Note(T("That's the whole history.", "זו כל ההיסטוריה."))
                     }
                 }
             }
@@ -169,24 +144,23 @@ fun PayHistoryScreen(onClose: () -> Unit, onTicket: (String) -> Unit) {
 }
 
 @Composable
-private fun Stats(billing: MoovitPay.Billing?, thisMonth: Month?, lastMonth: Month?) {
-    fun paid(m: Month?) = m?.charges?.sumOf { it.amount?.agorot ?: 0L }
-    val saved = thisMonth?.charges?.sumOf { c ->
-        val full = c.full?.agorot ?: 0L
-        val amount = c.amount?.agorot ?: 0L
+private fun Stats(thisMonth: Month?, lastMonth: Month?) {
+    fun paid(m: Month?) = m?.rides?.sumOf { it.paid() }
+    val saved = thisMonth?.rides?.filter { !it.cancelled }?.sumOf { r ->
+        val full = r.full?.agorot ?: 0L
+        val amount = r.amount?.agorot ?: 0L
         if (full > amount) full - amount else 0L
     }
     Column(Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap5), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
         Text(T("This month", "החודש"), fontSize = 14.sp, color = K.muted)
         LtrText(paid(thisMonth)?.let { shekels(it) } ?: "…", 28.sp, K.text, FontWeight.SemiBold)
         Row(horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
-            StatLine(T("Rides", "נסיעות"), thisMonth?.charges?.size?.toString() ?: "…")
+            StatLine(T("Rides", "נסיעות"), thisMonth?.rides?.count { !it.cancelled }?.toString() ?: "…")
             StatLine(T("Saved", "נחסך"), saved?.let { shekels(it) } ?: "…")
             StatLine(T("Last month", "חודש שעבר"), paid(lastMonth)?.let { shekels(it) } ?: "…")
         }
-        billing?.current?.price?.let {
-            Note(T("Open bill so far: ", "חשבון פתוח עד כה: ") + T.ltr(it.text))
-        }
+        Note(T("Rav-Pass charges the card once a month, with the Ministry of Transport's discounts and caps.",
+            "רב-פס מחייבת את הכרטיס פעם בחודש, עם ההנחות ותקרות החיוב של משרד התחבורה."))
     }
 }
 
@@ -219,39 +193,39 @@ private fun RangeCard(from: Long, to: Long, range: Pair<Long, Int>?, onPick: () 
 private fun MonthHeader(m: Month) {
     Row(Modifier.fillMaxWidth().padding(top = K.gap3), verticalAlignment = Alignment.CenterVertically) {
         Text(monthName(m.key), fontSize = 15.sp, color = K.muted, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-        LtrText(shekels(m.charges.sumOf { it.amount?.agorot ?: 0L }), 14.sp, K.dim)
+        LtrText(shekels(m.rides.sumOf { it.paid() }), 14.sp, K.dim)
     }
-    if (m.charges.isEmpty()) Note(T("No rides yet this month.", "אין עדיין נסיעות החודש."))
+    if (m.rides.isEmpty()) Note(T("No rides yet this month.", "אין עדיין נסיעות החודש."))
 }
 
+// One ride, and its ticket when it is one of today's that Kav still shows.
 @Composable
-private fun ChargeRow(c: MoovitPay.Charge, now: Long, onTicket: (String) -> Unit) {
-    // Use the same status as Home, including when the free-transfer deadline passes while history is open.
-    val wallet = Payer.wallet
-    val ticket = currentChargeTicket(c, wallet)
-    val cancelled = ticket?.let { Payer.cancelled(it) } ?: Payer.cancelledAt(c.atUtc)
+private fun RideRow(r: RavPass.Ride, onTicket: (String) -> Unit) {
+    val now = rememberNow()
+    val ticket = Payer.tickets.firstOrNull { it.id == r.id }
     val time = SimpleDateFormat("d.M  $CLOCK", Locale.US).apply { timeZone = ISRAEL }
     Row(
         Modifier.fillMaxWidth().panel(K.rControl)
-            .clickable(enabled = ticket != null, role = Role.Button) { ticket?.let { onTicket(Payer.rideKey(it)) } }
+            .clickable(enabled = ticket != null, role = Role.Button) { ticket?.let { onTicket(it.id.toString()) } }
             .padding(horizontal = K.gap4, vertical = K.gap3),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
         Column(Modifier.weight(1f)) {
-            Text(c.name.ifBlank { T("Ride", "נסיעה") }, fontSize = 15.sp, color = K.text)
-            Text(T.ltr(time.format(Date(c.atUtc))) + "  " + when {
-                cancelled -> T("Canceled", "בוטל")
-                ticket != null -> ticketStatus(ticket, wallet?.window, now).text
-                wallet == null -> T("Checking…", "בודק…")
-                else -> T("Inactive ticket", "כרטיס לא פעיל")
-            },
-                fontSize = 13.sp, color = K.dim)
+            val name = listOf(r.line.ifBlank { null }?.let { T("Line $it", "קו $it") }, r.towards.ifBlank { null })
+                .filterNotNull().joinToString(" · ").ifBlank { T("Ride", "נסיעה") }
+            Text(name + if (r.guests > 0) "  ×${r.guests + 1}" else "", fontSize = 15.sp, color = K.text,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(T.ltr(time.format(Date(r.boardedUtc))) + "  " + when {
+                r.cancelled -> T("Canceled", "בוטל")
+                ticket != null -> ticketStatus(ticket, now)
+                else -> r.from
+            }, fontSize = 13.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Column(horizontalAlignment = Alignment.End) {
-            LtrText(c.amount?.text ?: "", 15.sp, K.text)
-            val full = c.full
-            if (full != null && full.agorot > (c.amount?.agorot ?: 0L)) {
+            LtrText(r.amount?.text ?: "", 15.sp, K.text)
+            val full = r.full
+            if (full != null && full.agorot > (r.amount?.agorot ?: 0L)) {
                 LtrText(full.text, 12.sp, K.dim, decoration = androidx.compose.ui.text.style.TextDecoration.LineThrough)
             }
         }

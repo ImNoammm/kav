@@ -544,7 +544,7 @@ private fun BoardOption(
                 AgencyMark(rt, agency, plate?.ink ?: K.muted, 15.dp)
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "#${ride.lineId}",
+                    ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…",
                     fontSize = 15.sp, color = plate?.ink ?: K.text, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp),
                 )

@@ -93,7 +93,7 @@ object Moovit {
         strField(19, UUID.randomUUID().toString())
         strField(20, UUID.randomUUID().toString().replace("-", ""))
         strField(21, KavRecipe.moovit.storeAppId)
-        // useNewBrazeWorkspace: Moovit's app sets it, and the payment SMS codes of a user made without it are refused.
+        // useNewBrazeWorkspace, as Moovit's app sets it.
         boolField(22, true)
         stop()
     }.bytes()
@@ -145,22 +145,6 @@ object Moovit {
 
     private val sequence = java.util.concurrent.atomic.AtomicInteger()
     private val agent = System.getProperty("http.agent")?.takeIf { it.isNotBlank() } ?: "Dalvik/2.1.0"
-
-    // Moovit's app takes its remote settings from here, the context its payment sign-in uses among them. Read once a
-    // run; null when Moovit can't be reached, and the caller keeps its own value.
-    @Volatile private var settings: Map<String, String>? = null
-
-    fun setting(name: String): String? {
-        val known = settings ?: runCatching {
-            val (code, raw) = get(APP4CDN, "V4/GetConfiguration?metroId=1&apiKey=$APP_ID&clientVersion=$CLIENT_VERSION&ostype=2",
-                mapOf("Accept" to "application/octet", "User-Agent" to agent, "api_key" to APP_ID,
-                    "client_version" to CLIENT_VERSION, "phone_type" to "2"))
-            if (code != 200) return null
-            (TReader(raw).readStruct()[1] as? Map<*, *>).orEmpty().entries
-                .mapNotNull { (k, v) -> if (k is String && v is String) k to v else null }.toMap()
-        }.getOrNull()?.also { settings = it } ?: return null
-        return known[name]
-    }
 
     // As the app's other requests carry them: the phone's own Dalvik agent and a count that goes up.
     internal fun authHeaders(s: MoovitSession) = recipe(mapOf(
@@ -1130,8 +1114,16 @@ object Moovit {
         val shapes: Map<Int, List<Pair<Double, Double>>> = emptyMap(),
         val pollSecs: Int = 20,
         val patterns: Map<Int, List<Int>> = emptyMap(),
+        // How far each ride runs from the plan, in seconds, by the last stop Moovit timed it at.
+        val delays: Map<Long, Long> = emptyMap(),
     ) {
         fun arrival(ride: Leg): Arrival? = live[ArrivalKey(ride.fromStop, ride.tripId)]
+
+        // Moovit's live time for the ride at the rider's stop. It doesn't time a line's last stop.
+        fun alightLiveAt(ride: Leg): Long? = live[ArrivalKey(ride.toStop, ride.tripId)]?.rtUtc?.takeIf { it > 0 }
+
+        // When the ride gets to the rider's stop: the live time, or the plan moved by how far the ride runs from it.
+        fun alightAt(ride: Leg): Long = alightLiveAt(ride) ?: (ride.arr + (delays[ride.tripId] ?: 0L))
 
         fun liveFor(ride: Leg): List<Arrival> = live.values.filter { a ->
             a.stopId == ride.fromStop && a.lineId == ride.lineId &&
@@ -1170,7 +1162,7 @@ object Moovit {
 
     }
 
-    fun hydrate(s: MoovitSession, list: List<Itinerary>): Resolved {
+    private fun detailIds(list: List<Itinerary>): Pair<Set<Int>, Set<Int>> {
         val lineIds = LinkedHashSet<Int>()
         val stopIds = LinkedHashSet<Int>()
         for (i in list) for (leg in i.legs) for (l in leg.options) {
@@ -1180,24 +1172,58 @@ object Moovit {
                 if (l.toStop > 0) stopIds.add(l.toStop)
             }
         }
+        return lineIds to stopIds
+    }
+
+    // Line and stop details, several at a time. One that fails stays out of the maps.
+    private fun loadDetails(
+        pool: java.util.concurrent.ExecutorService, s: MoovitSession, lineIds: Collection<Int>, stopIds: Collection<Int>,
+        lines: MutableMap<Int, LineInfo>, stops: MutableMap<Int, StopInfo>, types: MutableMap<Int, Int>,
+    ) {
+        val lineJobs = lineIds.map { id -> id to pool.submit<LineInfo?> { lineInfo(s, id) } }
+        val stopJobs = stopIds.map { id -> id to pool.submit<StopInfo?> { stopInfo(s, id) } }
+        for ((id, f) in lineJobs) runCatching { f.get() }.getOrNull()?.let { lines[id] = it }
+        for ((id, f) in stopJobs) runCatching { f.get() }.getOrNull()?.let { stops[id] = it }
+        val agencies = lines.values.map { it.agencyId }.distinct().filter { it !in types }
+        val typeJobs = agencies.map { a -> a to pool.submit<Int> { agencyRouteType(s, a) } }
+        for ((a, f) in typeJobs) types[a] = runCatching { f.get() }.getOrNull() ?: 3
+    }
+
+    // The stops whose live times a list of trips needs: where each ride boards, and on the trip being taken
+    // (ending) also where each ride lets the rider off.
+    private fun timedStops(list: List<Itinerary>, ending: Boolean): List<Int> {
+        val rides = list.flatMap { i -> i.legs.filter { it.kind == LegKind.WAIT || it.kind == LegKind.RIDE } }
+            .flatMap { it.options }
+        val alighting = if (ending) rides.filter { it.kind == LegKind.RIDE }.map { it.toStop } else emptyList()
+        return (rides.map { it.fromStop } + alighting).filter { it > 0 }.distinct().take(40)
+    }
+
+    // How far each ride runs from the plan: Moovit's live time at the stop where the rider gets off, else where they
+    // board. Against the plan, not the timetable: the plan already counts the delay Moovit expected when it planned.
+    internal fun delaysOf(list: List<Itinerary>, live: Map<ArrivalKey, Arrival>): Map<Long, Long> {
+        val out = HashMap<Long, Long>()
+        for (i in list) for (leg in i.legs) for (ride in leg.options) {
+            if (ride.kind != LegKind.RIDE || ride.tripId == 0L) continue
+            val off = live[ArrivalKey(ride.toStop, ride.tripId)]?.rtUtc?.takeIf { it > 0 }?.let { it - ride.arr }
+            val on = live[ArrivalKey(ride.fromStop, ride.tripId)]?.rtUtc?.takeIf { it > 0 }?.let { it - ride.dep }
+            (off ?: on)?.let { out[ride.tripId] = it }
+        }
+        return out
+    }
+
+    fun hydrate(s: MoovitSession, list: List<Itinerary>, ending: Boolean = false): Resolved {
+        val (lineIds, stopIds) = detailIds(list)
         val lines = LinkedHashMap<Int, LineInfo>()
         val stops = LinkedHashMap<Int, StopInfo>()
         val types = LinkedHashMap<Int, Int>()
-        val boarding = list.flatMap { i -> i.legs.filter { it.kind == LegKind.WAIT || it.kind == LegKind.RIDE } }
-            .flatMap { it.options }.map { it.fromStop }.filter { it > 0 }.distinct().take(40)
+        val boarding = timedStops(list, ending)
         val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
         // The live layer doesn't need the line and stop details, so both load at once.
         val liveJob = pool.submit<Pair<Map<ArrivalKey, Arrival>, Int>> {
             try { stopArrivals(s, boarding) } catch (e: Exception) { emptyMap<ArrivalKey, Arrival>() to 20 }
         }
         val (live, poll) = try {
-            val lineJobs = lineIds.map { id -> id to pool.submit<LineInfo?> { lineInfo(s, id) } }
-            val stopJobs = stopIds.map { id -> id to pool.submit<StopInfo?> { stopInfo(s, id) } }
-            for ((id, f) in lineJobs) runCatching { f.get() }.getOrNull()?.let { lines[id] = it }
-            for ((id, f) in stopJobs) runCatching { f.get() }.getOrNull()?.let { stops[id] = it }
-            val agencies = lines.values.map { it.agencyId }.distinct()
-            val typeJobs = agencies.map { a -> a to pool.submit<Int> { agencyRouteType(s, a) } }
-            for ((a, f) in typeJobs) types[a] = runCatching { f.get() }.getOrNull() ?: 3
+            loadDetails(pool, s, lineIds, stopIds, lines, stops, types)
             liveJob.get()
         } finally {
             pool.shutdown()
@@ -1208,7 +1234,7 @@ object Moovit {
         }
         val shapes = shapesFor(s, list, live)
         val patterns = runCatching { patternJob.get() }.getOrDefault(emptyMap())
-        return Resolved(lines, stops, types, live, shapes, poll, patterns)
+        return Resolved(lines, stops, types, live, shapes, poll, patterns, delaysOf(list, live))
     }
 
     // Shapes and stop patterns only refine a found route. One slow fetch must not hold the results back: whatever
@@ -1313,12 +1339,21 @@ object Moovit {
         return stops
     }
 
-    fun refreshLive(s: MoovitSession, list: List<Itinerary>, prev: Resolved): Resolved {
-        val boarding = list.flatMap { i -> i.legs.filter { it.kind == LegKind.WAIT || it.kind == LegKind.RIDE } }
-            .flatMap { it.options }.map { it.fromStop }.filter { it > 0 }.distinct().take(40)
-        val (live, poll) = try { stopArrivals(s, boarding) } catch (e: Exception) { return prev }
-        return Resolved(prev.lines, prev.stops, prev.routeTypes, live, shapesFor(s, list, live, prev.shapes), poll,
-            patternsFor(s, list, live, prev.patterns))
+    fun refreshLive(s: MoovitSession, list: List<Itinerary>, prev: Resolved, ending: Boolean = false): Resolved {
+        val (live, poll) = try { stopArrivals(s, timedStops(list, ending)) } catch (e: Exception) { return prev }
+        // Details that didn't load with the results, on a weak connection, are asked for again on every refresh.
+        val (lineIds, stopIds) = detailIds(list)
+        val lines = LinkedHashMap(prev.lines)
+        val stops = LinkedHashMap(prev.stops)
+        val types = LinkedHashMap(prev.routeTypes)
+        val missingLines = lineIds.filter { it !in lines }
+        val missingStops = stopIds.filter { it !in stops }
+        if (missingLines.isNotEmpty() || missingStops.isNotEmpty()) {
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, missingLines.size + missingStops.size))
+            try { loadDetails(pool, s, missingLines, missingStops, lines, stops, types) } finally { pool.shutdown() }
+        }
+        return Resolved(lines, stops, types, live, shapesFor(s, list, live, prev.shapes), poll,
+            patternsFor(s, list, live, prev.patterns), prev.delays + delaysOf(list, live))
     }
 
     val ALL_ROUTE_TYPES = listOf(0, 1, 2, 3, 4, 5, 6, 7)

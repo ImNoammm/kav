@@ -81,6 +81,7 @@ class TripService : Service() {
     }
 
     override fun onDestroy() {
+        Speaker.shutdown()
         handler.removeCallbacksAndMessages(null)
         tracking?.invoke()
         tracking = null
@@ -154,10 +155,15 @@ class TripService : Service() {
             sent.getString(trip, null)?.let { fired.addAll(it.split(',')) }
         }
         val latest = listOfNotNull(fix, TripBridge.fixNow?.invoke()).maxByOrNull { it.at }
-        val due = tripAlert(journey, step, latest, System.currentTimeMillis() / 1000) ?: return
-        if (!fired.add(due.key)) return
+        val now = System.currentTimeMillis() / 1000
+        val due = listOfNotNull(
+            tripAlert(journey, step, latest, now),
+            transferAlert(journey, step, Payer.transferUntil(now * 1000)?.div(1000), now),
+        ).firstOrNull { it.key !in fired } ?: return
+        fired.add(due.key)
         sent.edit().clear().putString(trip, fired.joinToString(",")).apply()
         alert(this, due.title, due.text)
+        if (Prefs.spokenAlerts(this)) Speaker.say(this, due.spoken)
     }
 
     private fun advance() {
@@ -184,10 +190,10 @@ class TripService : Service() {
         })
     }
 
-    // "PAY QUICK": the bus ride kept with Asshole mode is bought. A failure comes as an alert with Moovit's reason; "Paid"
+    // "PAY QUICK": the bus ride kept with Asshole mode is bought. A failure comes as an alert with HopOn's reason; "Paid"
     // stays on the button for a few seconds, as on the app's square.
     private fun pay() {
-        Payer.payLater({ key, leg, journey -> notePaid(this, key, leg, journey) }) {
+        Payer.payLater(this, { key, leg, journey -> notePaid(this, key, leg, journey) }) {
             val paid = Payer.paidLater
             if (Payer.pending != null) Payer.laterError?.let { alert(this, T("Not paid", "לא שולם"), it) }
             post(force = true)

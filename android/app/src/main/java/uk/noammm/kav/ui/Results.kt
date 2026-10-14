@@ -333,7 +333,18 @@ internal fun DepartureTimes(deps: List<Moovit.Departure>, now: Long) {
         }
         if (allMinutes) Text(T("min", "דק׳"), fontSize = 14.sp, color = K.dim)
     }
+    // Moovit's words for a vehicle held up in traffic, so the ride can take longer than planned too.
+    labels.firstOrNull()?.dep?.takeIf { it.delayed }?.let { first ->
+        Text(
+            T("Delay due to traffic", "עיכוב בגלל עומסי תנועה"),
+            fontSize = 12.sp, color = if (first.traffic == HEAVY_TRAFFIC) K.critical else K.problem,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
 }
+
+// Moovit's MVTrafficStatus: 1 none, 2 medium, 3 heavy.
+internal const val HEAVY_TRAFFIC = 3
 
 @Composable
 internal fun PlatformTag(platform: String) {
@@ -357,8 +368,11 @@ private fun RouteChoices(ride: Moovit.Leg, r: Moovit.Resolved) {
     val labels = ride.lineChoices.mapNotNull { id ->
         ride.options.firstOrNull { it.lineId == id }?.shortName?.ifBlank { null } ?: r.line(id)?.number?.ifBlank { null }
     }.distinct()
-    // A long list wraps after a slash, never between a number and its slash.
-    LineBadgeOnline(ride.lineId, labels.joinToString(" / ") { it.replace(' ', '\u00A0') }.replace(" /", "\u00A0/"), r)
+    // Each number is isolated in the reading direction, or a Hebrew letter in one ("33א / 29 / 501") pulls the
+    // numbers after it to its side ("33501 / 29 / א"). A long list wraps after a slash, never between a number and
+    // its slash.
+    val isolate = if (T.rtl) '\u2067' else '\u2066'
+    LineBadgeOnline(ride.lineId, labels.joinToString("\u00A0/ ") { "$isolate${it.replace(' ', '\u00A0')}\u2069" }, r)
 }
 
 fun depColour(d: Moovit.Departure): Color = when (d.state) {

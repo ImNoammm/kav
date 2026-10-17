@@ -242,6 +242,8 @@ private class Tracked(
     val line: Moovit.LineInfo?,
     val looked: Boolean,
     val routeType: Int,
+    // The line as Kav's server has it, from the ministry's own data.
+    val kav: KavLive.Line? = null,
 ) {
     val tripId get() = arrival.tripId
     val number get() = line?.number?.ifBlank { null } ?: if (pending) "…" else "#${arrival.lineId}"
@@ -539,7 +541,7 @@ fun LiveScreen(model: KavModel) {
             (area?.buses.orEmpty() + stopBuses.values).groupBy { it.key }.values.map { same -> same.maxBy { it.spot.at } }
                 .map { bus ->
                     val line = known[bus.route]
-                    Tracked(KavLive.fresher(KavLive.busArrival(bus), followed), null, KavLive.lineInfo(line, ""), true, line?.type ?: 3)
+                    Tracked(KavLive.fresher(KavLive.busArrival(bus), followed), null, KavLive.lineInfo(line, ""), true, line?.type ?: 3, line)
                 }.sortedBy { metres(stopsAt.first, stopsAt.second, it.arrival.lat, it.arrival.lon) }
         } else seen.values.filter { it.hasLocation }.groupBy { it.tripId }.values.map { at ->
             val first = at.minBy { it.rtUtc.takeIf { t -> t > 0 } ?: it.staticUtc }
@@ -605,6 +607,12 @@ fun LiveScreen(model: KavModel) {
         }
     }
     val lineStops = if (fromServer) tripStops else patternStops
+    // The bus's stops for a report: from Kav's timetable with the codes on their signs, or Moovit's, to ask it about.
+    val reportStops = remember(lineStops, tripNet) {
+        lineStops.map { s ->
+            ReportStop(s.id, s.name, if (s.id < 0) tripNet?.code?.getOrNull(-s.id - 1)?.takeIf { it > 0 }?.toString() else null)
+        }
+    }
     // From Kav's server the road comes from the ministry's timetable, by the bus's route.
     val moovitRoute = rememberLineRoute(focusVehicle?.arrival?.tripShapeId ?: -1)
     val serverRoute = rememberKavShape(focusVehicle?.arrival?.vehicleId?.takeIf { fromServer }?.let(KavLive::routeOf) ?: -1)
@@ -730,7 +738,8 @@ fun LiveScreen(model: KavModel) {
                                 onClose = { focus = null },
                             )
                             is LiveFocus.Vehicle -> LiveVehicleCard(
-                                focusVehicle?.takeIf { it.tripId == f.tripId }, now, lineStops, progress,
+                                focusVehicle?.takeIf { it.tripId == f.tripId }, now, lineStops, progress, reportStops,
+                                onReport = { model.report = it },
                             ) { focus = f.from?.let { LiveFocus.Stop(it) } }
                             else -> Unit
                         }
@@ -1024,7 +1033,10 @@ private fun CardClose(onClose: () -> Unit) {
 }
 
 @Composable
-private fun LiveVehicleCard(v: Tracked?, now: Long, stops: List<Moovit.Stop>, progress: Float, onClose: () -> Unit) {
+private fun LiveVehicleCard(
+    v: Tracked?, now: Long, stops: List<Moovit.Stop>, progress: Float, reportStops: List<ReportStop>,
+    onReport: (ReportFor) -> Unit, onClose: () -> Unit,
+) {
     var last by remember { mutableStateOf(v) }
     if (v != null) last = v
     val shown = v ?: last
@@ -1069,6 +1081,21 @@ private fun LiveVehicleCard(v: Tracked?, now: Long, stops: List<Moovit.Stop>, pr
         Spacer(Modifier.height(K.gap3))
         KavLive.plateOf(a.vehicleId)?.let { LiveFact(T("Number plate", "מספר רישוי"), it) }
         if (a.platform.isNotBlank()) LiveFact(T("Platform", "רציף"), a.platform)
+        shown.line?.takeIf { modeOf(shown.routeType) == Mode.BUS }?.let { line ->
+            Text(T("Report this bus", "דיווח על האוטובוס הזה"), fontSize = 14.sp, color = K.accent,
+                modifier = Modifier.clickable(role = Role.Button) {
+                    val kav = shown.kav
+                    onReport(ReportFor(
+                        line = shown.number, agency = Moovit.agencyName(line.agencyId).orEmpty(),
+                        origin = line.origin, destination = line.destination,
+                        stops = reportStops, moovitStops = kav == null,
+                        plate = KavLive.plateOf(a.vehicleId), at = now,
+                        near = if (a.hasLocation) a.lat to a.lon else null,
+                        towns = kav?.let { it.fromCity to it.toCity },
+                        operatorId = kav?.agency, direction = kav?.name?.let(::ministryDirection),
+                    ))
+                }.padding(vertical = K.gap2))
+        }
         // Only once it's known where the bus is, so the rail opens on it.
         androidx.compose.animation.AnimatedVisibility(
             stops.size > 1 && progress >= 0f,

@@ -63,6 +63,7 @@ fun TripDetailScreen(
     onHome: () -> Unit = onBack,
 ) {
     val r = rememberFresher(trip, resolved)
+    PlannedPlatforms(trip, r)
     var tracking by remember { mutableStateOf<Pair<Moovit.Leg, Int>?>(null) }
     var navigating by remember(trip) { mutableStateOf(startInNavigation) }
     var planFromNavigation by remember(trip) { mutableStateOf(false) }
@@ -121,7 +122,8 @@ fun TripDetailScreen(
             )
             else -> TripDetailBody(trip, r, fromLabel, toLabel, onBack = ::leavePlan,
                 onTrack = { leg, stopId -> tracking = leg to stopId },
-                onStart = { navigating = true; planFromNavigation = false; onStart() })
+                onStart = { navigating = true; planFromNavigation = false; onStart() },
+                onReport = { model.report = it })
         }
     }
     alert?.let { (group, label) ->
@@ -139,6 +141,7 @@ private fun TripDetailBody(
     onBack: () -> Unit,
     onTrack: (Moovit.Leg, Int) -> Unit,
     onStart: () -> Unit,
+    onReport: (ReportFor) -> Unit,
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
@@ -180,7 +183,7 @@ private fun TripDetailBody(
             RouteMap(trip, r, modifier = Modifier.padding(horizontal = K.gap3, vertical = K.gap2))
             Summary(trip, r)
             Spacer(Modifier.height(K.gap3))
-            Timeline(trip, r, fromLabel, toLabel, onTrack)
+            Timeline(trip, r, fromLabel, toLabel, onTrack, onReport)
             Spacer(Modifier.height(K.gap8))
         }
     }
@@ -257,6 +260,7 @@ private fun Timeline(
     fromLabel: String,
     toLabel: String,
     onTrack: (Moovit.Leg, Int) -> Unit,
+    onReport: (ReportFor) -> Unit,
 ) {
     val shaped = trip.legs.filter { it.shape.size >= 2 && it.kind != Moovit.LegKind.WALK }
     val tints = routeTints(shaped, r)
@@ -319,6 +323,7 @@ private fun Timeline(
                                 hm.format(Date(l.dep * 1000)), mode,
                                 platform = r.platform(l, wait),
                                 stopId = l.fromStop,
+                                streetView = board?.point ?: l.shape.firstOrNull(),
                             )
                             Spacer(Modifier.height(K.gap2))
                             BoardCard(l, wait, r, onTrack)
@@ -330,29 +335,48 @@ private fun Timeline(
                                 ModeGlyph(mode, tint, 15.dp)
                             }
                         }
+                        // A ride that's still ahead is reported as of now.
+                        rideReport(l, r, null, minOf(l.dep, System.currentTimeMillis() / 1000))?.let { report ->
+                            Text(T("Report a problem on this ride", "דיווח על בעיה בנסיעה הזו"), fontSize = 13.sp, color = K.accent,
+                                modifier = Modifier.clickable(role = Role.Button) { onReport(report) }.padding(vertical = K.gap1))
+                        }
                     }
                     val alight = r.stop(l.toStop)
                     val n = nextFromSameStop(i)
                     if (n >= 0) {
                         val next = trip.legs[n]
                         val nextWait = trip.legs.getOrNull(n - 1)?.takeIf { w -> w.kind == Moovit.LegKind.WAIT }
+                        val arrive = hm.format(Date(l.arr * 1000))
+                        val out = r.platform(next, nextWait)
+                        // From train to train: whether the next one leaves from the platform this one comes in at.
+                        val inAt = if (r.isTrain(l) && r.isTrain(next) && out.isNotBlank()) r.alightPlatform(l) else ""
                         Rail(Mark.STOP, ride, Seg(tintOf(next)), tintOf(next)) {
                             StopRowDetail(
                                 alight?.name ?: T("Change here", "החלפה כאן"), alight?.code,
                                 hm.format(Date(next.dep * 1000)), legMode(next, r),
-                                platform = r.platform(next, nextWait),
+                                platform = out,
                                 stopId = l.toStop,
-                                note = T("Change here · you arrive ${hm.format(Date(l.arr * 1000))}", "החלפה כאן · מגיעים ב-${hm.format(Date(l.arr * 1000))}"),
+                                streetView = alight?.point,
+                                note = when {
+                                    inAt.isBlank() -> T("Change here · you arrive $arrive", "החלפה כאן · מגיעים ב-$arrive")
+                                    inAt == out -> T("Change here · you arrive $arrive · same platform", "החלפה כאן · מגיעים ב-$arrive · באותו רציף")
+                                    else -> T("Change here · you arrive $arrive · from platform $inAt to $out",
+                                        "החלפה כאן · מגיעים ב-$arrive · מרציף $inAt לרציף $out")
+                                },
                             )
                             Spacer(Modifier.height(K.gap2))
                             BoardCard(next, nextWait, r, onTrack)
                         }
                         boarded = n
                     } else {
+                        // Getting off one train to walk to another: the platform it comes in at.
+                        val walkingToTrain = r.isTrain(l) &&
+                            trip.legs.drop(i + 1).firstOrNull { it.kind == Moovit.LegKind.RIDE }?.let(r::isTrain) == true
                         Rail(Mark.STOP, ride, walk, tint) {
                             StopRowDetail(
                                 alight?.name ?: T("Get off here", "ירידה כאן"), alight?.code,
                                 hm.format(Date(l.arr * 1000)), mode,
+                                platform = if (walkingToTrain) r.alightPlatform(l) else "",
                                 stopId = if (l === lastRide) l.toStop else -1,
                             )
                         }
@@ -472,6 +496,8 @@ private fun StopRowDetail(
     platform: String = "",
     stopId: Int = -1,
     note: String? = null,
+    // Where the stop is, for a look at it in Street View: one that's hidden or has no sign is easier to find.
+    streetView: Pair<Double, Double>? = null,
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         if (mode != null || stopId > 0) {
@@ -486,6 +512,7 @@ private fun StopRowDetail(
                 Spacer(Modifier.height(K.gap1))
                 PlatformTag(platform)
             }
+            if (streetView != null) StreetViewLink(streetView)
         }
         Spacer(Modifier.width(K.gap2))
         Text(time, fontSize = 14.sp, color = K.text)

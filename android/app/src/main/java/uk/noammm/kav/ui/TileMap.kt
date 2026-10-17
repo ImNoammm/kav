@@ -69,8 +69,6 @@ import kotlin.math.sin
 import kotlin.math.sinh
 import kotlin.math.tan
 
-const val MAP_ATTRIBUTION = "Protomaps · © OpenStreetMap"
-
 data class MapLine(
     val points: List<Pair<Double, Double>>,
     val colour: Color,
@@ -584,8 +582,9 @@ fun TileMap(
         }
     }
     val mapReady = MapFile.state is MapFile.State.Ready
-    LaunchedEffect(map, mapReady, K.look) {
-        if (mapReady) map?.setStyle(Style.Builder().fromJson(MapFile.styleJson(ctx, K.light, K.look == Look.OLED))) { style = it }
+    val type = MapFile.type
+    LaunchedEffect(map, mapReady, K.look, type) {
+        if (mapReady) map?.setStyle(Style.Builder().fromJson(MapFile.styleJson(ctx, K.light, K.look == Look.OLED, type))) { style = it }
     }
     fun Style.ensureKavIcons() {
         val px = with(density) { 1.dp.toPx() }
@@ -719,8 +718,8 @@ fun TileMap(
         }
 
         Text(
-            MAP_ATTRIBUTION,
-            fontSize = 8.sp, color = K.dim,
+            MapFile.attribution(type),
+            fontSize = 8.sp, color = if (type == MapFile.Type.SATELLITE) Color.White else K.dim,
             modifier = Modifier.align(Alignment.BottomEnd).alpha(0.8f)
                 .padding(end = contentPadding.calculateEndPadding(layoutDirection) + 6.dp,
                     bottom = contentPadding.calculateBottomPadding() + 3.dp),

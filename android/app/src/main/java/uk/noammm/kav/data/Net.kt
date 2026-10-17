@@ -22,6 +22,9 @@ class Net private constructor() {
     lateinit var code: IntArray; private set
     lateinit var cityOf: IntArray; private set
     lateinit var city: Array<String>; private set
+    // A stop's platform (רציף) where the ministry numbers one, else blank: a bus station's platforms are stops of their
+    // own that share its code. Bundles before KAV6 have none.
+    lateinit var platform: Array<String>; private set
 
     lateinit var rShort: Array<String>; private set
     lateinit var rLong: Array<String>; private set
@@ -59,6 +62,42 @@ class Net private constructor() {
             if (tripStart[mid] <= stopTime) lo = mid else hi = mid - 1
         }
         return lo
+    }
+
+    // The platform a line leaves a bus station from, at about that second of the day: the only one the timetable has it
+    // leave from there, else the one of its departure nearest that time, within five minutes. Blank when it can't tell.
+    fun platformOf(code: Int, number: String, second: Int): String {
+        val stops = platformStops[code] ?: return ""
+        // Screens ask on every redraw; a big station has thousands of departures to go through.
+        val key = "$code/$number/$second"
+        synchronized(platformsFound) { platformsFound[key] }?.let { return it }
+        val seen = HashSet<String>()
+        var nearest = ""
+        var gap = Int.MAX_VALUE
+        for (s in stops) for (i in dStart[s] until dStart[s + 1]) {
+            val st = cST[dConn[i]]
+            if (rShort[tripRoute[tripOf(st)]] != number) continue
+            seen.add(platform[s])
+            val off = Math.abs(Math.floorMod(stDep[st] - second + 43_200, 86_400) - 43_200)
+            if (off < gap) { gap = off; nearest = platform[s] }
+        }
+        val found = when {
+            seen.size == 1 -> seen.first()
+            gap <= 300 -> nearest
+            else -> ""
+        }
+        synchronized(platformsFound) { platformsFound[key] = found }
+        return found
+    }
+
+    private val platformsFound = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 256
+    }
+
+    private val platformStops: Map<Int, IntArray> by lazy {
+        val byCode = HashMap<Int, MutableList<Int>>()
+        for (s in 0 until nStops) if (platform[s].isNotEmpty() && code[s] > 0) byCode.getOrPut(code[s]) { ArrayList() }.add(s)
+        byCode.mapValues { it.value.toIntArray() }
     }
 
     // Where each town or city is, as the average of its stops.
@@ -110,9 +149,9 @@ class Net private constructor() {
     private fun parse(buf: ByteArray) {
         b = buf; p = 0
         val magic = String(b, 0, 4, StandardCharsets.US_ASCII)
-        if (magic != "KAV3" && magic != "KAV4" && magic != "KAV5") throw IllegalArgumentException("bad bundle: $magic")
+        if (magic != "KAV3" && magic != "KAV4" && magic != "KAV5" && magic != "KAV6") throw IllegalArgumentException("bad bundle: $magic")
         val v4 = magic != "KAV3"
-        val v5 = magic == "KAV5"
+        val v5 = magic == "KAV5" || magic == "KAV6"
         p = 4
 
         val nS = vi(); val nR = vi(); val nT = vi(); val nC = vi()
@@ -170,6 +209,12 @@ class Net private constructor() {
             }
             tripStart[nT] = ss.n
             stStop = ss.trimmed(); stDep = sd.trimmed()
+        }
+
+        platform = Array(nS) { "" }
+        if (magic == "KAV6") {
+            var s = 0
+            repeat(vi()) { s += vi(); platform[s] = vs() }
         }
 
         hay = Array(nS) { (name[it] + " " + cityOf(it)).lowercase() }

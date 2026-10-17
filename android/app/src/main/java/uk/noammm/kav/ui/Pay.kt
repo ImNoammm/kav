@@ -2367,7 +2367,7 @@ private fun TicketView(t: RavPass.Ticket, onExit: () -> Unit, onAgain: () -> Uni
     }
 }
 
-private object Seal {
+internal object Seal {
     private const val ALIAS = "kav-pay"
 
     private fun key(): SecretKey {

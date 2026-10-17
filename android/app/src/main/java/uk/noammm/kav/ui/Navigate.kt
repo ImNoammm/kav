@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -71,6 +72,8 @@ internal sealed class Step {
     class Ride(
         val ride: Moovit.Leg, val wait: Moovit.Leg?, val legIndex: Int,
         override val focus: List<Pair<Double, Double>>,
+        // The ride the rider changes to after this one, waiting for it as its own step would.
+        val change: Wait? = null,
     ) : Step()
     class Taxi(val leg: Moovit.Leg, override val focus: List<Pair<Double, Double>>) : Step()
     class Cycle(val leg: Moovit.Leg, override val focus: List<Pair<Double, Double>>) : Step()
@@ -104,8 +107,12 @@ internal fun buildSteps(trip: Moovit.Itinerary, fromLabel: String, toLabel: Stri
             }
             Moovit.LegKind.RIDE -> {
                 val wait = all.getOrNull(i - 1)?.takeIf { it.kind == Moovit.LegKind.WAIT }
+                val j = (i + 1 until all.size).firstOrNull { all[it].kind != Moovit.LegKind.WAIT && all[it].kind != Moovit.LegKind.WALK }
+                val change = j?.takeIf { all[it].kind == Moovit.LegKind.RIDE }?.let {
+                    Step.Wait(all[it], all.getOrNull(it - 1)?.takeIf { w -> w.kind == Moovit.LegKind.WAIT }, it, all[it].shape.take(1))
+                }
                 out.add(Step.Wait(l, wait, i, l.shape.take(1).ifEmpty { whole }))
-                out.add(Step.Ride(l, wait, i, l.shape.ifEmpty { whole }))
+                out.add(Step.Ride(l, wait, i, l.shape.ifEmpty { whole }, change))
             }
             Moovit.LegKind.TAXI -> out.add(Step.Taxi(l, l.shape.ifEmpty {
                 listOfNotNull(l.taxiPickup, l.taxiDropoff)
@@ -277,7 +284,8 @@ fun NavigateScreen(
                     label = "busCard",
                 ) { showing ->
                 if (showing != null) {
-                    VehicleCard(showing.second, showing.first, r, now, Modifier.padding(horizontal = K.gap3).padding(bottom = K.gap3)) { tappedBus = null }
+                    VehicleCard(showing.second, showing.first, r, now, Modifier.padding(horizontal = K.gap3).padding(bottom = K.gap3),
+                        onReport = { model.report = it }) { tappedBus = null }
                 } else Column(if (compact) Modifier.fillMaxHeight() else Modifier) {
                 val ceiling = with(LocalDensity.current) { cardHeight.roundToPx() }
                 val pageHeights = remember(steps) { mutableStateMapOf<Int, Int>() }
@@ -297,6 +305,7 @@ fun NavigateScreen(
                             chosen = chosen, fix = fix,
                             onChoose = ::choose,
                             pay = { leg, ride -> TripPay(model, leg, ride, r) },
+                            report = { model.report = it },
                         )
                     }
                 }
@@ -399,6 +408,8 @@ internal fun StepCard(
     onChoose: (leg: Int, option: Int) -> Unit = { _, _ -> },
     // The ride's payment, or its ticket once bought, on its riding card.
     pay: (@Composable (legIndex: Int, ride: Moovit.Leg) -> Unit)? = null,
+    // Reporting the bus ridden to the ministry.
+    report: ((ReportFor) -> Unit)? = null,
 ) {
     when (step) {
         is Step.Start -> Card(T("Start from", "התחלה מ-"), active) {
@@ -423,6 +434,7 @@ internal fun StepCard(
                     step.toRide?.let { legMode(it, r) },
                     platform = step.toRide?.let { r.platform(it) }.orEmpty(),
                     stopId = step.toStop,
+                    streetView = stop?.point?.takeIf { step.toRide != null },
                 )
             }
         }
@@ -484,17 +496,43 @@ internal fun StepCard(
             val stops = ride.stops
             val names = r.stops + rememberStopNames(stops)
             val alight = r.stop(ride.toStop) ?: names[ride.toStop]
-            val arrival = r.arrival(ride)
+            // The bus the rider is on, where it is along the ride and when it reaches each stop.
+            val trip = riderTrip(ride, r, fix, now)
+            val progress = stopsProgress(ride, names, busOn(ride, r, trip), fix, now)
+            val times = rideTimes(ride, r, trip, names, fix, now)
             // On board, the time left until the rider's stop; before, how long the ride takes.
-            val mins = if (active) minutesToAlight(ride, r, fix, now) else ride.minutes.toLong()
-            Card(
-                T("Ride ${stops.size - 1} stops to", "נסיעה ${stops.size - 1} תחנות אל").takeIf { stops.size > 1 } ?: T("Ride to", "נסיעה אל"),
-                active,
-                trailing = T("$mins min", "$mins דק׳"),
-            ) {
+            val mins = if (active) (((times.lastOrNull()?.utc ?: r.alightAt(ride)) - now + 59) / 60).coerceAtLeast(0)
+                else ride.minutes.toLong()
+            // On board, the stops left to the rider's own, counted down as the bus passes them.
+            val left = stops.size - progress.toInt()
+            val header = when {
+                active && progress >= 1f && left <= 1 -> T("Get off at the next stop", "רדו בתחנה הבאה")
+                active && progress >= 1f -> T("Get off in $left stops", "ירידה בעוד $left תחנות")
+                stops.size > 1 -> T("Ride ${stops.size - 1} stops to", "נסיעה ${stops.size - 1} תחנות אל")
+                else -> T("Ride to", "נסיעה אל")
+            }
+            val scroll = rememberScrollState()
+            var railTop by remember { mutableIntStateOf(0) }
+            Card(header, active, trailing = T("$mins min", "$mins דק׳"), scroll = scroll) {
                 StopLine(alight?.name ?: T("your stop", "התחנה שלכם"), alight?.code, legMode(ride, r), stopId = ride.toStop)
+                // Changing trains there: whether the next one leaves from the platform this one comes in at.
+                step.change?.let { boardingChoice(it.ride, it.wait, chosen[it.legIndex] ?: 0) }?.let { (next, nextWait) ->
+                    val code = (r.stop(next.fromStop) ?: Moovit.knownStop(next.fromStop))?.code
+                    val there = next.fromStop == ride.toStop || !code.isNullOrBlank() && code == alight?.code
+                    val inAt = if (there && r.isTrain(ride) && r.isTrain(next)) r.alightPlatform(ride) else ""
+                    val out = if (inAt.isNotBlank()) r.platform(next, nextWait) else ""
+                    if (out.isNotBlank()) Text(
+                        if (inAt == out) T("Your next train leaves from the same platform", "הרכבת הבאה יוצאת מאותו רציף")
+                        else T("You arrive on platform $inAt · your next train leaves from platform $out",
+                            "מגיעים לרציף $inAt · הרכבת הבאה יוצאת מרציף $out"),
+                        fontSize = 13.sp, color = K.muted, modifier = Modifier.padding(top = K.gap1),
+                    )
+                }
                 Spacer(Modifier.height(K.gap2))
                 LineRow(ride, r)
+                if (report != null) rideReport(ride, r, busOn(ride, r, trip), now)?.let {
+                    ReportLink(T("Report a problem on this ride", "דיווח על בעיה בנסיעה הזו")) { report(it) }
+                }
                 // Above the stops, so a long ride's payment is in sight without scrolling.
                 pay?.invoke(step.legIndex, ride)
                 if (stops.size > 1) {
@@ -507,7 +545,11 @@ internal fun StepCard(
                         Box(Modifier.height(1.dp).fillMaxWidth().background(K.border))
                         Spacer(Modifier.height(K.gap2 - 5.dp))
                     }
-                    StopRail(stops, names, stopsProgress(ride, names, arrival, fix, now), ride.arr)
+                    StopRail(
+                        stops, names, progress, ride.arr, times,
+                        Modifier.onGloballyPositioned { railTop = it.positionInParent().y.toInt() },
+                        follow = if (active) { row -> scroll.animateScrollTo(railTop + row) } else null,
+                    )
                 }
             }
         }
@@ -515,7 +557,10 @@ internal fun StepCard(
 }
 
 @Composable
-private fun StopLine(name: String, code: String?, mode: Mode?, platform: String = "", stopId: Int = -1) {
+private fun StopLine(
+    name: String, code: String?, mode: Mode?, platform: String = "", stopId: Int = -1,
+    streetView: Pair<Double, Double>? = null,
+) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         if (mode != null || stopId > 0) {
             StopGlyphOrPhoto(stopId, mode)
@@ -528,6 +573,7 @@ private fun StopLine(name: String, code: String?, mode: Mode?, platform: String 
                 Spacer(Modifier.height(K.gap1))
                 PlatformTag(platform)
             }
+            if (streetView != null) StreetViewLink(streetView)
         }
     }
 }
@@ -545,18 +591,28 @@ private fun PlanGlyph() {
     }
 }
 
-// arriveUtc 0 leaves the last stop without a time.
+// Each stop ahead shows its time from `times`, green when it's live; without times, arriveUtc is the last stop's (0 for
+// none). `follow` gets where the row of the stop last passed starts, each time the bus passes another.
 @Composable
 internal fun StopRail(
     stops: List<Int>,
     names: Map<Int, Moovit.StopInfo>,
     progress: Float,
     arriveUtc: Long,
+    times: List<StopTime> = emptyList(),
+    modifier: Modifier = Modifier,
+    follow: (suspend (Int) -> Unit)? = null,
 ) {
     val centres = remember(stops) { mutableStateListOf<Float>().also { c -> repeat(stops.size) { c.add(Float.NaN) } } }
+    val tops = remember(stops) { mutableStateListOf<Int>().also { c -> repeat(stops.size) { c.add(-1) } } }
     val density = LocalDensity.current
     val cap = with(density) { 11.dp.toPx() }
-    Box(Modifier.fillMaxWidth()) {
+    val passed = (progress.toInt() - 1).coerceIn(0, (stops.size - 1).coerceAtLeast(0))
+    val passedTop = tops.getOrElse(passed) { -1 }
+    if (follow != null) LaunchedEffect(passed, passedTop >= 0) {
+        if (progress >= 1f && passedTop >= 0) follow(passedTop)
+    }
+    Box(modifier.fillMaxWidth()) {
         Canvas(Modifier.matchParentSize()) {
             val x = if (layoutDirection == LayoutDirection.Rtl) size.width - 10.dp.toPx() else 10.dp.toPx()
             val wide = 3.dp.toPx()
@@ -586,6 +642,7 @@ internal fun StopRail(
                 Row(
                     Modifier.fillMaxWidth().onGloballyPositioned {
                         centres[i] = it.positionInParent().y + cap.coerceAtMost(it.size.height * .5f)
+                        tops[i] = it.positionInParent().y.toInt()
                     },
                 ) {
                     Spacer(Modifier.width(20.dp + K.gap2))
@@ -596,7 +653,12 @@ internal fun StopRail(
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(vertical = 3.dp),
                     )
-                    if (last && arriveUtc > 0) Text(
+                    val time = times.getOrNull(i)
+                    if (time != null && !done) Text(
+                        hm.format(Date(time.utc * 1000)),
+                        fontSize = 12.sp, color = if (time.live) K.realtime else K.dim, modifier = Modifier.padding(vertical = 3.dp),
+                    )
+                    else if (times.isEmpty() && last && arriveUtc > 0) Text(
                         hm.format(Date(arriveUtc * 1000)),
                         fontSize = 12.sp, color = K.dim, modifier = Modifier.padding(vertical = 3.dp),
                     )
@@ -644,6 +706,7 @@ private fun Card(
     header: String,
     active: Boolean,
     trailing: String? = null,
+    scroll: ScrollState = rememberScrollState(),
     body: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
@@ -664,7 +727,6 @@ private fun Card(
             )
         }
         // A long card stops scrolling at its ends instead of dragging the page.
-        val scroll = rememberScrollState()
         val atEnds = remember(scroll) {
             object : NestedScrollConnection {
                 override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource) =
@@ -856,7 +918,10 @@ private fun NavigateMap(
 }
 
 @Composable
-private fun VehicleCard(a: Moovit.Arrival, leg: Moovit.Leg, r: Moovit.Resolved, now: Long, modifier: Modifier, onClose: () -> Unit) {
+private fun VehicleCard(
+    a: Moovit.Arrival, leg: Moovit.Leg, r: Moovit.Resolved, now: Long, modifier: Modifier,
+    onReport: (ReportFor) -> Unit, onClose: () -> Unit,
+) {
     Column(
         modifier.fillMaxWidth().glassSurface(K.rCard).padding(K.gap4),
         verticalArrangement = Arrangement.spacedBy(K.gap1),
@@ -899,7 +964,26 @@ private fun VehicleCard(a: Moovit.Arrival, leg: Moovit.Leg, r: Moovit.Resolved, 
         }
         if (a.platform.isNotBlank()) Text(T("Platform ${a.platform}", "רציף ${a.platform}"), fontSize = 13.sp, color = K.muted)
         KavLive.plateOf(a.vehicleId)?.let { Text(T("Number plate $it", "מספר רישוי $it"), fontSize = 13.sp, color = K.muted) }
+        rideReport(leg, r, a, now)?.let { report ->
+            Text(T("Report this bus", "דיווח על האוטובוס הזה"), fontSize = 14.sp, color = K.accent,
+                modifier = Modifier.clickable(role = Role.Button) { onReport(report) }.padding(vertical = K.gap1))
+        }
     }
+}
+
+@Composable
+private fun ReportLink(text: String, onClick: () -> Unit) {
+    Text(text, fontSize = 13.sp, color = K.accent,
+        modifier = Modifier.padding(top = K.gap1).clickable(role = Role.Button, onClick = onClick).padding(vertical = K.gap1))
+}
+
+// A look at a stop in Street View, for one that's hidden or has no sign. Only when tapped: Google learns the spot.
+@Composable
+internal fun StreetViewLink(at: Pair<Double, Double>) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    Text(T("Street View", "Street View"), fontSize = 13.sp, color = K.accent,
+        modifier = Modifier.padding(top = K.gap1).clickable(role = Role.Button) { openStreetView(ctx, at.first, at.second) }
+            .padding(vertical = K.gap1))
 }
 
 internal fun rideStopPoints(legs: List<Moovit.Leg>, stops: Map<Int, Moovit.StopInfo>): List<Pair<Int, Pair<Double, Double>>> =

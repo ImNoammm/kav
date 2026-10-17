@@ -37,8 +37,12 @@ import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.representativeTrip
 import uk.noammm.kav.data.lineTimesAt
+import uk.noammm.kav.data.moovitLineEndsAt
+import uk.noammm.kav.data.moovitLineStartsAt
 import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.searchRoutes
+import uk.noammm.kav.data.trainLine
+import uk.noammm.kav.data.trainLeaving
 
 private val FILTERS = listOf(
     "All" to intArrayOf(),
@@ -541,11 +545,18 @@ private fun rememberLineLive(net: Net, route: Int, stops: List<Int>): LineLive {
     val live by produceState(LineLive(checked = false), route, stops, lifecycle, fromServer) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             val number = net.rShort[route].trim()
+            // The timetable gives a train no number to look its line up by, and each train a route of its own.
+            val train = net.rType[route] == 2 && number.isEmpty()
+            val trains = if (train) net.trainLine(route) else emptySet()
             while (true) {
                 value = try {
                     withContext(Dispatchers.IO) {
-                        if (fromServer) serverLineLive(number, net.rLong[route].trim(), stops.lastOrNull()?.let { net.name[it] })
-                        else lineLive(net, stops, number)
+                        when {
+                            fromServer && train -> LineLive(checked = true, vehicles = KavLive.trainsOn(net, trains, stops))
+                            fromServer -> serverLineLive(number, net.rLong[route].trim(), stops.lastOrNull()?.let { net.name[it] })
+                            train -> trainLive(net, trains, stops)
+                            else -> lineLive(net, stops, number)
+                        }
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -589,6 +600,30 @@ private suspend fun lineLive(net: Net, stops: List<Int>, number: String): LineLi
     val vehicles = mine.filter { it.hasLocation }.groupBy { it.tripId }.values
         .map { at -> at.minBy { it.departure().timeUtc } }
     LineLive(checked = true, vehicles = vehicles, shapeId = (vehicles.firstOrNull() ?: mine.firstOrNull())?.tripShapeId ?: -1)
+}
+
+// A train line's trains from Moovit: of Moovit's trains due at the line's stations, those on one of its routes, by
+// when the timetable has them there and where Moovit's line for them runs.
+private suspend fun trainLive(net: Net, routes: Set<Int>, stops: List<Int>): LineLive = coroutineScope {
+    val stopOf = stops.chunked(8).flatMap { batch -> batch.map { s -> async { StopPhotos.idOf(net, s)?.let { it to s } } }.awaitAll() }
+        .filterNotNull().toMap()
+    if (stopOf.isEmpty()) return@coroutineScope LineLive(checked = true)
+    val s = Online.open(net.lat[stops[0]] to net.lon[stops[0]])
+    val arrivals = Moovit.stopArrivals(s, stopOf.keys.toList()).first.values.filter { it.hasLocation }
+    val lines = arrivals.map { it.lineId }.distinct().chunked(8).flatMap { batch ->
+        batch.map { id -> async { id to runCatching { Moovit.lineInfo(s, id) }.getOrNull()?.number.orEmpty() } }.awaitAll()
+    }.toMap()
+    val today = java.util.Calendar.getInstance(ISRAEL).get(java.util.Calendar.DAY_OF_WEEK) - 1
+    val midnight = System.currentTimeMillis() / 1000 - nowSec()
+    val vehicles = arrivals.filter { a ->
+        val at = stopOf[a.stopId] ?: return@filter false
+        val line = lines[a.lineId].orEmpty()
+        val row = net.trainLeaving(at, (a.staticUtc - midnight).toInt(), today, { moovitLineStartsAt(line, it) }) {
+            moovitLineEndsAt(line, it)
+        }
+        row != null && net.tripRoute[row.trip] in routes
+    }.groupBy { it.tripId }.values.map { at -> at.minBy { it.departure().timeUtc } }
+    LineLive(checked = true, vehicles = vehicles, shapeId = vehicles.firstOrNull()?.tripShapeId ?: -1)
 }
 
 @Composable
@@ -839,20 +874,25 @@ internal fun OnlineLineDetail(g: Moovit.LineGroup, onBack: () -> Unit) {
                 else T("This line has no trips in the coming week.", "אין לקו הזה נסיעות בשבוע הקרוב."),
                 Modifier.padding(K.gap4),
             )
-            else -> OnlineDirectionView(dir, g.number)
+            else -> OnlineDirectionView(dir, g.number, train = onlineType(g) == 2)
         }
     }
 }
 
 @Composable
-private fun OnlineDirectionView(dir: OnlineDirection, number: String) {
+private fun OnlineDirectionView(dir: OnlineDirection, number: String, train: Boolean) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val fromServer = KavLive.enabled
     val live by produceState(LineLive(checked = false), dir.lineId, lifecycle, fromServer) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 value = try {
-                    if (fromServer) withContext(Dispatchers.IO) { serverLineLive(number.trim(), "", dir.stops.lastOrNull()?.name) }
+                    // Moovit names a train line "from - to", no number the server knows: its trains are found by when they set out.
+                    if (fromServer && train) withContext(Dispatchers.IO) {
+                        val where = dir.stops.mapNotNull { s -> s.code.toIntOrNull()?.let { it to s.point } }.toMap()
+                        LineLive(checked = true, vehicles = KavLive.trainsStarting(where.keys.toList(), dir.departures) { where[it] })
+                    }
+                    else if (fromServer) withContext(Dispatchers.IO) { serverLineLive(number.trim(), "", dir.stops.lastOrNull()?.name) }
                     else withContext(Dispatchers.IO) {
                         val arrivals = Moovit.stopArrivals(Online.open(), dir.stops.map { it.id }.take(60)).first.values
                         LineLive(

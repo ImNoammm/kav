@@ -378,9 +378,13 @@ def forget_follows():
             stops_seen.pop(code, None)
 
 
+PLATFORM = re.compile(r"^[0-9A-Za-zא-ת]{1,4}$")
+
+
 def arrivals(doc):
     """Every bus due at the stops asked, one per trip: [stop, route, key, number, first departure, aimed, expected,
-    lat, lon, recorded, bearing, speed, order]. Times in seconds; no position when the bus isn't reporting one."""
+    lat, lon, recorded, bearing, speed, order, platform]. Times in seconds; no position when the bus isn't reporting
+    one; the platform, a train's, once the operator has given it."""
     delivery = doc["Siri"]["ServiceDelivery"]
     monitored = delivery.get("StopMonitoringDelivery") or []
     if isinstance(monitored, dict):
@@ -402,6 +406,7 @@ def arrivals(doc):
                     if not (29 < lat < 34 and 34 < lon < 36):
                         lat = lon = None
                 bearing = whole(j.get("Bearing"), 360) if lat is not None else None
+                platform = str(call.get("ArrivalPlatformName") or call.get("DeparturePlatformName") or "").strip()
                 row = [
                     stop, int(j["LineRef"]), f'{j["LineRef"]}_{first}_{j.get("VehicleRef", "")}',
                     str(j.get("PublishedLineName", "")), epoch(first),
@@ -411,6 +416,7 @@ def arrivals(doc):
                     None if bearing is None else bearing % 360,
                     whole(j.get("Velocity"), 199) if lat is not None else None,
                     whole(call.get("Order"), 999),
+                    platform if PLATFORM.match(platform) else "",
                 ]
             except (KeyError, ValueError, TypeError):
                 continue

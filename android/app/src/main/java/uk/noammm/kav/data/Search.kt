@@ -27,8 +27,14 @@ fun Net.searchStops(q: String, limit: Int = 60): IntArray {
         if (ok) { idx.add(i); score.add(sc); continue }
         if (need.size == 1 && code[i].toString().startsWith(need[0])) { idx.add(i); score.add(0.5) }
     }
-    val orderIdx = idx.indices.sortedBy { score[it] }
-    return IntArray(minOf(limit, orderIdx.size)) { idx[orderIdx[it]] }
+    val ranked = idx.indices.sortedBy { score[it] }.take(limit).map { idx[it] }
+    // A bus station's platforms share its code: together, where the first of them ranks, in platform order.
+    val group = { s: Int -> if (platform[s].isEmpty() || code[s] <= 0) "#$s" else "${code[s]}" }
+    val first = HashMap<String, Int>()
+    ranked.forEachIndexed { i, s -> first.putIfAbsent(group(s), i) }
+    return ranked.sortedWith(compareBy<Int>(
+        { first.getValue(group(it)) }, { platform[it].toIntOrNull() ?: Int.MAX_VALUE }, { platform[it] },
+    )).toIntArray()
 }
 
 internal fun searchWords(s: String): List<String> {

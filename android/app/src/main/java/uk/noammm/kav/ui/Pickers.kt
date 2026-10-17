@@ -59,6 +59,7 @@ fun KavField(
     autoFocus: Boolean = false,
     keyboard: KeyboardType = KeyboardType.Text,
     secret: Boolean = false,
+    ime: ImeAction? = null,
 ) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(autoFocus) { if (autoFocus) runCatching { focus.requestFocus() } }
@@ -71,7 +72,7 @@ fun KavField(
         visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(
             keyboardType = keyboard,
-            imeAction = if (keyboard == KeyboardType.Text) ImeAction.Search else ImeAction.Done,
+            imeAction = ime ?: if (keyboard == KeyboardType.Text) ImeAction.Search else ImeAction.Done,
         ),
         modifier = modifier
             .fillMaxWidth()
@@ -127,8 +128,12 @@ fun StopRow(net: Net, stop: Int, trailing: String? = null, leading: (@Composable
             )
             val city = net.cityOf(stop)
             val code = net.code.getOrElse(stop) { 0 }
-            val second = listOf(city.takeIf { it.isNotBlank() }, code.takeIf { it > 0 }?.toString())
-                .filterNotNull().joinToString(" · ")
+            // A bus station's platforms share its name and code: the platform tells them apart.
+            val platform = net.platform.getOrElse(stop) { "" }
+            val second = listOf(
+                city.takeIf { it.isNotBlank() }, code.takeIf { it > 0 }?.toString(),
+                platform.takeIf { it.isNotEmpty() }?.let { T("platform $it", "רציף $it") },
+            ).filterNotNull().joinToString(" · ")
             if (second.isNotBlank()) {
                 Text(second, fontSize = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -702,7 +707,7 @@ private fun PlaceRow(p: Moovit.Place, here: Pair<Double, Double>?, onClick: () -
         Column(
             Modifier.width(56.dp), horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            PlaceGlyph(p.type)
+            PlaceGlyph(p.type, p.mode)
             // Measured on the phone: Moovit's own figure is from wherever it was told you are.
             val away = here?.let { metres(it.first, it.second, p.lat, p.lon) }?.takeIf { !it.isNaN() }
             if (away != null) Text(
@@ -721,9 +726,9 @@ private fun PlaceRow(p: Moovit.Place, here: Pair<Double, Double>?, onClick: () -
 }
 
 @Composable
-private fun PlaceGlyph(type: Int) {
+private fun PlaceGlyph(type: Int, mode: Int) {
     when (type) {
-        1 -> ModeGlyph(Mode.BUS, K.muted, 17.dp)
+        1 -> ModeGlyph(if (mode >= 0) modeOf(mode) else Mode.BUS, K.muted, 17.dp)
         2 -> androidx.compose.foundation.Canvas(Modifier.size(17.dp)) {
             val w = size.width; val h = size.height; val sw = w * .10f
             drawLine(K.muted, androidx.compose.ui.geometry.Offset(w * .30f, h * .12f),

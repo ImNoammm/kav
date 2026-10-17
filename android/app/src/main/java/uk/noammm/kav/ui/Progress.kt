@@ -209,22 +209,78 @@ private fun rideLeftBehind(step: Step.Ride, chosen: Map<Int, Int>, fix: Fix): Bo
     return alongPath(fix.lat, fix.lon, shape) > pathLength(shape) - 60
 }
 
-// Minutes until the ride reaches the rider's stop: Moovit's live time there, and on board the share of the route still
-// ahead of the ride's planned time; otherwise the plan moved by how far the ride runs from it. When the two disagree
-// on board, where the rider is wins: they may be on another bus of the line, or the live feed may lag.
+// Minutes until the ride reaches the rider's stop: the time its last stop gets below.
 internal fun minutesToAlight(ride: Moovit.Leg, r: Moovit.Resolved, fix: Fix?, now: Long): Long {
-    val live = r.alightLiveAt(ride)?.let { ceil((it - now) / 60.0).toLong().coerceAtLeast(0) }
-    val aboard = fix?.takeIf { it.isFresh(now) && it.aboard(ride.shape) }
-    val length = pathLength(ride.shape)
-    val share = if (aboard != null && length > 0) {
-        val ahead = (length - alongPath(aboard.lat, aboard.lon, ride.shape)).coerceAtLeast(0.0)
-        ceil(ahead / length * (ride.arr - ride.dep) / 60.0).toLong()
-    } else null
-    return when {
-        live != null && share != null -> if (kotlin.math.abs(live - share) <= 5 + share * 3 / 10) live else share
-        live != null -> live
-        share != null -> share
-        else -> ceil((r.alightAt(ride) - now) / 60.0).toLong().coerceAtLeast(0)
+    val at = rideTimes(ride, r, riderTrip(ride, r, fix, now), emptyMap(), fix, now).lastOrNull()?.utc ?: r.alightAt(ride)
+    return ceil((at - now) / 60.0).toLong().coerceAtLeast(0)
+}
+
+// When the rider's bus gets to a stop of the ride, and whether that's its live time.
+internal class StopTime(val utc: Long, val live: Boolean)
+
+private const val NEAR_BUS_M = 400.0
+private const val ELSEWHERE_M = 1_500.0
+
+// The bus the rider is on. Aboard, it's the one of the ride's line reported nearest to them; when that isn't near and
+// the planned one is reported far off, they're on a bus with no live data (null). Otherwise it's the planned one.
+internal fun riderTrip(ride: Moovit.Leg, r: Moovit.Resolved, fix: Fix?, now: Long): Long? {
+    val aboard = fix?.takeIf { it.isFresh(now) && it.aboard(ride.shape) } ?: return ride.tripId
+    val stops = ride.stops.toHashSet()
+    val buses = r.live.values.filter { it.lineId == ride.lineId && it.hasLocation && it.stopId in stops }
+        .groupBy { it.tripId }.mapValues { (_, at) -> at.maxBy { it.sampleUtc } }
+    fun away(a: Moovit.Arrival) = metres(aboard.lat, aboard.lon, a.lat, a.lon)
+    buses.values.minByOrNull(::away)?.takeIf { away(it) < NEAR_BUS_M }?.let { return it.tripId }
+    return if (buses[ride.tripId]?.let { away(it) > ELSEWHERE_M } == true) null else ride.tripId
+}
+
+// Where the rider's bus was reported last, among its live times at the ride's stops.
+internal fun busOn(ride: Moovit.Leg, r: Moovit.Resolved, trip: Long?): Moovit.Arrival? {
+    if (trip == null) return null
+    val stops = ride.stops.toHashSet()
+    return r.live.values.filter { it.tripId == trip && it.hasLocation && it.stopId in stops }.maxByOrNull { it.sampleUtc }
+}
+
+// When the rider's bus reaches each stop of the ride: its live time where there is one. Elsewhere it's in step with the
+// nearest things known around the stop (live times, the rider aboard right now), at the plan's pace past the last of
+// them, so a jam that holds the bus up moves every stop after it. With nothing known, the plan moved by the ride's delay.
+internal fun rideTimes(
+    ride: Moovit.Leg, r: Moovit.Resolved, trip: Long?, names: Map<Int, Moovit.StopInfo>, fix: Fix?, now: Long,
+): List<StopTime> {
+    val n = ride.stops.size
+    if (n == 0) return emptyList()
+    val shape = ride.shape
+    val length = if (shape.size >= 2) pathLength(shape) else 0.0
+    // How far along the ride each stop is, 0 to 1: by the road where the stop's place is known, else by its count. Kept
+    // in the ride's order, as two stops at one corner can land either way round on the road.
+    var furthest = 0.0
+    val share = ride.stops.mapIndexed { i, id ->
+        val p = (names[id] ?: Moovit.knownStop(id) ?: r.stops[id])?.point
+        val f = if (length > 0 && p != null) (alongPath(p.first, p.second, shape) / length).coerceIn(0.0, 1.0)
+            else if (n > 1) i.toDouble() / (n - 1) else 1.0
+        f.coerceAtLeast(furthest).also { furthest = it }
+    }
+    val span = (ride.arr - ride.dep).coerceAtLeast(0)
+    fun planned(f: Double) = ride.dep + (f * span).toLong()
+    val live = ride.stops.map { id -> trip?.let { r.live[Moovit.ArrivalKey(id, it)] }?.rtUtc?.takeIf { it > 0 } }
+    val known = ArrayList<Pair<Double, Long>>()
+    ride.stops.indices.forEach { i -> live[i]?.let { known += share[i] to it } }
+    fix?.takeIf { length > 0 && it.isFresh(now) && it.aboard(shape) }
+        ?.let { known += (alongPath(it.lat, it.lon, shape) / length) to now }
+    val delay = r.delays[ride.tripId] ?: 0L
+    return ride.stops.indices.map { i ->
+        live[i]?.let { return@map StopTime(it, true) }
+        val before = known.filter { it.first <= share[i] }.maxByOrNull { it.first }
+        val after = known.filter { it.first >= share[i] }.minByOrNull { it.first }
+        StopTime(
+            when {
+                before != null && after != null && after.first > before.first ->
+                    before.second + ((share[i] - before.first) / (after.first - before.first) * (after.second - before.second)).toLong()
+                before != null -> before.second + (planned(share[i]) - planned(before.first))
+                after != null -> after.second - (planned(after.first) - planned(share[i]))
+                else -> planned(share[i]) + delay
+            },
+            false,
+        )
     }
 }
 
@@ -295,9 +351,11 @@ internal fun stopsProgress(
 ): Float {
     val shape = ride.shape
     if (shape.size >= 2) {
+        // The rider's bus, once it's under way on the ride's route (raw positions can sit off the road a little): past
+        // the boarding stop as Moovit counts its stops, or, from Kav's server, which doesn't, by where it is on the road.
         val vehicle = arrival?.takeIf {
-            it.hasLocation && it.stopIndex >= 0 && it.nextStopIndex > it.stopIndex &&
-                distanceToPath(it.lat, it.lon, shape) < 80
+            it.hasLocation && distanceToPath(it.lat, it.lon, shape) < 150 &&
+                (stopsPast(ride, it)?.let { n -> n > 0 } ?: (alongPath(it.lat, it.lon, shape) >= 60))
         }
         val live = fix?.takeIf { it.isFresh(now) && it.aboard(shape) }
         val at = when {
@@ -311,7 +369,7 @@ internal fun stopsProgress(
             var prev = 0.0
             var next = Double.NaN
             for (id in ride.stops) {
-                val p = stops[id]?.point ?: continue
+                val p = (stops[id] ?: Moovit.knownStop(id))?.point ?: continue
                 val a = alongPath(p.first, p.second, shape)
                 if (a <= along) { passed++; prev = a } else { next = a; break }
             }
@@ -319,10 +377,15 @@ internal fun stopsProgress(
             return (passed + frac).coerceAtMost(ride.stops.size.toFloat())
         }
     }
-    if (arrival != null && arrival.hasLocation && arrival.nextStopIndex >= 0 && arrival.stopIndex >= 0 &&
-        arrival.nextStopIndex > arrival.stopIndex
-    ) {
-        return (arrival.nextStopIndex - arrival.stopIndex).coerceIn(0, ride.stops.size).toFloat()
-    }
+    val past = arrival?.takeIf { it.hasLocation }?.let { stopsPast(ride, it) }
+    if (past != null && past > 0) return past.coerceIn(0, ride.stops.size).toFloat()
     return -1f
+}
+
+// How many of the ride's stops the bus is past, as Moovit counts along the line: its next stop's place in the line
+// against the boarding stop's, worked out from whichever stop of the ride the live time is for. Null when it doesn't say.
+private fun stopsPast(ride: Moovit.Leg, a: Moovit.Arrival): Int? {
+    val k = ride.stops.indexOf(a.stopId)
+    if (k < 0 || a.stopIndex < 0 || a.nextStopIndex < 0) return null
+    return a.nextStopIndex - (a.stopIndex - k)
 }

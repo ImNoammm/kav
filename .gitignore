@@ -21,6 +21,7 @@ tools/moovit_client.py
 tools/moovit_probe.py
 tools/recover_thrift.sh
 tools/serve.py
+tools/server_build.sh
 tools/thrift_from_jadx.py
 
 # Tests

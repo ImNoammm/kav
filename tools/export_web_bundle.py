@@ -62,8 +62,11 @@ print(f"services running in the week of {WEEK}: {len(active):,}")
 # like "הדרור 30 ראש העין" can never match on the name alone. Pull it out and
 # index it: ~1,200 distinct cities cost 1-2 bytes per stop instead of ~20.
 CITY_RE = re.compile(r"עיר:\s*(.*?)\s*(?:רציף:|קומה:|$)")
+# A bus station's platforms are stops of their own, sharing the station's code; stop_desc numbers each one.
+PLATFORM_RE = re.compile(r"רציף:\s*([^\s:]+)(?=\s|$)")
 stop_idx, stops = {}, []
 city_idx, cities = {}, []
+stop_platform = {}
 for r in csv.DictReader(openf("stops.txt")):
     lat, lon = float(r["stop_lat"]), float(r["stop_lon"])
     if not (BBOX[0] <= lat <= BBOX[1] and BBOX[2] <= lon <= BBOX[3]): continue
@@ -71,9 +74,12 @@ for r in csv.DictReader(openf("stops.txt")):
     city = m.group(1).strip() if m else ""
     if city not in city_idx:
         city_idx[city] = len(cities); cities.append(city)
+    m = PLATFORM_RE.search(r.get("stop_desc") or "")
+    if m:
+        stop_platform[len(stops)] = m.group(1)
     stop_idx[r["stop_id"]] = len(stops)
     stops.append((r["stop_name"].strip(), lat, lon, int(r["stop_code"] or 0), city_idx[city]))
-print(f"stops in bbox: {len(stops):,}   cities: {len(cities):,}")
+print(f"stops in bbox: {len(stops):,}   cities: {len(cities):,}   platforms: {len(stop_platform):,}")
 
 # Operators, for the sections the lines browser draws under each mode chip. The
 # feed's agency_id is dense and small; the bundle stores an index into this name
@@ -147,8 +153,8 @@ for i, day in enumerate(DAYS):
     print(f"  {day:%a %d %b}: {sum(1 for t in kept if t[1] >> i & 1):,} trips")
 
 # encode
-# KAV5 adds the stop-time count up front and a day mask per trip.
-buf = bytearray(b"KAV5")
+# KAV5 adds the stop-time count up front and a day mask per trip; KAV6 the platforms at the end.
+buf = bytearray(b"KAV6")
 vint(buf, len(stops)); vint(buf, len(routes)); vint(buf, len(kept)); vint(buf, len(cities))
 vint(buf, n_st)
 vint(buf, len(agencies))
@@ -173,6 +179,12 @@ for ridx, days, sq in kept:
     for arr, dep, s in sq:
         vint(buf, arr - pt); vint(buf, dep - arr); vint(buf, s - ps)
         pt, ps = dep, s
+
+vint(buf, len(stop_platform))
+prev = 0
+for s in sorted(stop_platform):
+    vint(buf, s - prev); vstr(buf, stop_platform[s])
+    prev = s
 
 path = os.path.join(OUT, REGION + ".kav")
 open(path, "wb").write(buf)

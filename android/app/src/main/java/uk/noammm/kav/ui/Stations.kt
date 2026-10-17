@@ -26,10 +26,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.MoovitTrain
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.LOCATION_PERMISSIONS
 import uk.noammm.kav.data.Net
+import uk.noammm.kav.data.TrainsToday
 import uk.noammm.kav.data.departuresAt
+import uk.noammm.kav.data.moovitTrains
 import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.searchStops
 import uk.noammm.kav.hasLocationPermission
@@ -181,49 +184,72 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
     var looked by remember(stop) { mutableStateOf(moovitId > 0 || fromServer) }
     LaunchedEffect(stop, fromServer) { if (!fromServer) moovitId = findMoovitId(net, stop, moovitId) { looked = true } }
     // Moovit's live arrivals at this stop: line number, scheduled and live seconds of the day, and the departure that
-    // colours and marks it like the search results. Refreshed with t0.
-    class LiveAt(val number: String, val static: Int, val rt: Int, val dep: Moovit.Departure)
+    // colours and marks it like the search results; from Kav's server, also the timetable trip it is and, for a train
+    // that ends somewhere else than the timetable says, where. Refreshed with t0.
+    class LiveAt(
+        val number: String, val static: Int, val rt: Int, val dep: Moovit.Departure, val trip: Int = -1, val to: String? = null,
+    )
     var live by remember(stop) { mutableStateOf<List<LiveAt>>(emptyList()) }
+    // At a train station, what the live source says of the timetable's trains today: where some end early, and from
+    // Moovit which run. The ministry's answers can leave out a train that runs, so Kav's own server never says one doesn't.
+    var trains by remember(stop) { mutableStateOf(TrainsToday()) }
+    val station = net.stopType[stop] == 2
     LaunchedEffect(moovitId, t0, fromServer) {
         if (fromServer) {
             // The ministry's buses due here that are under way, each on the timetable trip it is.
             val code = net.code.getOrElse(stop) { 0 }
             if (code <= 0) return@LaunchedEffect
-            live = runCatching {
+            runCatching {
                 withContext(Dispatchers.IO) {
-                    KavLive.stops(listOf(code)).due.filter { it.underWay && it.expected > 0 }.mapNotNull { d ->
-                        val static = KavLive.scheduledAt(net, stop, d.number, d.first) ?: return@mapNotNull null
-                        val late = Math.floorMod(KavLive.secondOfDay(d.expected) - static % 86_400 + 43_200, 86_400) - 43_200
-                        LiveAt(d.number, static, static + late,
-                            Moovit.Departure(KavLive.tripIdOf(d.key), d.expected - late, rtUtc = d.expected))
-                    }
+                    val now = System.currentTimeMillis() / 1000
+                    val board = KavLive.stops(listOf(code))
+                    KavLive.boardTimes(net, stop, board, now).map { b ->
+                        LiveAt(b.due.number, b.static, b.rt, Moovit.Departure(
+                            KavLive.tripIdOf(b.due.key), b.due.expected - (b.rt - b.static), rtUtc = b.due.expected,
+                        ), b.trip, b.to)
+                    } to if (station) KavLive.trainsToday(net, stop, board, now) else TrainsToday()
                 }
-            }.getOrDefault(live)
+            }.onSuccess { (l, t) -> live = l; trains = t }
             return@LaunchedEffect
         }
         if (moovitId <= 0) return@LaunchedEffect
-        live = runCatching {
+        runCatching {
             withContext(Dispatchers.IO) {
                 val s = Online.open(net.lat[stop] to net.lon[stop])
                 val day = java.util.Calendar.getInstance(ISRAEL).apply {
                     set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
                     set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
                 }.timeInMillis / 1000
-                Moovit.stopArrivals(s, listOf(moovitId)).first.values.filter { it.rtUtc > 0 }.mapNotNull { a ->
-                    val number = Moovit.lineInfo(s, a.lineId)?.number ?: return@mapNotNull null
-                    LiveAt(number, (a.staticUtc - day).toInt(), (a.rtUtc - day).toInt(), a.departure())
-                }
+                // A station's whole list says which trains run today; elsewhere only the live ones are wanted.
+                val named = Moovit.stopArrivals(s, listOf(moovitId)).first.values.filter { station || it.rtUtc > 0 }
+                    .mapNotNull { a -> Moovit.lineInfo(s, a.lineId)?.number?.let { a to it } }
+                // Moovit names a train's line "from - to" and Kav's timetable gives trains no number: a train is the
+                // timetable's leaving at its time, from and to where its line runs.
+                val today = java.util.Calendar.getInstance(ISRAEL).get(java.util.Calendar.DAY_OF_WEEK) - 1
+                val (rows, known) = if (station) net.moovitTrains(stop, today, nowSec(), named.map { (a, line) ->
+                    MoovitTrain((a.staticUtc - day).toInt(), if (a.rtUtc > 0) (a.rtUtc - day).toInt() else -1, line, a.status == 3)
+                }) else named.map { null } to TrainsToday()
+                named.mapIndexedNotNull { i, (a, number) ->
+                    if (a.rtUtc <= 0) return@mapIndexedNotNull null
+                    LiveAt(number, (a.staticUtc - day).toInt(), (a.rtUtc - day).toInt(), a.departure(), rows[i]?.trip ?: -1, rows[i]?.to)
+                } to known
             }
-        }.getOrDefault(live)
+        }.onSuccess { (l, t) -> live = l; trains = t }
     }
-    fun liveAt(route: Int, dep: Int): LiveAt? = live.firstOrNull {
-        it.number == net.rShort[route] && kotlin.math.abs(it.static - dep) <= 120
+    // A row's live time: the trip itself where it's known, else the line's number, at about the same time (a train
+    // works have moved can be a few minutes off its row).
+    fun liveAt(trip: Int, dep: Int): LiveAt? = live.firstOrNull {
+        if (it.trip >= 0) it.trip == trip && kotlin.math.abs(it.static - dep) <= 2 * uk.noammm.kav.data.MOVED_S
+        else it.number == net.rShort[net.tripRoute[trip]] && kotlin.math.abs(it.static - dep) <= 120
     }
-    fun liveFor(route: Int, dep: Int): Int? = liveAt(route, dep)?.rt
-    val rows = remember(stop, t0) {
+    fun liveFor(trip: Int, dep: Int): Int? = liveAt(trip, dep)?.rt
+    val timetabled = remember(stop, t0) {
         val today = java.util.Calendar.getInstance(ISRAEL).get(java.util.Calendar.DAY_OF_WEEK) - 1
-        net.departuresAt(stop, t0, today)
+        // From half an hour back: a late bus or train is still to come after its timetabled time.
+        net.departuresAt(stop, t0 - 1800, today, limit = 120)
     }
+    val rows = timetabled.map { (c, dep) -> Triple(c, dep, liveFor(net.tripOf(net.cST[c]), dep) ?: dep) }
+        .filter { it.third >= t0 }.sortedBy { it.third }.take(60)
 
     Column(Modifier.fillMaxSize().background(K.bg)) {
         ScreenHeader(T("Next", "היציאות"), T("departures", "הקרובות"), back = onBack)
@@ -239,6 +265,7 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                         listOf(
                             city.takeIf { it.isNotBlank() },
                             code.takeIf { it > 0 }?.let { T("stop $it", "תחנה $it") },
+                            net.platform.getOrElse(stop) { "" }.takeIf { it.isNotEmpty() }?.let { T("platform $it", "רציף $it") },
                             if (live.isEmpty()) T("scheduled times, no live feed available", "לוחות זמנים מתוכננים, אין זמינות בזמן אמת")
                             else T("coloured times are live", "זמנים צבועים הם בזמן אמת"),
                         ).filterNotNull().joinToString(" · "),
@@ -267,17 +294,21 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
             start = K.gap2, end = K.gap2, bottom = LocalBottomBarInset.current,
         )) {
-            items(rows.sortedBy { (c, dep) -> liveFor(net.tripRoute[net.tripOf(net.cST[c])], dep) ?: dep }) { (c, dep) ->
+            items(rows) { (c, dep, shown) ->
                 val t = net.tripOf(net.cST[c])
                 val last = net.tripLast(t)
+                val at = liveAt(t, dep)
+                // A train the live source would list but doesn't, or has cancelled: the week's timetable has it, today hasn't.
+                val gone = at == null && trains.missing(net, t, dep)
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable {
-                            model.pendingFrom = placeOf(net, stop)
-                            model.pendingTo = placeOf(net, last)
-                            model.tab = uk.noammm.kav.Tab.Directions
+                        // The line itself, open at this stop, as the Lines tab shows it.
+                        .clickable(onClickLabel = T("Show the line", "הצגת הקו")) {
+                            model.lineFocusStop = stop
+                            model.lineRoute = net.tripRoute[t]
+                            model.tab = uk.noammm.kav.Tab.Lines
                         }
                         .padding(horizontal = K.gap3, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -285,14 +316,15 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                 ) {
                     LineBadge(net, net.tripRoute[t])
                     Text(
-                        net.name[last], fontSize = 16.sp, color = K.text,
+                        at?.to ?: trains.ends[t] ?: net.name[last], fontSize = 16.sp, color = if (gone) K.dim else K.text,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
                     )
-                    val at = liveAt(net.tripRoute[t], dep)
-                    val shown = at?.rt ?: dep
                     Row(verticalAlignment = Alignment.CenterVertically) {
                     if (at != null) { DepMarkGlyph(at.dep, 12.dp); Spacer(Modifier.width(4.dp)) }
-                    Text(
+                    if (gone) Text(
+                        if (t in trains.cancelled) T("Canceled", "בוטלה") else T("Not running today", "לא פועלת היום"),
+                        fontSize = 14.sp, color = K.dim,
+                    ) else Text(
                         relative(shown, t0)
                             ?: if (shown >= 86_400 && shown - 86_400 >= t0) T("tomorrow ${hhmm(shown)}", "מחר ${hhmm(shown)}") else hhmm(shown),
                         style = Mono, fontSize = 15.sp, color = if (at != null) depColour(at.dep) else K.scheduled,
@@ -333,5 +365,6 @@ internal fun placeOf(net: Net, stop: Int) = uk.noammm.kav.data.Moovit.Place(
     lat = net.lat[stop].toDouble(),
     lon = net.lon[stop].toDouble(),
     type = 1,
+    mode = net.stopType[stop],
 )
 

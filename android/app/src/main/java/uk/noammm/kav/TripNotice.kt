@@ -33,7 +33,9 @@ import uk.noammm.kav.ui.drawModeMark
 import uk.noammm.kav.ui.drawWalker
 import uk.noammm.kav.ui.isFresh
 import uk.noammm.kav.ui.legMode
+import uk.noammm.kav.ui.busOn
 import uk.noammm.kav.ui.minutesToAlight
+import uk.noammm.kav.ui.riderTrip
 import uk.noammm.kav.ui.modeName
 import uk.noammm.kav.ui.pathLength
 import uk.noammm.kav.ui.routeTints
@@ -324,7 +326,7 @@ internal fun tripAlert(journey: ActiveJourney, current: Int, fix: Fix?, now: Lon
         is Step.Ride -> {
             val ride = boardingChoice(step.ride, step.wait, journey.chosen[step.legIndex] ?: 0).first
             val total = ride.stops.size
-            val progress = stopsProgress(ride, r.stops, r.arrival(ride), fix, now)
+            val progress = stopsProgress(ride, r.stops, busOn(ride, r, riderTrip(ride, r, fix, now)), fix, now)
             // A train's next stop can be half an hour away, so the alert also waits for the last stretch: about 90
             // seconds at the current speed, at least a kilometre. Without every stop's position (saved trips often lack
             // them), the route left must also be shorter than an average gap between stops.

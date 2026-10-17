@@ -233,6 +233,7 @@ private fun tripWhen(at: Long): String {
 
 @Composable
 private fun JourneyCard(model: KavModel, journey: ActiveJourney, onResume: () -> Unit) {
+    PlannedPlatforms(journey.trip, journey.resolved)
     var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
     LaunchedEffect(journey.trip) {
         while (true) {
@@ -282,7 +283,8 @@ private fun JourneyCard(model: KavModel, journey: ActiveJourney, onResume: () ->
                         model.activeJourney?.takeIf { it.trip === journey.trip }
                             ?.let { model.activeJourney = it.copy(chosen = it.chosen + (leg to option)) }
                     },
-                    pay = { leg, ride -> TripPay(model, leg, ride, journey.resolved) })
+                    pay = { leg, ride -> TripPay(model, leg, ride, journey.resolved) },
+                    report = { model.report = it })
             }
         }
         Row(

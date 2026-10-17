@@ -150,7 +150,7 @@ fun WhenSheet(
 // The time typed in, as Kav writes times: "14:05", or "2:05" with AM or PM marked. Material's TimeInput always writes
 // the hour as "02".
 @Composable
-private fun TimeEntry(hour: Int, minute: Int, onChange: (hour: Int, minute: Int) -> Unit) {
+internal fun TimeEntry(hour: Int, minute: Int, onChange: (hour: Int, minute: Int) -> Unit) {
     val twelve = Shown.twelveHour
     val pm = hour >= 12
     val minutes = remember { FocusRequester() }

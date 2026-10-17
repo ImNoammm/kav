@@ -457,6 +457,9 @@ object Moovit {
 
     fun cachedShape(shapeId: Int): List<Pair<Double, Double>> = shapeCache[shapeId] ?: emptyList()
 
+    // A stop already looked up, without asking again.
+    fun knownStop(stopId: Int): StopInfo? = stopCache[stopId]
+
     fun stopInfo(s: MoovitSession, stopId: Int): StopInfo? {
         stopCache[stopId]?.let { return it }
         val info = entity(s, 3, stopId)?.let { stopInfoOf(stopId, it) } ?: return null
@@ -575,12 +578,14 @@ object Moovit {
         return out
     }
 
+    // mode is a stop's kind as a route type, a train station's 2, for its glyph; -1 when it isn't one of Kav's stops.
     class Place(
         val name: String,
         val detail: String,
         val lat: Double,
         val lon: Double,
         val type: Int = 5,
+        val mode: Int = -1,
     )
 
     private fun searchBody(
@@ -607,6 +612,8 @@ object Moovit {
         val out = ArrayList<Place>()
         forEachItem(jList(root, "2")) { item ->
             val title = jStr(item, "4") ?: return@forEachItem
+            // Some of Moovit's own records lost their Hebrew to question marks ("1022 ???? ????").
+            if ("??" in title) return@forEachItem
             val ll = jRec(item, "6") ?: return@forEachItem
             val subs = ArrayList<String>()
             forEachItem(jList(item, "5")) { t -> jStr(t, "1")?.let { subs.add(it) } }
@@ -1164,10 +1171,27 @@ object Moovit {
                 patterns[a.patternId]?.contains(ride.toStop) == true
         }.sortedBy { it.departure().timeUtc }
 
+        // The live platform; else the one the plan gives this very train, which Moovit's plans name well ahead (a live
+        // time without a platform mustn't hide it); else a bus station's from the timetable.
         fun platform(ride: Leg, wait: Leg? = null): String =
             arrival(ride)?.platform?.ifBlank { null }
                 ?: departures(ride, wait).firstOrNull { it.platform.isNotBlank() }?.platform
-                ?: ""
+                ?: wait?.options?.firstOrNull { it.lineId == ride.lineId }?.nextDeps
+                    ?.firstOrNull { it.tripId == ride.tripId && it.platform.isNotBlank() }?.platform
+                ?: plannedPlatform(ride, ride.fromStop)
+
+        // The platform a train stops at where the rider gets off it, once the live times there have it.
+        fun alightPlatform(ride: Leg): String = live[ArrivalKey(ride.toStop, ride.tripId)]?.platform.orEmpty()
+
+        // A bus station's platform from the timetable, which numbers them. A train's comes only with its live times.
+        private fun plannedPlatform(ride: Leg, stopId: Int): String {
+            if (isTrain(ride)) return ""
+            val code = (stop(stopId) ?: knownStop(stopId))?.code?.toIntOrNull()?.takeIf { it > 0 } ?: return ""
+            val number = ride.shortName.ifBlank { line(ride.lineId)?.number.orEmpty() }.trim().ifEmpty { return "" }
+            return uk.noammm.kav.Loaded.net?.platformOf(code, number, KavLive.secondOfDay(ride.dep)).orEmpty()
+        }
+
+        fun isTrain(ride: Leg): Boolean = routeType(line(ride.lineId)?.agencyId ?: -1) == 2
 
         fun departures(ride: Leg, wait: Leg?): List<Departure> {
             val boarding = wait?.options?.firstOrNull { it.lineId == ride.lineId }
@@ -1223,13 +1247,15 @@ object Moovit {
         for ((a, f) in typeJobs) types[a] = runCatching { f.get() }.getOrNull() ?: 3
     }
 
-    // The stops whose live times a list of trips needs: where each ride boards, and on the trip being taken
-    // (ending) also where each ride lets the rider off.
+    // The stops whose live times a list of trips needs: where each ride boards, and on the trip being taken (ending)
+    // every stop of each ride, for a time at each stop and where the rider gets off.
     private fun timedStops(list: List<Itinerary>, ending: Boolean): List<Int> {
         val rides = list.flatMap { i -> i.legs.filter { it.kind == LegKind.WAIT || it.kind == LegKind.RIDE } }
             .flatMap { it.options }
-        val alighting = if (ending) rides.filter { it.kind == LegKind.RIDE }.map { it.toStop } else emptyList()
-        return (rides.map { it.fromStop } + alighting).filter { it > 0 }.distinct().take(40)
+        // Where each ride gets off before the stops in between, so a long trip's cut never loses those.
+        val taken = if (ending) rides.filter { it.kind == LegKind.RIDE } else emptyList()
+        val along = taken.map { it.toStop } + taken.flatMap { it.stops.drop(1).dropLast(1) }
+        return (rides.map { it.fromStop } + along).filter { it > 0 }.distinct().take(if (ending) 120 else 40)
     }
 
     // How far each ride runs from the plan: Moovit's live time at the stop where the rider gets off, else where they

@@ -47,10 +47,10 @@ object KavLive {
     class Bus(val key: String, val route: Int, val spot: Spot)
 
     // A bus due at a stop. first is when its trip left its first stop; aimed is only known before it sets out, expected
-    // always; spot is where it is, when it reports one.
+    // always; spot is where it is, when it reports one; platform a train's, once the operator has given it.
     class Due(
         val stop: Int, val route: Int, val key: String, val number: String, val first: Long, val aimed: Long,
-        val expected: Long, val spot: Spot?, val order: Int,
+        val expected: Long, val spot: Spot?, val order: Int, val platform: String = "",
     ) {
         val underWay get() = spot != null || aimed == 0L
     }
@@ -226,7 +226,7 @@ object KavLive {
             val key = r.optString(2).takeIf { it.isNotEmpty() } ?: continue
             due += Due(
                 r.optInt(0), r.optInt(1), key, r.optString(3), r.optLong(4), r.optLong(5), r.optLong(6),
-                spotOf(r, 7), r.optInt(12, -1),
+                spotOf(r, 7), r.optInt(12, -1), r.optString(13, ""),
             )
         }
         return Board(due, parseLines(o.optJSONObject("lines")), o.optLong("next"))
@@ -282,7 +282,7 @@ object KavLive {
         else d.expected.takeIf { it > 0 } ?: d.aimed.takeIf { it > 0 } ?: planned,
         if (d.underWay) d.expected else 0, 0, 0, if (d.underWay) certaintyOf(d, now) else 0, 0, false, false, d.spot != null,
         d.spot?.lat ?: 0.0, d.spot?.lon ?: 0.0, d.key, d.spot?.at ?: 0, if (d.underWay) 0 else 3,
-        -1, -1, -1, -1, pattern, "", d.spot?.bearing ?: -1, d.spot?.speed ?: -1,
+        -1, -1, -1, -1, pattern, d.platform, d.spot?.bearing ?: -1, d.spot?.speed ?: -1,
     )
 
     // What a trip's live layer from the ministry holds: the arrivals, and for the line's next buses at a boarding stop
@@ -293,23 +293,165 @@ object KavLive {
 
     fun secondOfDay(epoch: Long): Int = Math.floorMod(epoch + israel.getOffset(epoch * 1000) / 1000, 86_400L).toInt()
 
+    // The day of the week in Israel, Sunday 0, as the timetable counts its days.
+    fun dayOf(epoch: Long): Int =
+        Math.floorMod(Math.floorDiv(epoch + israel.getOffset(epoch * 1000) / 1000, 86_400L) + 4, 7L).toInt()
+
+    // Whether the timetable runs trip t the day it set out at first. A trip is in the timetable once for each set of
+    // days it runs on, so the same times can be there for another day too.
+    private fun runsThen(net: Net, t: Int, first: Long): Boolean =
+        net.runsOn(t, dayOf(first - net.stDep[net.tripStart[t]] + 43_200))
+
     // The timetable's stop time at this stop of the line's trip that left its first stop at first: what the ministry
-    // calls a trip by, matched to Kav's own. -1 if it hasn't one.
+    // calls a trip by, matched to Kav's own, the one that runs that day first. -1 if it hasn't one.
     private fun stopTimeOf(net: Net, stop: Int, number: String, first: Long): Int {
         val origin = secondOfDay(first)
+        var other = -1
         for (i in net.dStart[stop] until net.dStart[stop + 1]) {
             val st = net.cST[net.dConn[i]]
             val t = net.tripOf(st)
             if (net.rShort[net.tripRoute[t]] != number) continue
             val off = abs(net.stDep[net.tripStart[t]] % 86_400 - origin)
-            if (off <= 60 || off >= 86_340) return st
+            if (off > 60 && off < 86_340) continue
+            if (runsThen(net, t, first)) return st
+            if (other < 0) other = st
         }
-        return -1
+        return other
     }
 
     // When the timetable has that trip leave the stop. Seconds from the timetable's midnight, or null if it hasn't.
     fun scheduledAt(net: Net, stop: Int, number: String, first: Long): Int? =
-        stopTimeOf(net, stop, number, first).takeIf { it >= 0 }?.let { net.stDep[it] }
+        stopTimeAt(net, stop, number, first)?.let { net.stDep[it] }
+
+    // The timetable's stop time of that trip at the stop, or null.
+    private fun stopTimeAt(net: Net, stop: Int, number: String, first: Long): Int? =
+        stopTimeOf(net, stop, number, first).takeIf { it >= 0 }
+
+    // The same for a train, which the timetable keeps without its number: the train trip that left its first station
+    // when this one did, leaving the stop nearest when it's expected (two can set out the same minute), of those that
+    // run that day first.
+    fun trainAt(net: Net, stop: Int, first: Long, expected: Long): Int? {
+        val origin = secondOfDay(first)
+        val due = secondOfDay(expected)
+        var found: Int? = null
+        var best = Int.MAX_VALUE
+        for (i in net.dStart[stop] until net.dStart[stop + 1]) {
+            val st = net.cST[net.dConn[i]]
+            val t = net.tripOf(st)
+            val route = net.tripRoute[t]
+            if (net.rType[route] != 2 || net.rShort[route].isNotEmpty()) continue
+            val off = abs(net.stDep[net.tripStart[t]] % 86_400 - origin)
+            if (off > 60 && off < 86_340) continue
+            val late = abs(Math.floorMod(net.stDep[st] - due + 43_200, 86_400) - 43_200)
+            if (late > 3_600) continue
+            val rank = late + if (runsThen(net, t, first)) 0 else 86_400
+            if (rank < best) { best = rank; found = st }
+        }
+        return found
+    }
+
+    // A live time on a stop's board: the timetable trip it is, and when that was due at the stop and now is, in
+    // seconds from the board's midnight, as its rows count them: a trip from yesterday still running counts past it.
+    // to is where a train really goes when that isn't where the timetable has it go, else null.
+    class BoardTime(val due: Due, val trip: Int, val static: Int, val rt: Int, val to: String? = null)
+
+    // The buses and trains due at the stop that are under way, each on the board's row it is. now is an epoch second.
+    fun boardTimes(net: Net, stop: Int, board: Board, now: Long): List<BoardTime> {
+        val midnight = now - secondOfDay(now)
+        return board.due.filter { it.underWay && it.expected > 0 }.mapNotNull { d ->
+            // A train is in the timetable without its number: found by when it set out instead.
+            val st = stopTimeAt(net, stop, d.number, d.first) ?: trainAt(net, stop, d.first, d.expected)
+                ?: return@mapNotNull null
+            val t = net.tripOf(st)
+            val late = Math.floorMod(secondOfDay(d.expected) - net.stDep[st] % 86_400 + 43_200, 86_400) - 43_200
+            val static = (d.expected - late - midnight).toInt()
+            val rt = (d.expected - midnight).toInt()
+            if (net.rType[net.tripRoute[t]] != 2) return@mapNotNull BoardTime(d, t, static, rt)
+            // Kav's timetable is a week's, and works can move where a night's trains start or end: the ministry knows
+            // where this one goes.
+            val dest = board.lines[d.route]?.to.orEmpty()
+            val ends = goesTo(dest)
+            if (!runsThen(net, t, d.first)) {
+                // Today's timetable hasn't it start then: today's train leaving at that time for the same place.
+                val row = net.trainLeaving(stop, static, dayOf(now), goesTo(board.lines[d.route]?.from.orEmpty()), ends)
+                    ?: return@mapNotNull null
+                return@mapNotNull BoardTime(d, row.trip, static, rt, row.to)
+            }
+            val to = net.cutShort(st, ends) ?: dest.takeIf { it.isNotEmpty() && !ends(net.name[net.tripLast(t)]) }
+            BoardTime(d, t, static, rt, to)
+        }
+    }
+
+    // Whether a station's name in the timetable is the one the ministry names a route's end by, which can be shorter
+    // ("בית שאן" for "בית שאן - דוד לוי").
+    private fun goesTo(dest: String): (String) -> Boolean =
+        { name -> dest.isNotEmpty() && (name.startsWith(dest) || dest.startsWith(name)) }
+
+    // The ministry's trains at a station not yet out that end early, on the board's rows (boardTimes places
+    // those under way). Only what it lists counts: its answers can leave out a train that runs, so none is said not to.
+    fun trainsToday(net: Net, stop: Int, board: Board, now: Long): TrainsToday {
+        val midnight = now - secondOfDay(now)
+        val ends = HashMap<Int, String>()
+        for (d in board.due) {
+            val line = board.lines[d.route] ?: continue
+            if (line.type != 2 || d.underWay || d.aimed <= 0) continue
+            val row = net.trainLeaving(stop, (d.aimed - midnight).toInt(), dayOf(now), goesTo(line.from), goesTo(line.to))
+            row?.to?.let { ends[row.trip] = it }
+        }
+        return TrainsToday(ends = ends)
+    }
+
+    // A train line's trains for its page, routes being the timetable's for it: a train has no number to ask the server
+    // for its line by, so its stations are asked, and each train due at one is placed on the timetable by when it set out.
+    fun trainsOn(net: Net, routes: Set<Int>, stations: List<Int>): List<Moovit.Arrival> {
+        val board = boardAt(stations.map { net.code[it] })
+        return trainsOn(net, routes, withoutLostTrains(board, System.currentTimeMillis() / 1000) { stationAt(net, it) })
+    }
+
+    internal fun trainsOn(net: Net, routes: Set<Int>, due: List<Due>): List<Moovit.Arrival> =
+        due.filter { it.underWay && it.spot != null }.groupBy { it.key }.values.mapNotNull { rows ->
+            rows.firstOrNull { d ->
+                val stop = stopOfCode(net, d.stop)
+                val st = if (stop >= 0) trainAt(net, stop, d.first, d.expected) else null
+                st != null && net.tripRoute[net.tripOf(st)] in routes
+            }
+        }.map { d -> busArrival(Bus(d.key, d.route, d.spot!!)) }
+
+    // The same for one of Moovit's train lines: the trains due at its stations that set out when one of its trips does.
+    // where(code) is a station's position.
+    fun trainsStarting(codes: List<Int>, starts: List<Long>, where: (Int) -> Pair<Double, Double>?): List<Moovit.Arrival> =
+        trainsStarting(withoutLostTrains(boardAt(codes), System.currentTimeMillis() / 1000, where), starts)
+
+    internal fun trainsStarting(due: List<Due>, starts: List<Long>): List<Moovit.Arrival> =
+        due.filter { d -> d.underWay && d.spot != null && starts.any { abs(it - d.first) <= 60 } }
+            .distinctBy { it.key }.map { d -> busArrival(Bus(d.key, d.route, d.spot!!)) }
+
+    // Everything due at these stops, asked STOPS_MAX at a time.
+    private fun boardAt(codes: List<Int>): Board {
+        val boards = codes.filter { it > 0 }.distinct().chunked(STOPS_MAX).map { stops(it) }
+        return Board(boards.flatMap { it.due }, boards.fold(HashMap<Int, Line>()) { m, b -> m.apply { putAll(b.lines) } }, 0)
+    }
+
+    private fun stationAt(net: Net, code: Int): Pair<Double, Double>? =
+        stopOfCode(net, code).takeIf { it >= 0 }?.let { net.lat[it] to net.lon[it] }
+
+    // The ministry can keep a train where it was long ago, freshly stamped, while its times stay right. A position no
+    // train could reach its station from in time is dropped and the times kept. where(code) is a station's position.
+    internal fun withoutLostTrains(board: Board, now: Long, where: (Int) -> Pair<Double, Double>?): List<Due> {
+        val lost = board.due.filter { d ->
+            val spot = d.spot ?: return@filter false
+            val at = where(d.stop) ?: return@filter false
+            board.lines[d.route]?.type == 2 &&
+                uk.noammm.kav.ui.metres(spot.lat, spot.lon, at.first, at.second) > 5_000 + TRAIN_M_S * maxOf(0L, d.expected - now)
+        }.mapTo(HashSet()) { it.key }
+        if (lost.isEmpty()) return board.due
+        return board.due.map { d ->
+            if (d.key !in lost) d else Due(d.stop, d.route, d.key, d.number, d.first, d.aimed, d.expected, null, d.order, d.platform)
+        }
+    }
+
+    // 162 km/h, faster than any train here runs.
+    private const val TRAIN_M_S = 45.0
 
     // Whether that trip goes on from the stop to another one.
     fun reaches(net: Net, stop: Int, to: Int, number: String, first: Long): Boolean {
@@ -337,8 +479,8 @@ object KavLive {
 
     // A trip's rides as Moovit's live layer would have them, from the ministry instead: each ride's own bus, the one
     // the timetable has leave the boarding stop when the plan says, timed where the rider boards and, on the trip being
-    // taken, where they get off. A ride whose own bus can't be told apart keeps its plan's time, and the line's next
-    // buses still give its departures.
+    // taken, at every stop of the ride, as are the line's other buses. A ride whose own bus can't be told apart keeps
+    // its plan's time, and the line's next buses still give its departures.
     fun rideArrivals(
         list: List<Moovit.Itinerary>, stops: Map<Int, Moovit.StopInfo>, lines: Map<Int, Moovit.LineInfo>,
         ending: Boolean, net: Net?,
@@ -349,11 +491,26 @@ object KavLive {
             i.rides.flatMap { it.options }.filter { it.kind == Moovit.LegKind.RIDE && it.tripId != 0L && it.fromStop > 0 }
                 .map { ride -> ride to deps.firstOrNull { it.tripId == ride.tripId && it.staticUtc > 0 }?.staticUtc }
         }.distinctBy { it.first.fromStop to it.first.tripId }
-        fun codeOf(stop: Int) = stops[stop]?.code?.toIntOrNull() ?: 0
-        val codes = rides.flatMap { (r, _) -> listOf(codeOf(r.fromStop)) + if (ending) listOf(codeOf(r.toStop)) else emptyList() }
-            .filter { it > 0 }.distinct()
+        fun codeOf(stop: Int) = (stops[stop] ?: Moovit.knownStop(stop))?.code?.toIntOrNull() ?: 0
+        val codes = rides.flatMap { (r, _) -> listOf(r.fromStop) + if (ending) r.stops.drop(1) else emptyList() }
+            .map(::codeOf).filter { it > 0 }.distinct()
         if (codes.isEmpty()) return Rides(emptyMap(), emptyMap())
-        val due = codes.chunked(STOPS_MAX).flatMap { stops(it).due }
+        // A long ride's stops take several requests: all at once, rather than each waiting on the last.
+        val chunks = codes.chunked(STOPS_MAX)
+        val boards = if (chunks.size == 1) listOf(stops(chunks[0])) else {
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(chunks.size, 4))
+            try {
+                chunks.map { c -> pool.submit<Board> { stops(c) } }.map { it.get() }
+            } catch (e: java.util.concurrent.ExecutionException) {
+                throw e.cause ?: e
+            } finally {
+                pool.shutdown()
+            }
+        }
+        val board = Board(boards.flatMap { it.due }, boards.fold(HashMap<Int, Line>()) { m, b -> m.apply { putAll(b.lines) } }, 0)
+        val due = withoutLostTrains(board, System.currentTimeMillis() / 1000) { code ->
+            net?.let { stationAt(it, code) } ?: stops.values.firstOrNull { it.code.toIntOrNull() == code }?.point
+        }
         val out = LinkedHashMap<Moovit.ArrivalKey, Moovit.Arrival>()
         val patterns = HashMap<Int, List<Int>>()
         for ((ride, timetabled) in rides) {
@@ -383,14 +540,17 @@ object KavLive {
                 out[Moovit.ArrivalKey(ride.fromStop, tripIdOf(other.key))] =
                     dueArrival(other, ride.fromStop, ride.lineId, pattern = pattern)
             }
+            if (ending) for (id in ride.stops.drop(1)) {
+                val at = codeOf(id).takeIf { it > 0 } ?: continue
+                for (d in due.filter { it.stop == at && it.route in routes }) {
+                    val mine = d.key == bus?.key
+                    val trip = if (mine) ride.tripId else tripIdOf(d.key)
+                    out[Moovit.ArrivalKey(id, trip)] = dueArrival(d, id, ride.lineId, trip, if (mine && id == ride.toStop) ride.arr else 0)
+                }
+            }
             if (bus == null) continue
             out[Moovit.ArrivalKey(ride.fromStop, ride.tripId)] =
                 dueArrival(bus, ride.fromStop, ride.lineId, ride.tripId, timetabled ?: ride.dep, pattern)
-            if (!ending) continue
-            val off = codeOf(ride.toStop)
-            due.firstOrNull { it.stop == off && it.route == bus.route && it.first == bus.first }?.let { there ->
-                out[Moovit.ArrivalKey(ride.toStop, ride.tripId)] = dueArrival(there, ride.toStop, ride.lineId, ride.tripId, ride.arr)
-            }
         }
         return Rides(out, patterns)
     }

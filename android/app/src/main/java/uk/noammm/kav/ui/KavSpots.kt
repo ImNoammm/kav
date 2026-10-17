@@ -1,9 +1,11 @@
 package uk.noammm.kav.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -99,4 +101,12 @@ internal fun rememberFresher(trip: Moovit.Itinerary, r: Moovit.Resolved): Moovit
     val routes = remember(trip, r.live) { KavLive.tripRoutes(trip, r) }
     val spots = rememberKavSpots(routes)
     return remember(r, spots) { if (spots.isEmpty()) r else r.withLive(KavLive.fresher(r.live, spots)) }
+}
+
+// A bus station's platforms come from the timetable, so a trip with a bus has it loaded.
+@Composable
+internal fun PlannedPlatforms(trip: Moovit.Itinerary, r: Moovit.Resolved) {
+    val app = LocalContext.current.applicationContext
+    val buses = remember(trip, r.lines) { trip.rides.flatMap { it.options }.any { !r.isTrain(it) } }
+    LaunchedEffect(buses) { if (buses) runCatching { uk.noammm.kav.loadNet(app) } }
 }

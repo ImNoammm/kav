@@ -101,7 +101,8 @@ enum class Tab {
 }
 
 object Loaded {
-    @Volatile private var net_: Net? = null
+    // State, so what's drawn from the timetable (a bus station's platforms) comes in once it has loaded.
+    private var net_ by mutableStateOf<Net?>(null)
 
     val net: Net? get() = net_
 
@@ -141,6 +142,7 @@ class MainActivity : ComponentActivity() {
         Shown.twelveHour = Prefs.twelveHour(this)
         Moovit.shareLocation = !Prefs.privateSearch(this)
         KavLive.chosen = Prefs.liveFromKav(this)
+        MapFile.type = Prefs.mapType(this)
         MapFile.init(this)
         StopPhotos.init(this)
         Online.init(this)
@@ -234,6 +236,8 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     var payHistoryOpen by mutableStateOf(false)
     // A bus ride's pay row in a trip asking Pay to scan for that ride.
     internal var payFor by mutableStateOf<uk.noammm.kav.ui.PayFor?>(null)
+    // The bus being reported to the ministry, while its report is open.
+    internal var report by mutableStateOf<uk.noammm.kav.ui.ReportFor?>(null)
     var activeJourney by mutableStateOf<ActiveJourney?>(null)
     var returnHome by mutableStateOf(false)
 
@@ -291,6 +295,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         Shown.twelveHour = Prefs.twelveHour(ctx)
         Moovit.shareLocation = !Prefs.privateSearch(ctx)
         KavLive.chosen = Prefs.liveFromKav(ctx)
+        MapFile.type = Prefs.mapType(ctx)
         seen = Prefs.seen(ctx)
         seenPlace = Prefs.seenPlace(ctx)
         Online.reset()
@@ -766,6 +771,17 @@ private fun Shell(model: KavModel) {
                     model.payOpen = true
                 })
             }
+            var lastReport by remember { mutableStateOf(model.report) }
+            model.report?.let { lastReport = it }
+            androidx.compose.animation.AnimatedVisibility(
+                model.report != null,
+                enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)) +
+                    androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(240)) { it / 10 },
+                exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)) +
+                    androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it / 10 },
+            ) {
+                lastReport?.let { key(it) { ReportScreen(it) { model.report = null } } }
+            }
         }
         }
         }
@@ -1232,12 +1248,12 @@ object Prefs {
 
     private fun place(o: org.json.JSONObject) = Moovit.Place(
         o.optString("n"), o.optString("d"), o.optDouble("lat"), o.optDouble("lon"),
-        o.optInt("t", 5),
+        o.optInt("t", 5), o.optInt("m", -1),
     )
 
     private fun json(p: Moovit.Place): org.json.JSONObject = org.json.JSONObject()
         .put("n", p.name).put("d", p.detail).put("lat", p.lat).put("lon", p.lon)
-        .put("t", p.type)
+        .put("t", p.type).put("m", p.mode)
 
     fun trips(ctx: Context): List<RecentTrip> = try {
         val raw = store(ctx).getString(TRIPS, "[]")
@@ -1328,6 +1344,11 @@ object Prefs {
     fun liveFromKav(ctx: Context): Boolean = store(ctx).getBoolean("liveFromKav", false)
     fun setLiveFromKav(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("liveFromKav", on).apply()
 
+    private val mapTypes = MapFile.Type.entries.map { it.name.lowercase() }
+    fun mapType(ctx: Context): MapFile.Type =
+        MapFile.Type.entries.firstOrNull { it.name.lowercase() == store(ctx).getString("mapType", null) } ?: MapFile.Type.STANDARD
+    fun setMapType(ctx: Context, type: MapFile.Type) = store(ctx).edit().putString("mapType", type.name.lowercase()).apply()
+
     fun seen(ctx: Context): Seen = Seen.entries.firstOrNull { it.name == store(ctx).getString("seen", null) } ?: Seen.CITY
     fun seenPlace(ctx: Context): Moovit.Place? = savedPlace(ctx, "seenPlace")
     fun setSeen(ctx: Context, how: Seen, place: Moovit.Place?) {
@@ -1405,6 +1426,7 @@ object Prefs {
             .put("liquidGlass", s.getBoolean("liquidGlass", true))
             .put("privateSearch", privateSearch(ctx))
             .put("liveFromKav", liveFromKav(ctx))
+            .put("mapType", mapType(ctx).name.lowercase())
             .put("seen", seen(ctx).name)
             .apply { seenPlace(ctx)?.let { put("seenPlace", json(it)) } }
             .put("filters", org.json.JSONObject().apply { ResultFilter.entries.forEach { put(it.name, it in on) } })
@@ -1427,6 +1449,7 @@ object Prefs {
         if (o.has("liquidGlass")) e.putBoolean("liquidGlass", o.optBoolean("liquidGlass"))
         if (o.has("privateSearch")) e.putBoolean("privateSearch", o.optBoolean("privateSearch"))
         if (o.has("liveFromKav")) e.putBoolean("liveFromKav", o.optBoolean("liveFromKav"))
+        o.optString("mapType").takeIf { it in mapTypes }?.let { e.putString("mapType", it) }
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }
         if (o.has("showCo2")) e.putBoolean("showCo2", o.optBoolean("showCo2"))

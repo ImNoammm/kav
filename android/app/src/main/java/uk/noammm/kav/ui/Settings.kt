@@ -36,6 +36,7 @@ import uk.noammm.kav.Seen
 import uk.noammm.kav.data.Backup
 import uk.noammm.kav.data.GoogleRecipe
 import uk.noammm.kav.data.KavLive
+import uk.noammm.kav.data.MapFile
 import uk.noammm.kav.data.KavRecipe
 import uk.noammm.kav.data.SignedFile
 import uk.noammm.kav.data.Updates
@@ -65,6 +66,13 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     Column(Modifier.fillMaxSize().background(K.bg).verticalScroll(rememberScrollState())
         .padding(bottom = LocalBottomBarInset.current)) {
         ScreenHeader(T("Your", "ההגדרות"), T("settings", "שלכם"), back = onClose)
+
+        // A new version waiting comes before everything else.
+        val waiting = model.update != null
+        if (waiting) {
+            Group(T("Update available", "עדכון זמין"))
+            UpdateSection(model)
+        }
 
         Group(T("Live locations", "מיקום בזמן אמת"))
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LiveSourceRow() }
@@ -120,6 +128,9 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
 
         LookChoices(inset = K.gap4) { Group(it) }
 
+        Group(T("Map", "מפה"))
+        MapChoices()
+
         Group(T("Colour", "צבע"))
         AccentPreview(Modifier.padding(horizontal = K.gap4))
         Spacer(Modifier.height(K.gap4))
@@ -127,8 +138,10 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
 
         Group(T("Updates", "עדכונים"))
         FixCheck()
-        Spacer(Modifier.height(K.gap2))
-        UpdateSection(model)
+        if (!waiting) {
+            Spacer(Modifier.height(K.gap2))
+            UpdateSection(model)
+        }
 
         Group(T("Your data", "הנתונים שלכם"))
         BackupSection(model)
@@ -199,6 +212,28 @@ internal fun LookChoices(inset: Dp = 0.dp, heading: @Composable (String) -> Unit
     Text(
         T("Liquid glass is the one we recommend.", "זכוכית נוזלית היא האפשרות המומלצת."),
         fontSize = 11.sp, color = K.dim, modifier = Modifier.padding(horizontal = inset).padding(start = 2.dp, top = 6.dp),
+    )
+}
+
+// Kav's own map, or satellite photos or shaded hills, which load online.
+@Composable
+private fun MapChoices() {
+    val ctx = LocalContext.current
+    Row(Modifier.padding(horizontal = K.gap4).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+        for ((type, name) in listOf(
+            MapFile.Type.STANDARD to T("Standard", "רגילה"),
+            MapFile.Type.SATELLITE to T("Satellite", "לוויין"),
+            MapFile.Type.TERRAIN to T("Terrain", "פני שטח"),
+        )) Chip(name, MapFile.type == type) { MapFile.type = type; Prefs.setMapType(ctx, type) }
+    }
+    Text(
+        T(
+            "Standard works without internet. Satellite photos come from Esri and terrain heights from Amazon's open " +
+                "data while you look at the map, so they see which area you're viewing.",
+            "המפה הרגילה עובדת בלי אינטרנט. תמונות הלוויין מגיעות מ-Esri וגובה פני השטח מהמידע הפתוח של Amazon " +
+                "בזמן שאתם מסתכלים במפה, ולכן הם רואים איזה אזור אתם צופים בו.",
+        ),
+        fontSize = 11.sp, color = K.dim, modifier = Modifier.padding(horizontal = K.gap4).padding(start = 2.dp, top = 6.dp),
     )
 }
 
@@ -389,11 +424,13 @@ internal fun openLink(ctx: android.content.Context, url: String) {
 }
 
 // Google's panorama of a spot, in the Maps app when it's there, else on the web. Only when asked: Google learns the spot.
+// The web link names the spot as its query too, which Google ignores there, so a maps app that takes Google's links
+// instead (Vela) opens the spot rather than nothing.
 internal fun openStreetView(ctx: android.content.Context, lat: Double, lon: Double) {
     val app = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("google.streetview:cbll=$lat,$lon"))
         .setPackage("com.google.android.apps.maps").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
     runCatching { ctx.startActivity(app) }.onFailure {
-        openLink(ctx, "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=$lat,$lon")
+        openLink(ctx, "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=$lat,$lon&query=$lat,$lon")
     }
 }
 

@@ -57,6 +57,9 @@ you're on the way.
   Rav-Pass account you sign up or sign in to right in Kav. Only payments use
   it, and Rav-Pass gets your location only at the moment you scan or pay, as in
   its own app, never in the background. Everything else stays anonymous.
+- Reports a driver, a bus or an inspector to the Ministry of Transport on its
+  own form. Kav fills it in from your ride, and you check it and send it
+  yourself. Your details stay on the phone and only go into that form.
 
 ## Getting it
 
@@ -67,11 +70,12 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-2.6.apk --repo ImNoammm/kav
+gh attestation verify kav-2.7.apk --repo ImNoammm/kav
 ```
 
 First launch fetches the map, about 176 MB once. It lives on the phone from then
-on, so the map works offline and no tile server sees where you look.
+on, so the map works offline and no tile server sees where you look. The
+satellite and terrain maps you can pick in Settings load online.
 
 ## Building it
 
@@ -97,7 +101,8 @@ the APKs from Releases.
 ## Credits
 
 - Map data © OpenStreetMap contributors, from the Protomaps build, drawn with
-  MapLibre.
+  MapLibre. Satellite photos from Esri, hill shading from Mapzen's terrain tiles
+  on AWS.
 - The liquid glass shaders come from Kyant0's
   [AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache
   License 2.0).

@@ -2,6 +2,7 @@ package uk.noammm.kav.data
 
 import android.os.Build
 import org.json.JSONObject
+import uk.noammm.kav.ui.Online
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
@@ -1234,7 +1235,7 @@ object Moovit {
     }
 
     // Line and stop details, several at a time. One that fails stays out of the maps.
-    private fun loadDetails(
+    fun loadDetails(
         pool: java.util.concurrent.ExecutorService, s: MoovitSession, lineIds: Collection<Int>, stopIds: Collection<Int>,
         lines: MutableMap<Int, LineInfo>, stops: MutableMap<Int, StopInfo>, types: MutableMap<Int, Int>,
     ) {
@@ -1271,7 +1272,7 @@ object Moovit {
         return out
     }
 
-    fun hydrate(s: MoovitSession, list: List<Itinerary>, ending: Boolean = false): Resolved {
+    fun hydrate(s: MoovitSession, rp: RoutingProvider, list: List<Itinerary>, ending: Boolean = false): Resolved {
         val (lineIds, stopIds) = detailIds(list)
         val lines = LinkedHashMap<Int, LineInfo>()
         val stops = LinkedHashMap<Int, StopInfo>()
@@ -1283,7 +1284,7 @@ object Moovit {
             try { stopArrivals(s, boarding) } catch (e: Exception) { emptyMap<ArrivalKey, Arrival>() to 20 }
         }
         val (live, poll) = try {
-            loadDetails(pool, s, lineIds, stopIds, lines, stops, types)
+            rp.loadDetails(pool, lineIds, stopIds, lines, stops, types)
             if (liveJob == null) {
                 val rides = serverLive(list, stops, lines, ending)
                 return Resolved(lines, stops, types, rides.live, emptyMap(), SERVER_POLL, rides.patterns, delaysOf(list, rides.live))
@@ -1410,7 +1411,7 @@ object Moovit {
         return stops
     }
 
-    fun refreshLive(s: MoovitSession, list: List<Itinerary>, prev: Resolved, ending: Boolean = false): Resolved {
+    fun refreshLive(s: MoovitSession,rp: RoutingProvider, list: List<Itinerary>, prev: Resolved, ending: Boolean = false): Resolved {
         if (KavLive.enabled) {
             val rides = try { KavLive.rideArrivals(list, prev.stops, prev.lines, ending, uk.noammm.kav.Loaded.net) } catch (e: Exception) { return prev }
             return Resolved(prev.lines, prev.stops, prev.routeTypes, rides.live, prev.shapes, SERVER_POLL,
@@ -1426,7 +1427,7 @@ object Moovit {
         val missingStops = stopIds.filter { it !in stops }
         if (missingLines.isNotEmpty() || missingStops.isNotEmpty()) {
             val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, missingLines.size + missingStops.size))
-            try { loadDetails(pool, s, missingLines, missingStops, lines, stops, types) } finally { pool.shutdown() }
+            try { rp.loadDetails(pool, missingLines, missingStops, lines, stops, types) } finally { pool.shutdown() }
         }
         return Resolved(lines, stops, types, live, shapesFor(s, list, live, prev.shapes), poll,
             patternsFor(s, list, live, prev.patterns), prev.delays + delaysOf(list, live))

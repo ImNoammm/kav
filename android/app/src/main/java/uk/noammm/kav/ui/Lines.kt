@@ -805,6 +805,7 @@ private class OnlineLine(val directions: List<OnlineDirection>, val failed: Bool
 // one direction per Moovit line, with the stops and shape of its usual trip.
 private suspend fun loadOnlineLine(g: Moovit.LineGroup): OnlineLine = withContext(Dispatchers.IO) {
     val s = Online.open()
+    val rp = Online.openRoutingProvider()
     val now = System.currentTimeMillis() / 1000
     val day = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US)
         .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Jerusalem") }
@@ -822,7 +823,7 @@ private suspend fun loadOnlineLine(g: Moovit.LineGroup): OnlineLine = withContex
             val usual = ts.maxBy { it.departures.size }
             val ids = Moovit.tripPattern(s, usual.patternId)
             val stops = ids.chunked(6).flatMap { batch ->
-                batch.map { id -> async { runCatching { Moovit.stopInfo(s, id) }.getOrNull() } }.awaitAll()
+                batch.map { id -> async { runCatching { rp.stopInfo(id) }.getOrNull() } }.awaitAll()
             }.filterNotNull().filter { it.point != null }
             val shape = runCatching { Moovit.tripShape(s, usual.shapeId) }.getOrDefault(emptyList())
             OnlineDirection(lineId, stops, shape, ts.flatMap { it.departures }.sorted())

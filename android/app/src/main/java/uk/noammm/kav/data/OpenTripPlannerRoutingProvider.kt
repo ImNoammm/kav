@@ -223,6 +223,10 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
        stopovers: List<Moovit.Place>,
        toName: String?
     ): JSONObject{
+        var timestamp = whenMs
+        if (whenMs==0L) {
+            timestamp=System.currentTimeMillis()
+        }
         val args = JSONObject().put(
             "from", JSONObject()
                 .put("coordinates", JSONObject()
@@ -237,7 +241,7 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
                     .put("longitude", to.second)
                     )
             )
-            .put("dateTime", formatEpochMillis(whenMs))
+            .put("dateTime", formatEpochMillis(timestamp))
             .put("arriveBy", timeType==Moovit.TIME_ARRIVAL)
         val response = graphql(TRIP_FIELDS, args)
         return response

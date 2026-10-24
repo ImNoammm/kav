@@ -1217,7 +1217,7 @@ object Moovit {
         fun stop(id: Int): StopInfo? = stops[id]
         fun stopName(id: Int): String? = stops[id]?.name
         fun routeType(agencyId: Int): Int = routeTypes[agencyId] ?: 3
-        fun agencyName(agencyId: Int): String? = Moovit.agencyName(agencyId)
+        fun agencyName(agencyId: Int): String? = if (Online.routeWithMoovit) Moovit.agencyName(agencyId) else Online.routingProvider.agencyName(agencyId)
 
     }
 

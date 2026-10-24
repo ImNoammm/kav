@@ -26,6 +26,6 @@ interface RoutingProvider {
 //    fun stop(id: Int): StopInfo?
 //    fun stopName(id: Int): String?
 //    fun routeType(agencyId: Int): Int
-//    fun agencyName(agencyId: Int): String?
+    fun agencyName(agencyId: Int): String?
 
 }

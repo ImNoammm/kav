@@ -70,7 +70,7 @@ object Online {
     // Rebuilt whenever the routing setting changes, so the next plan goes to the provider and endpoint chosen.
     @Volatile var routingProvider: RoutingProvider = OpenTripPlannerRoutingProvider(Prefs.DEFAULT_OTP_ENDPOINT)
         private set
-    @Volatile private var routeWithMoovit = false
+    @Volatile var routeWithMoovit = false
     private val opening = kotlinx.coroutines.sync.Mutex()
     private var failedAt = 0L
     private var failures = 0

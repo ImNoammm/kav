@@ -32,4 +32,8 @@ class MoovitRoutingProvider(val s: MoovitSession): RoutingProvider {
     override fun stopInfo(id: Int): Moovit.StopInfo? {
         return Moovit.stopInfo(s, id)
     }
+
+    override fun agencyName(agencyId: Int): String? {
+        return Moovit.agencyName(agencyId)
+    }
 }

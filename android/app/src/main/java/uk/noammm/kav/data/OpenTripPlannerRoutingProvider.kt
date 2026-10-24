@@ -345,9 +345,9 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
 //        return routeTypeByAgency[agencyId] ?: -1
 //    }
 //
-//    override fun agencyName(agencyId: Int): String? {
-//        return agencyById[agencyId]
-//    }
+    override fun agencyName(agencyId: Int): String? {
+        return agencyById[agencyId]
+    }
     val STOP_FIELDS ="""
 query quay(${'$'}id: String!) {
   quay(id: ${'$'}id) {

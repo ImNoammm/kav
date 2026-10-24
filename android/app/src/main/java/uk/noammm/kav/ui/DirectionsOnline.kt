@@ -122,9 +122,10 @@ fun DirectionsOnline(model: KavModel) {
             val link = withContext(Dispatchers.IO) { MoovitLink.resolve(incoming) }
             if (link.sharedId != null) {
                 val session = Online.open()
+                val routingProvider = Online.openRoutingProvider()
                 val (shared, details) = withContext(Dispatchers.IO) {
                     val shared = Moovit.sharedItinerary(session, link.sharedId)
-                    shared to Moovit.hydrate(session, listOf(shared.trip))
+                    shared to Moovit.hydrate(session, routingProvider, listOf(shared.trip))
                 }
                 val start = shared.from ?: shared.trip.legs.firstOrNull { it.shape.isNotEmpty() }?.shape?.firstOrNull()
                     ?.let { place(T("Start", "התחלה"), it.first, it.second) }
@@ -212,9 +213,10 @@ fun DirectionsOnline(model: KavModel) {
         if (departAt != 0L) delay(250)
         try {
             val s = Online.open(fromLL)
+            val rp = Online.openRoutingProvider(fromLL)
             val res = withContext(Dispatchers.IO) {
-                Moovit.planItineraries(
-                    s, fromLL, toLL, departAt, timeType,
+                rp.planItineraries(
+                    fromLL, toLL, departAt, timeType,
                     routeTypes = routeTypesFor(filters),
                     skipTaxi = stopovers.isNotEmpty() || ResultFilter.TAXI !in filters,
                     stopovers = stopovers, toName = toPlace?.name,
@@ -230,7 +232,7 @@ fun DirectionsOnline(model: KavModel) {
             }
             StopPhotos.prefetchIds(raw.flatMap { t -> t.rides.flatMap { r -> r.options.flatMap { listOf(it.fromStop, it.toStop) } } })
             val toHydrate = (raw + listOfNotNull(res.schedule())).distinct()
-            resolved = withContext(Dispatchers.IO) { Moovit.hydrate(s, toHydrate) }
+            resolved = withContext(Dispatchers.IO) { Moovit.hydrate(s,rp, toHydrate) }
             model.activeJourney?.takeIf { active -> raw.any { it === active.trip } }?.let {
                 model.activeJourney = it.copy(resolved = Moovit.Resolved(
                     it.resolved.lines + resolved.lines, it.resolved.stops + resolved.stops,
@@ -309,7 +311,8 @@ fun DirectionsOnline(model: KavModel) {
             if (wait) kotlinx.coroutines.delay(resolved.pollSecs.coerceIn(15, 120) * 1000L)
             wait = true
             val s = runCatching { Online.open() }.getOrNull() ?: break
-            val refreshed = withContext(Dispatchers.IO) { Moovit.refreshLive(s, otherTrips, resolved) }
+            val rp = Online.openRoutingProvider()
+            val refreshed = withContext(Dispatchers.IO) { Moovit.refreshLive(s,rp, otherTrips, resolved) }
             resolved = Moovit.Resolved(
                 refreshed.lines + resolved.lines, refreshed.stops + resolved.stops,
                 refreshed.routeTypes + resolved.routeTypes, refreshed.live,

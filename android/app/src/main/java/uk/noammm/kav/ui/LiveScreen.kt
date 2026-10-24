@@ -50,19 +50,27 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.LOCATION_PERMISSIONS
+import uk.noammm.kav.Prefs
+import uk.noammm.kav.RoutingSource
 import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.MoovitRoutingProvider
 import uk.noammm.kav.data.MoovitSession
+import uk.noammm.kav.data.OpenTripPlannerRoutingProvider
+import uk.noammm.kav.data.RoutingProvider
 import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.hasLocationPermission
 import uk.noammm.kav.loadNet
 import uk.noammm.kav.requestLocationOnce
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import kotlin.coroutines.coroutineContext
 
 object Online {
     @Volatile var session: MoovitSession? = null
+    // Rebuilt whenever the routing setting changes, so the next plan goes to the provider and endpoint chosen.
+    @Volatile var routingProvider: RoutingProvider = OpenTripPlannerRoutingProvider(Prefs.DEFAULT_OTP_ENDPOINT)
+        private set
+    @Volatile var routeWithMoovit = false
     private val opening = kotlinx.coroutines.sync.Mutex()
     private var failedAt = 0L
     private var failures = 0
@@ -84,6 +92,13 @@ object Online {
                 s.getInt("metro", 1), s.getLong("expires", 0L),
             )
         }
+        applyRouting(ctx)
+    }
+
+    // Reads the routing choice from the settings and replaces the provider, so changing it takes effect at once.
+    fun applyRouting(ctx: android.content.Context) {
+        routeWithMoovit = Prefs.routingSource(ctx) == RoutingSource.MOOVIT
+        routingProvider = OpenTripPlannerRoutingProvider(Prefs.routingEndpoint(ctx))
     }
 
     // A fix for Moovit just arrived: the next call tries at once rather than waiting out earlier failures.
@@ -100,34 +115,42 @@ object Online {
 
     // Renewed a minute before it expires.
     private fun fresh(s: MoovitSession?) = s != null && s.accessExpiresUtc - System.currentTimeMillis() / 1000 > 60
-
+    suspend fun openRoutingProvider(at: Pair<Double, Double>? = null): RoutingProvider =
+        if (routeWithMoovit) MoovitRoutingProvider(open(at)) else routingProvider
     // One Moovit session for the whole app. Callers that arrive together share it, or its failure.
-    suspend fun open(at: Pair<Double, Double>? = null): MoovitSession = session.takeIf { fresh(it) && !asked } ?: opening.withLock {
-        session.takeIf { fresh(it) && !asked } ?: run {
-            // Each failure waits twice as long, up to five minutes: Moovit refuses new sessions from
-            // an address that keeps asking.
-            val wait = 10_000L shl (failures - 1).coerceIn(0, 5)
-            if (failures > 0 && System.currentTimeMillis() - failedAt < minOf(wait, 300_000L)) {
-                throw java.io.IOException("Moovit is unreachable")
-            }
-            try {
-                val gen = generation
-                withContext(Dispatchers.IO) { obtain(at) }.also {
-                    if (gen == generation) {
-                        if (it.userKey != session?.userKey) { born = System.currentTimeMillis(); rotate = false }
-                        keep(it)
-                    }
-                    failures = 0
+    suspend fun open(at: Pair<Double, Double>? = null): MoovitSession =session.takeIf { fresh(it) && !asked } ?: opening.withLock {
+            session.takeIf { fresh(it) && !asked } ?: run {
+                // Each failure waits twice as long, up to five minutes: Moovit refuses new sessions from
+                // an address that keeps asking.
+                val wait = 10_000L shl (failures - 1).coerceIn(0, 5)
+                if (failures > 0 && System.currentTimeMillis() - failedAt < minOf(
+                        wait,
+                        300_000L
+                    )
+                ) {
+                    throw java.io.IOException("Moovit is unreachable")
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                failedAt = System.currentTimeMillis()
-                failures++
-                throw e
+                try {
+                    val gen = generation
+                    withContext(Dispatchers.IO) { obtain(at) }.also {
+                        if (gen == generation) {
+                            if (it.userKey != session?.userKey) {
+                                born = System.currentTimeMillis(); rotate = false
+                            }
+                            keep(it)
+                        }
+                        failures = 0
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failedAt = System.currentTimeMillis()
+                    failures++
+                    throw e
+                }
             }
         }
-    }
+
 
     // Moovit's CDN has started refusing requests for a new user more than once, so a user is kept and
     // its access renewed each day. A new one is made weekly or when asked for, and while that fails

@@ -32,6 +32,7 @@ import kotlinx.coroutines.withContext
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.PendingBackup
 import uk.noammm.kav.Prefs
+import uk.noammm.kav.RoutingSource
 import uk.noammm.kav.Seen
 import uk.noammm.kav.data.Backup
 import uk.noammm.kav.data.GoogleRecipe
@@ -40,6 +41,7 @@ import uk.noammm.kav.data.MapFile
 import uk.noammm.kav.data.KavRecipe
 import uk.noammm.kav.data.SignedFile
 import uk.noammm.kav.data.Updates
+import uk.noammm.kav.ui.KavField
 
 @Composable
 fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
@@ -76,6 +78,9 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
 
         Group(T("Live locations", "מיקום בזמן אמת"))
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LiveSourceRow() }
+
+        Group(T("Trip planning", "תכנון נסיעות"))
+        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { RoutingRows() }
 
         // Most used first, the ones set once and forgotten after.
         if (Payer.signedIn) {
@@ -259,6 +264,86 @@ internal fun LiveSourceRow() {
         KavLive.chosen,
         { on -> KavLive.chosen = on; Prefs.setLiveFromKav(ctx, on) },
     ) { LiveGlyph(if (KavLive.chosen) K.text else K.dim, 18.dp) }
+}
+
+@Composable
+private fun RoutingRows() {
+    val ctx = LocalContext.current
+    var source by remember { mutableStateOf(Prefs.routingSource(ctx)) }
+    var endpoint by remember { mutableStateOf(Prefs.routingEndpoint(ctx)) }
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.padding(horizontal = K.gap4).fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(K.gap2),
+        ) {
+            Chip(T("Moovit", "Moovit"), source == RoutingSource.MOOVIT) {
+                source = RoutingSource.MOOVIT
+                Prefs.setRoutingSource(ctx, source)
+                Online.applyRouting(ctx)
+            }
+            Chip(T("OpenTripPlanner", "OpenTripPlanner"), source == RoutingSource.OPEN_TRIP_PLANNER) {
+                source = RoutingSource.OPEN_TRIP_PLANNER
+                Prefs.setRoutingSource(ctx, source)
+                Online.applyRouting(ctx)
+            }
+        }
+        Text(
+            if (source == RoutingSource.MOOVIT)
+                T("Plan trips using Moovit's service.", "תכננו מסלולים באמצעות השירות של Moovit.")
+            else
+                T("Plan trips using an OpenTripPlanner endpoint you choose.", "תכננו מסלולים באמצעות נקודת קצה של OpenTripPlanner לבחירתכם."),
+            fontSize = 11.sp,
+            color = K.dim,
+            lineHeight = 15.sp,
+            modifier = Modifier.padding(horizontal = K.gap4).padding(start = K.gap1, top = K.gap2),
+        )
+    }
+
+    if (source == RoutingSource.OPEN_TRIP_PLANNER) {
+        Column(Modifier.padding(start = K.gap4, end = K.gap4, top = K.gap3)) {
+            Text(
+                T("Endpoint", "נקודת קצה"),
+                style = DisplayItalic,
+                fontSize = 12.sp,
+                color = K.dim,
+                modifier = Modifier.padding(start = K.gap1, bottom = K.gap2),
+            )
+            KavField(
+                value = endpoint,
+                onValue = { v ->
+                    endpoint = v
+                    Prefs.setRoutingEndpoint(ctx, v)
+                    Online.applyRouting(ctx)
+                },
+                placeholder = Prefs.DEFAULT_OTP_ENDPOINT,
+                autoFocus = false,
+            )
+            Text(
+                T(
+                    "The endpoint is passed to the OpenTripPlanner routing provider when planning trips.",
+                    "נקודת הקצה מועברת לספק הניתוב של OpenTripPlanner בעת תכנון מסלולים.",
+                ),
+                fontSize = 11.sp,
+                color = K.dim,
+                lineHeight = 15.sp,
+                modifier = Modifier.padding(start = K.gap1, top = K.gap2),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RouteGlyph(tint: Color, size: Dp = 18.dp) {
+    Canvas(Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val sw = w * .09f
+        drawLine(tint, Offset(w * .18f, h * .5f), Offset(w * .82f, h * .5f), sw, StrokeCap.Round)
+        drawCircle(Color.Transparent, w * .09f, Offset(w * .18f, h * .5f), style = Stroke(sw))
+        drawCircle(tint, w * .09f, Offset(w * .82f, h * .5f))
+        drawCircle(Color.Transparent, w * .07f, Offset(w * .32f, h * .5f), style = Stroke(sw))
+    }
 }
 
 // Private search and what Moovit sees instead, in Settings and the last step of setting Kav up.

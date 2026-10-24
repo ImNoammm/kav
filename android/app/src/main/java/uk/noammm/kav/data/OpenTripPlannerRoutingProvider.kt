@@ -243,6 +243,8 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
             )
             .put("dateTime", formatEpochMillis(timestamp))
             .put("arriveBy", timeType==Moovit.TIME_ARRIVAL)
+            .put("searchWindow", 120)
+            .put("numTripPatterns", 5)
         val response = graphql(TRIP_FIELDS, args)
         return response
 

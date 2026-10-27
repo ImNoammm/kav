@@ -253,7 +253,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
 
     var favourites by mutableStateOf(ctx?.let { Prefs.favourites(it) } ?: emptyList())
     fun saveFavourites(ctx: Context, list: List<uk.noammm.kav.ui.Favourite>) {
-        favourites = list
+        favourites = list.map{it.copy(place=it.place?.copy(name=it.name))}
         Prefs.saveFavourites(ctx, list)
     }
 

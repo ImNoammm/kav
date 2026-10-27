@@ -579,7 +579,7 @@ object Moovit {
     }
 
     // mode is a stop's kind as a route type, a train station's 2, for its glyph; -1 when it isn't one of Kav's stops.
-    class Place(
+    data class Place(
         val name: String,
         val detail: String,
         val lat: Double,

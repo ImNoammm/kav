@@ -330,7 +330,7 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
                 for ((j, element) in secondaryItineraryRideLegs.withIndex()){
                     if (!alternativeShortNames[j].contains(element.shortName)) {
                         alternativeShortNames[j].add(element.shortName)
-                        alternatives[j].add(element)
+                        alternatives[j].add(element.copy(alternativeLineIds = listOf(primaryItineraryRideLegs[j].lineId)))
                     }
                     lineChoices[j].add(element.lineId)
                 }

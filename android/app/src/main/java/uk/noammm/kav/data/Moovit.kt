@@ -757,7 +757,7 @@ object Moovit {
         val minutes get() = (((arr - dep) / 60).toInt()).coerceAtLeast(0)
     }
 
-    class Itinerary(
+    data class Itinerary(
         val guid: String,
         val group: Int,
         val legs: List<Leg>,

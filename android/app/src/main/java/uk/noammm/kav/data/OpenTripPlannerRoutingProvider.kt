@@ -244,7 +244,7 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
             .put("dateTime", formatEpochMillis(timestamp))
             .put("arriveBy", timeType==Moovit.TIME_ARRIVAL)
             .put("searchWindow", 120)
-            .put("numTripPatterns", 5)
+            .put("numTripPatterns", 12)
         val response = graphql(TRIP_FIELDS, args)
         return response
 
@@ -300,7 +300,43 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
             parseItinerary(pattern, i)?.let { itineraries.add(it) }
         }
         if (itineraries.isEmpty()) throw refusal(trip.optJSONArray("routingErrors"))
-        return Moovit.Plan(itineraries)
+
+        var stopListHashMap = LinkedHashMap<ArrayList<Pair<Int,Int>>, ArrayList<Moovit.Itinerary>>()
+        for (itinerary in itineraries) {
+            var stopList = ArrayList<Pair<Int,Int>>()
+            for (leg in itinerary.legs) {
+                if (leg.kind == Moovit.LegKind.RIDE) {
+                    stopList.add(leg.fromStop to leg.toStop)
+                }
+            }
+            if (!stopListHashMap.containsKey(stopList)) stopListHashMap[stopList] = ArrayList<Moovit.Itinerary>()
+            stopListHashMap[stopList]!!.add(itinerary)
+        }
+        val outItinerairies = ArrayList<Moovit.Itinerary>()
+        for (iternaryList in stopListHashMap.values) {
+            val primaryItinerary = iternaryList[0]
+            val primaryItineraryRideLegs = primaryItinerary.legs.filter { it.kind == Moovit.LegKind.RIDE }
+            val alternatives = ArrayList<ArrayList<Moovit.Leg>>()
+            for (i in primaryItineraryRideLegs.indices) alternatives.add (ArrayList())
+            for (i in 1..<iternaryList.size) {
+                val secondaryItinerary = iternaryList[i]
+                val secondaryItineraryRideLegs = secondaryItinerary.legs.filter { it.kind==Moovit.LegKind.RIDE }
+                for ((j, element) in secondaryItineraryRideLegs.withIndex()){
+                    alternatives[j].add(element)
+                }
+            }
+            outItinerairies.add(
+                primaryItinerary.copy(
+                    legs=primaryItinerary.legs.map{
+                        when {
+                            (it.kind==Moovit.LegKind.RIDE) -> ( it.copy(alternatives=alternatives.removeAt(0)))
+                            else -> it
+                        }
+                    }
+                )
+            )
+        }
+        return Moovit.Plan(outItinerairies)
 
     }
 

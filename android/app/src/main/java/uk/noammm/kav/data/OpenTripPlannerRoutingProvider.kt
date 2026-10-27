@@ -317,12 +317,19 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
             val primaryItinerary = iternaryList[0]
             val primaryItineraryRideLegs = primaryItinerary.legs.filter { it.kind == Moovit.LegKind.RIDE }
             val alternatives = ArrayList<ArrayList<Moovit.Leg>>()
-            for (i in primaryItineraryRideLegs.indices) alternatives.add (ArrayList())
+            val alternativeShortNames = ArrayList<HashSet<String>>()
+            for (i in primaryItineraryRideLegs.indices) {
+                alternatives.add (ArrayList())
+                alternativeShortNames.add(HashSet<String>())
+            }
             for (i in 1..<iternaryList.size) {
                 val secondaryItinerary = iternaryList[i]
                 val secondaryItineraryRideLegs = secondaryItinerary.legs.filter { it.kind==Moovit.LegKind.RIDE }
                 for ((j, element) in secondaryItineraryRideLegs.withIndex()){
-                    if (element.shortName!=primaryItineraryRideLegs[j].shortName) alternatives[j].add(element)
+                    if (!alternativeShortNames[j].contains(element.shortName)) {
+                        alternativeShortNames[j].add(element.shortName)
+                        alternatives[j].add(element)
+                    }
                 }
             }
             outItinerairies.add(

@@ -322,7 +322,7 @@ class OpenTripPlannerRoutingProvider(val endpoint: String): RoutingProvider{
                 val secondaryItinerary = iternaryList[i]
                 val secondaryItineraryRideLegs = secondaryItinerary.legs.filter { it.kind==Moovit.LegKind.RIDE }
                 for ((j, element) in secondaryItineraryRideLegs.withIndex()){
-                    alternatives[j].add(element)
+                    if (element.shortName!=primaryItineraryRideLegs[j].shortName) alternatives[j].add(element)
                 }
             }
             outItinerairies.add(

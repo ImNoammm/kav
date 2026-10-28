@@ -13,6 +13,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.DirectionsCar
+import androidx.compose.material.icons.rounded.ElectricScooter
+import androidx.compose.material.icons.rounded.Moped
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -39,6 +44,23 @@ import androidx.compose.ui.unit.sp
 import uk.noammm.kav.data.Moovit
 import java.util.Date
 import java.util.Locale
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.SwapVert
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.foundation.shape.CircleShape
 
 private val hm get() = clockFormat()
 
@@ -48,17 +70,6 @@ private fun Chevron(tint: Color = K.surface4, size: androidx.compose.ui.unit.Dp 
         val w = this.size.width; val h = this.size.height
         drawLine(tint, Offset(w * mirrorX(.36f), h * .22f), Offset(w * mirrorX(.66f), h * .5f), w * .12f, StrokeCap.Round)
         drawLine(tint, Offset(w * mirrorX(.66f), h * .5f), Offset(w * mirrorX(.36f), h * .78f), w * .12f, StrokeCap.Round)
-    }
-}
-
-@Composable
-private fun TimeArrow(tint: Color = K.dim) {
-    Canvas(Modifier.size(10.dp, 30.dp)) {
-        val w = size.width; val h = size.height; val x = w * .5f
-        drawCircle(tint, w * .22f, Offset(x, h * .12f))
-        drawLine(tint, Offset(x, h * .26f), Offset(x, h * .86f), w * .16f, StrokeCap.Round)
-        drawLine(tint, Offset(x - w * .26f, h * .68f), Offset(x, h * .88f), w * .16f, StrokeCap.Round)
-        drawLine(tint, Offset(x + w * .26f, h * .68f), Offset(x, h * .88f), w * .16f, StrokeCap.Round)
     }
 }
 
@@ -127,15 +138,6 @@ fun DepMarkGlyph(d: Moovit.Departure, size: androidx.compose.ui.unit.Dp = 11.dp)
 }
 
 @Composable
-private fun Caret(tint: Color = K.muted) {
-    Canvas(Modifier.size(10.dp)) {
-        val w = size.width; val h = size.height
-        drawLine(tint, Offset(w * .18f, h * .38f), Offset(w * .5f, h * .66f), w * .14f, StrokeCap.Round)
-        drawLine(tint, Offset(w * .5f, h * .66f), Offset(w * .82f, h * .38f), w * .14f, StrokeCap.Round)
-    }
-}
-
-@Composable
 private fun AccessibleGlyph(tint: Color = K.muted, size: androidx.compose.ui.unit.Dp = 12.dp) {
     Canvas(Modifier.size(size)) {
         val w = this.size.width; val h = this.size.height; val sw = w * .10f
@@ -150,7 +152,7 @@ private fun AccessibleGlyph(tint: Color = K.muted, size: androidx.compose.ui.uni
 @Composable
 fun PlanHeader(
     from: String,
-    to: String,
+    to: String?,
     fromIsHere: Boolean,
     toIsHere: Boolean,
     onFrom: () -> Unit,
@@ -160,90 +162,111 @@ fun PlanHeader(
     stops: List<String> = emptyList(),
     onAddStop: (() -> Unit)? = null,
     onRemoveStop: (Int) -> Unit = {},
+    // A place of the way moved, by its handle: the stops and then the destination, counted from 0.
+    onMove: (from: Int, to: Int) -> Unit = { _, _ -> },
 ) {
-    Column(Modifier.fillMaxWidth().animateContentSize(tween(260)).padding(horizontal = K.gap3, vertical = K.gap2)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (onBack != null) { BackButton(onBack); Spacer(Modifier.width(K.gap2)) }
-
-            Box(Modifier.weight(1f)) {
-                Column {
-                    Endpoint(from, here = fromIsHere, dot = false, onClick = onFrom)
-                    stops.forEachIndexed { i, name ->
-                        Spacer(Modifier.height(K.gap2))
-                        StopoverRow(name) { onRemoveStop(i) }
+    Column(Modifier.fillMaxWidth().animateContentSize(tween(260)).padding(horizontal = K.gap4, vertical = K.gap2)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
+            if (onBack != null) BackButton(onBack)
+            // The way from start to destination on one card, a hairline between its places.
+            Column(Modifier.weight(1f).glassSurface(K.rCard)) {
+                Endpoint(from, here = fromIsHere, dot = false, onClick = onFrom)
+                // With stops on the way, each stop and the destination can be dragged by its handle into another order.
+                val places = stops.size + 1
+                var dragging by remember { mutableStateOf(-1) }
+                var dy by remember { mutableFloatStateOf(0f) }
+                var rowPx by remember { mutableFloatStateOf(1f) }
+                for (i in 0 until places) {
+                    Separator(ENDPOINT_INSET)
+                    val dest = i == places - 1
+                    val lifted = dragging == i
+                    Row(
+                        Modifier.zIndex(if (lifted) 1f else 0f)
+                            .graphicsLayer { translationY = if (lifted) dy else 0f; shadowElevation = if (lifted) 8f else 0f }
+                            .then(if (lifted) Modifier.background(K.surfaceRaised) else Modifier)
+                            .onSizeChanged { rowPx = it.height.toFloat().coerceAtLeast(1f) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.weight(1f)) {
+                            if (dest) Endpoint(to ?: T("Where to?", "לאן?"), here = toIsHere, dot = true, onClick = onTo, placeholder = to == null)
+                            else StopoverRow(stops[i])
+                        }
+                        if (stops.isNotEmpty()) {
+                            if (!dest) Box(
+                                Modifier.size(40.dp).clip(CircleShape).clickable(role = Role.Button, onClickLabel = T("Remove stop", "הסרת עצירה")) { onRemoveStop(i) },
+                                contentAlignment = Alignment.Center,
+                            ) { Icon(Icons.Rounded.Close, contentDescription = T("Remove stop", "הסרת עצירה"), tint = K.textTertiary, modifier = Modifier.size(18.dp)) }
+                            Box(
+                                Modifier.padding(end = K.gap1).size(40.dp).pointerInput(places) {
+                                    detectVerticalDragGestures(
+                                        onDragStart = { dragging = i; dy = 0f },
+                                        onDragEnd = { dragging = -1; dy = 0f },
+                                        onDragCancel = { dragging = -1; dy = 0f },
+                                    ) { change, amount ->
+                                        change.consume()
+                                        dy += amount
+                                        val at = dragging
+                                        if (dy > rowPx / 2 && at < places - 1) { onMove(at, at + 1); dragging = at + 1; dy -= rowPx }
+                                        else if (dy < -rowPx / 2 && at > 0) { onMove(at, at - 1); dragging = at - 1; dy += rowPx }
+                                    }
+                                }.semantics { contentDescription = T("Drag to reorder", "גררו לשינוי הסדר") },
+                                contentAlignment = Alignment.Center,
+                            ) { Icon(Icons.Rounded.DragHandle, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(20.dp)) }
+                        }
                     }
-                    Spacer(Modifier.height(K.gap2))
-                    Endpoint(to, here = toIsHere, dot = true, onClick = onTo)
                 }
-                if (stops.isEmpty()) SwapControl(Modifier.align(Alignment.CenterEnd).padding(end = K.gap2), onSwap)
+                // Up to three stops on the way, like Moovit's own planner: a row of the way still to fill in.
+                if (onAddStop != null && stops.size < MAX_STOPOVERS) {
+                    Separator(ENDPOINT_INSET)
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            .clickable(role = Role.Button, onClick = onAddStop).padding(horizontal = K.gap4, vertical = K.gap2),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(K.gap3),
+                    ) {
+                        Icon(Icons.Rounded.Add, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(10.dp + 4.dp))
+                        Text(T("Add a stop", "הוספת עצירה"), style = K.type.subhead, color = K.textTertiary)
+                    }
+                }
             }
+            if (stops.isEmpty()) KavIconButton(Icons.Rounded.SwapVert, T("Swap start and destination", "החלפת התחלה ויעד"), onSwap, floating = true)
         }
-        // Up to three stops on the way, like Moovit's own planner.
-        if (onAddStop != null && stops.size < MAX_STOPOVERS) Text(
-            T("+ Add a stop", "+ הוספת עצירה"), fontSize = 14.sp, color = K.accent,
-            modifier = Modifier.padding(start = if (onBack != null) 52.dp else 0.dp, top = K.gap2)
-                .clip(RoundedCornerShape(K.rPill)).clickable(role = Role.Button, onClick = onAddStop)
-                .padding(horizontal = K.gap2, vertical = 6.dp),
-        )
     }
 }
 
 const val MAX_STOPOVERS = 3
 
+// Where a place's text starts in the way card, past its dot: the hairlines between places start there too.
+private val ENDPOINT_INSET = K.gap4 + 10.dp + K.gap3
+
 @Composable
-private fun StopoverRow(label: String, onRemove: () -> Unit) {
+private fun StopoverRow(label: String) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).glassSurface(K.rControl).padding(start = 14.dp),
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = K.gap4, end = K.gap2, top = K.gap3, bottom = K.gap3),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
-        Canvas(Modifier.size(10.dp)) { drawCircle(K.muted, size.width * .30f) }
-        Spacer(Modifier.width(10.dp))
-        Text(label, fontSize = 14.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        Box(
-            Modifier.size(48.dp).semantics { contentDescription = T("Remove stop", "הסרת עצירה") }
-                .clickable(role = Role.Button, onClick = onRemove),
-            contentAlignment = Alignment.Center,
-        ) { Text("✕", fontSize = 14.sp, color = K.dim) }
+        Canvas(Modifier.size(10.dp)) { drawCircle(K.textSecondary, size.width * .30f) }
+        Text(label, style = K.type.body, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
     }
 }
 
+// One place of the way. here: the rider's own position, its ring in the accent like a location dot.
 @Composable
-fun SwapControl(modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Box(
-        modifier.size(44.dp).glassSurface(22.dp)
-            .semantics { contentDescription = T("Swap start and destination", "החלפת התחלה ויעד") }
-            .clickable(role = Role.Button, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { SwapGlyph() }
-}
-
-@Composable
-private fun SwapGlyph() {
-    Canvas(Modifier.size(14.dp)) {
-        val w = size.width; val h = size.height; val sw = w * .11f
-        fun l(x1: Float, y1: Float, x2: Float, y2: Float) =
-            drawLine(K.muted, Offset(x1 * w, y1 * h), Offset(x2 * w, y2 * h), sw, StrokeCap.Round)
-        l(.32f, .16f, .32f, .84f); l(.18f, .70f, .32f, .86f); l(.46f, .70f, .32f, .86f)
-        l(.68f, .84f, .68f, .16f); l(.54f, .30f, .68f, .14f); l(.82f, .30f, .68f, .14f)
-    }
-}
-
-@Composable
-private fun Endpoint(label: String, here: Boolean, dot: Boolean, onClick: () -> Unit) {
+private fun Endpoint(label: String, here: Boolean, dot: Boolean, onClick: () -> Unit, placeholder: Boolean = false) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).glassSurface(K.rControl)
-            .clickable(role = Role.Button, onClick = onClick).padding(start = 14.dp, end = 58.dp, top = 14.dp, bottom = 14.dp),
+        Modifier.fillMaxWidth().heightIn(min = 52.dp)
+            .clickable(role = Role.Button, onClick = onClick).padding(horizontal = K.gap4, vertical = K.gap3),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
         Canvas(Modifier.size(10.dp)) {
             val w = size.width
             if (dot) drawCircle(K.text, w * .40f, Offset(w * .5f, w * .5f))
-            else drawCircle(K.dim, w * .34f, Offset(w * .5f, w * .5f), style = Stroke(w * .16f))
+            else drawCircle(if (here) K.accent else K.textTertiary, w * .34f, Offset(w * .5f, w * .5f), style = Stroke(w * .16f))
         }
-        Spacer(Modifier.width(10.dp))
         Text(
-            label, fontSize = 14.sp,
-            color = if (here) K.live else if (label.endsWith("…")) K.dim else K.text,
+            label, style = K.type.body, color = if (placeholder || label.endsWith("…")) K.textTertiary else K.text,
             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
         )
     }
@@ -252,25 +275,12 @@ private fun Endpoint(label: String, here: Boolean, dot: Boolean, onClick: () -> 
 @Composable
 fun DepartRow(label: String, onWhen: () -> Unit, order: String, onOrder: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth()
-            .padding(start = K.gap3, end = K.gap3, top = 2.dp, bottom = K.gap3),
+        Modifier.fillMaxWidth().padding(start = K.gap4, end = K.gap4, bottom = K.gap2),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap2),
     ) {
-        MenuPill(label, onWhen)
-        MenuPill(order, onOrder)
-    }
-}
-
-@Composable
-private fun MenuPill(label: String, onClick: () -> Unit) {
-    Row(
-        Modifier.heightIn(min = 44.dp).glassSurface(K.rControl)
-            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, fontSize = 13.sp, color = K.text)
-        Spacer(Modifier.width(8.dp)); Caret()
+        KavChip(label, selected = false, onClick = onWhen, trailing = Icons.Rounded.ExpandMore)
+        KavChip(order, selected = false, onClick = onOrder, trailing = Icons.Rounded.ExpandMore)
     }
 }
 
@@ -350,7 +360,7 @@ internal const val HEAVY_TRAFFIC = 3
 internal fun PlatformTag(platform: String) {
     if (platform.isBlank()) return
     Row(
-        Modifier.panel(6.dp)
+        Modifier.panel(K.rBadge)
             .padding(horizontal = 6.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -401,63 +411,41 @@ fun depMark(d: Moovit.Departure): DepMark = when {
 @Composable
 fun ItineraryCard(it: Moovit.Itinerary, r: Moovit.Resolved, onClick: (() -> Unit)? = null) {
     val now = System.currentTimeMillis() / 1000
-    Row(
+    Column(
         Modifier.fillMaxWidth()
             .panel(K.rCard)
-            .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier),
-        verticalAlignment = Alignment.Top,
+            .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
+            .padding(K.gap4),
+        verticalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
-        Column(
-            Modifier.widthIn(min = 108.dp).padding(7.dp)
-                .clip(RoundedCornerShape(13.dp)).border(0.5.dp, K.text.copy(alpha = .14f), RoundedCornerShape(13.dp))
-                .padding(horizontal = 11.dp, vertical = K.gap3),
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Row(verticalAlignment = Alignment.Bottom) {
-                val big = durationValue(it.durationMin)
-                Text(
-                    big, fontSize = if (big.length > 3) 21.sp else 26.sp, color = K.text,
-                    fontWeight = FontWeight.Normal, maxLines = 1,
-                )
-                val unit = durationUnit(it.durationMin)
-                if (unit.isNotEmpty()) Text(
-                    " $unit", fontSize = 14.sp, color = K.muted, modifier = Modifier.padding(bottom = 2.dp),
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TimeArrow()
-                Spacer(Modifier.width(6.dp))
-                Column {
-                    Text(hm.format(Date(it.dep * 1000)), fontSize = 13.sp, color = K.dim)
-                    Text(hm.format(Date(it.arr * 1000)), fontSize = 13.sp, color = K.text)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // Numbers large and units small, the same for minutes and hours.
+            Row(Modifier.weight(1f)) {
+                durParts(it.durationMin).forEachIndexed { i, (n, unit) ->
+                    Text(if (i > 0) " $n" else "$n", style = K.type.title.tabular, maxLines = 1, modifier = Modifier.alignByBaseline())
+                    Text(" $unit", style = K.type.subhead, maxLines = 1, modifier = Modifier.alignByBaseline())
                 }
             }
+            Text(hm.format(Date(it.dep * 1000)), style = K.type.subhead.tabular, color = K.textTertiary)
+            Icon(
+                Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, tint = K.textTertiary,
+                modifier = Modifier.padding(horizontal = K.gap1).size(14.dp),
+            )
+            Text(hm.format(Date(it.arr * 1000)), style = K.type.subhead.tabular, color = K.text)
         }
-
-        Column(Modifier.weight(1f).padding(end = K.gap3, top = K.gap3, bottom = K.gap3, start = K.gap2)) {
-            RouteStrip(it, r)
-            Spacer(Modifier.height(K.gap2))
-            DepartureLine(it, r, now)
-            it.legs.firstOrNull { leg -> leg.kind == Moovit.LegKind.TAXI }?.let { taxi ->
-                Spacer(Modifier.height(K.gap2))
-                GettButton(taxi)
-            }
-            val chips = cardChips(it)
-            if (chips.isNotEmpty()) {
-                Spacer(Modifier.height(K.gap2))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    chips.forEach { c -> InfoChip(c.first, c.second) }
+        RouteStrip(it, r)
+        DepartureLine(it, r, now)
+        val notes = cardNotes(it)
+        if (notes.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
+            notes.forEach { (kind, label) ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap1)) {
+                    if (kind == "access") AccessibleGlyph() else GlobeGlyph()
+                    Text(label, style = K.type.subhead)
                 }
             }
         }
     }
 }
-
-private fun durationValue(min: Int): String =
-    if (min >= 60) T("${min / 60}h ${min % 60}m", "${min / 60}ש׳ ${min % 60}דק׳") else "$min"
-
-private fun durationUnit(min: Int): String = if (min >= 60) "" else if (min == 1) T("min", "דק׳") else T("mins", "דק׳")
 
 private class StripItem(
     val kind: Moovit.LegKind,
@@ -518,17 +506,11 @@ internal fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
                         AlertPip(leg.alert)
                     }
                 }
-                Moovit.LegKind.TAXI -> Row(
-                    Modifier.height(28.dp), verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    ModeGlyph(Mode.TAXI, K.muted, 19.dp)
-                    Spacer(Modifier.width(5.dp))
-                    Text("Gett", fontSize = 14.sp, color = K.text)
-                }
+                Moovit.LegKind.TAXI -> leg.ride?.let { GettPill(it) }
                 Moovit.LegKind.BIKE -> Row(
                     Modifier.height(28.dp), verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    BikeGlyph()
+                    CycleGlyph(leg.ride)
                     if (showMinutes(leg)) {
                         Spacer(Modifier.width(4.dp))
                         Text("${leg.minutes}", fontSize = 14.sp, color = K.text)
@@ -555,10 +537,10 @@ private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) 
     val agency = info?.agencyId ?: -1
     val rt = if (info != null) r.routeType(agency) else 3
     val label = shortName.ifBlank { null } ?: info?.number?.ifBlank { null }
-    val plate = plateFor(rt, agency)
+    val plate = linePlate(rt, agency) { Operators.of(r, agency) }
     Column(
-        Modifier.clip(RoundedCornerShape(6.dp)).background(plate?.fill ?: K.badgePlate)
-            .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(6.dp)),
+        Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.badgePlate)
+            .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),
     ) {
         Row(
             Modifier.padding(start = 5.dp, end = if (label == null) 5.dp else 6.dp, top = 2.dp, bottom = 2.dp),
@@ -568,7 +550,7 @@ private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) 
             if (label != null) {
                 Spacer(Modifier.width(4.dp))
                 Text(
-                    label, fontSize = 15.sp, color = plate?.ink ?: K.text, fontWeight = FontWeight.Medium,
+                    label, style = K.type.bodyStrong, color = plate?.ink ?: K.text,
                     maxLines = 3, overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -576,10 +558,34 @@ private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) 
     }
 }
 
+// A bike-kind leg: the rider's own bike, or a shared one picked up in the street, and what it is.
 @Composable
-internal fun BikeGlyph(tint: Color = K.muted) {
-    Canvas(Modifier.size(18.dp)) {
-        val w = size.width; val h = size.height; val sw = w * .08f
+internal fun CycleGlyph(leg: Moovit.Leg?, tint: Color = K.muted, size: androidx.compose.ui.unit.Dp = 18.dp) {
+    val icon = when (leg?.shared) {
+        3, 4 -> Icons.Rounded.ElectricScooter
+        5 -> Icons.Rounded.Moped
+        -1 -> Icons.Rounded.DirectionsCar
+        else -> null
+    }
+    if (icon == null) BikeGlyph(tint, size) else Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(size))
+}
+
+// The same leg in words, with who runs a shared vehicle and how long it takes.
+internal fun cycleLabel(leg: Moovit.Leg): String {
+    val what = when (leg.shared) {
+        0 -> T("Cycle", "אופניים")
+        3, 4 -> T("Shared scooter", "קורקינט שיתופי")
+        5 -> T("Shared moped", "קטנוע שיתופי")
+        -1 -> T("Shared car", "רכב שיתופי")
+        else -> T("Shared bike", "אופניים שיתופיים")
+    }
+    return listOf(what, leg.sharedBy, durMinutes(leg.minutes)).filter { it.isNotBlank() }.joinToString(" · ")
+}
+
+@Composable
+internal fun BikeGlyph(tint: Color = K.muted, size: androidx.compose.ui.unit.Dp = 18.dp) {
+    Canvas(Modifier.size(size)) {
+        val w = this.size.width; val h = this.size.height; val sw = w * .08f
         drawCircle(tint, w * .22f, Offset(w * .24f, h * .70f), style = Stroke(sw))
         drawCircle(tint, w * .22f, Offset(w * .76f, h * .70f), style = Stroke(sw))
         drawLine(tint, Offset(w * .24f, h * .70f), Offset(w * .46f, h * .38f), sw, StrokeCap.Round)
@@ -595,20 +601,24 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
         val mins = (((taxi.dep - now) + 59) / 60).coerceAtLeast(0)
         Text(
             T(
-                "Pickup in $mins ${if (mins == 1L) "min" else "mins"}",
+                "Pickup in $mins min",
                 "איסוף בעוד $mins דק׳",
             ),
-            fontSize = 13.sp, color = K.dim,
+            style = K.type.subhead,
         )
+        return
+    }
+    // A shared bike or scooter route has no departures: say what it rides and who runs it.
+    val shared = it.legs.firstOrNull { l -> l.shared != 0 }
+    if (shared != null && it.legs.none { l -> l.kind == Moovit.LegKind.RIDE }) {
+        Text(cycleLabel(shared), style = K.type.subhead)
         return
     }
     val rideIndex = it.legs.indexOfFirst { leg -> leg.kind == Moovit.LegKind.RIDE }
     val ride = it.legs.getOrNull(rideIndex)
     val wait = it.legs.getOrNull(rideIndex - 1)?.takeIf { leg -> leg.kind == Moovit.LegKind.WAIT }
     val stop = (wait?.fromStop ?: ride?.fromStop)?.takeIf { id -> id > 0 }?.let { id -> r.stopName(id) }
-    val deps = ride?.let { leg -> Moovit.boardingOptions(leg, wait).flatMap { (option, boarding) ->
-        r.departures(option, boarding)
-    } }.orEmpty()
+    val deps = ride?.let { leg -> r.cardDepartures(leg, wait) }.orEmpty()
     val (labels, allMinutes) = departLabels(deps, now)
     val fare = if (it.fare >= 0) "%s%.2f".format(Locale.US, it.currency.ifBlank { "" }, it.fare / 100.0) else null
 
@@ -629,7 +639,7 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
                 }
             }
             if (labels.isNotEmpty() && allMinutes) {
-                withStyle(SpanStyle(color = K.dim)) { append(T(" mins", " דק׳")) }
+                withStyle(SpanStyle(color = K.dim)) { append(T(" min", " דק׳")) }
             }
             if (stop != null) {
                 withStyle(SpanStyle(color = K.dim)) {
@@ -651,35 +661,20 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
                 }
             },
         ),
-        fontSize = 13.sp, color = K.dim, lineHeight = 18.sp,
+        style = K.type.subhead,
         maxLines = 2, overflow = TextOverflow.Ellipsis,
     )
 }
 
 private const val MARK = "mark"
 
-private fun cardChips(it: Moovit.Itinerary): List<Pair<String, String>> {
+private fun cardNotes(it: Moovit.Itinerary): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>(2)
     if (it.accessible) out.add("access" to T("Step-free", "נגיש לנכים"))
     if (Shown.co2 && it.co2g >= 0) out.add("co2" to co2(it.co2g))
     return out
 }
 
-@Composable
-private fun InfoChip(kind: String, label: String) {
-    val co2 = kind == "co2"
-    Row(
-        Modifier.panel(999.dp)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        when (kind) {
-            "access" -> { AccessibleGlyph(); Spacer(Modifier.width(5.dp)) }
-            "co2" -> { GlobeGlyph(); Spacer(Modifier.width(5.dp)) }
-        }
-        Text(label, fontSize = 12.sp, color = if (co2) K.text else K.muted)
-    }
-}
 
 @Composable
 internal fun GlobeGlyph(

@@ -1,0 +1,40 @@
+name: Feature request / בקשה לפיצ'ר
+description: An idea for Kav, or something it should do differently. / רעיון ל-Kav, או משהו שכדאי שתעשה אחרת.
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Write in English or Hebrew, whichever you like.
+        One idea per request, please: each gets its own answer, and its own release when it's in.
+
+        תודה על הרעיון. אפשר לכתוב באנגלית או בעברית, מה שנוח לכם.
+        רעיון אחד בכל בקשה, בבקשה: כל אחד מקבל תשובה משלו, וגרסה משלו כשהוא נכנס.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What should Kav do? / מה Kav צריכה לעשות?
+      description: The idea, as you'd use it. / הרעיון, כמו שהייתם משתמשים בו.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: When would it help you? / מתי זה יעזור לכם?
+      description: >-
+        The trip or the moment you'd need it in, and what you do today instead.
+        / הנסיעה או הרגע שבהם הייתם צריכים את זה, ומה אתם עושים היום במקום.
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: Does another app do it? / אפליקציה אחרת עושה את זה?
+      description: >-
+        Moovit, Google Maps, Rav-Pass or any other: how it looks there. Screenshots are welcome.
+        / Moovit, Google Maps, רב-פס או כל אחרת: איך זה נראה שם. צילומי מסך יתקבלו בשמחה.
+  - type: input
+    id: version
+    attributes:
+      label: Kav version / גרסת Kav
+      description: Settings, under Updates. / בהגדרות, תחת עדכונים.
+      placeholder: "2.7"

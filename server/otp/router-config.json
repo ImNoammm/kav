@@ -1,0 +1,37 @@
+{
+  // Moovit's street model, measured on its own plans: walking and cycling at a steady speed (1.33 and 5 m/s) with no
+  // time lost at crossings, stairs or escalators. OpenTripPlanner takes speeds to the nearest 0.05 m/s, so it walks
+  // at 1.35 and server/live.py makes each walk Moovit's length again. Walks take the shortest way, main roads too:
+  // OpenTripPlanner's own weighting (a trunk road counts 9.3 times its length) sent Grand Canyon's walk to the bus
+  // 1 km around the mall where Moovit walks 550 m beside the road.
+  "routingDefaults": {
+    "walk": { "speed": 1.33, "stairsTimeFactor": 1.0, "escalator": { "speed": 1.35 }, "safetyFactor": 0 },
+    "bicycle": { "optimization": "shortest-duration", "walk": { "speed": 5.0 } },
+    "intersectionTraversalModel": "constant",
+    // Moovit offers walking or cycling all the way for an hour at most, cycles to a station for a quarter of an hour
+    // and takes a taxi there for ten minutes (seven on the planner's free-flowing roads).
+    "maxDirectStreetDurationForMode": { "walk": "1h", "bike": "1h" },
+    // Every stop within reach counts, or a station deep underground comes after the 500 that OpenTripPlanner keeps.
+    "accessEgress": {
+      "maxDurationForMode": { "bike": "20m", "car-pickup": "7m" },
+      "maxStopCountForMode": { "bike": 5000, "car-pickup": 5000 }
+    },
+    // A minute at the stop before each bus, the first one too: planned to arrive as it leaves, the rider missed about one
+    // first bus in five. A change gets its minute from boardSlack too, so transferSlack adds none.
+    "boardSlack": "1m",
+    "transferSlack": "0s",
+    // The routes the filters would remove come too, each naming them: server/live.py drops them all but those only the
+    // one comparing with walking all the way names (a bus slower than walking by a few seconds is still a bus).
+    "itineraryFilters": { "debug": "limit-to-search-window" }
+  },
+  "server": { "apiProcessingTimeout": "20s" },
+  "updaters": [
+    {
+      "type": "stop-time-updater",
+      "url": "file:///var/opentripplanner/realtime/trip-updates.pb",
+      "frequency": "30s",
+      "feedId": "1",
+      "fuzzyTripMatching": true
+    }
+  ]
+}

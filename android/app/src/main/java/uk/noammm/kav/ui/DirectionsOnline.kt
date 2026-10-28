@@ -22,9 +22,15 @@ import uk.noammm.kav.KavModel
 import uk.noammm.kav.Prefs
 import uk.noammm.kav.RecentTrip
 import uk.noammm.kav.requestLocationOnce
+import uk.noammm.kav.data.KavLive
+import uk.noammm.kav.data.KavPlan
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Moovit.Place
 import uk.noammm.kav.data.MoovitLink
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 
 private data class OpenTrip(
     val trip: Moovit.Itinerary,
@@ -101,9 +107,16 @@ fun DirectionsOnline(model: KavModel) {
         }
     }
 
+    // Planning opened from a stop's board (From here, To here) goes back to that board, not Home.
+    var backToBoard by remember { mutableStateOf(false) }
+    fun leaveResults() {
+        showResults = false
+        if (backToBoard) { backToBoard = false; model.tab = uk.noammm.kav.Tab.Stations }
+    }
     LaunchedEffect(model.pendingFrom, model.pendingTo) {
         if (model.pendingFrom != null || model.pendingTo != null) {
             hereOrigin = null; stopovers = emptyList(); saved = null; showResults = true
+            backToBoard = model.stationStop >= 0
         }
         model.pendingFrom?.let { fromPlace = it; model.pendingFrom = null }
         model.pendingTo?.let { toPlace = it; model.pendingTo = null }
@@ -111,6 +124,17 @@ fun DirectionsOnline(model: KavModel) {
 
     LaunchedEffect(model.pendingLink) {
         val incoming = model.pendingLink ?: return@LaunchedEffect
+        // A place shared while one is being picked (a favourite's, say) goes into that search instead of starting a trip.
+        if (picking != null && incoming.sharedId == null && incoming.shortUrl == null && incoming.rides.isEmpty() &&
+            incoming.lineGroup == null && incoming.stopId == null && incoming.fromLat == null) {
+            val point = if (incoming.toLat != null && incoming.toLon != null)
+                "%.6f, %.6f".format(java.util.Locale.US, incoming.toLat, incoming.toLon) else null
+            (point ?: incoming.toName?.takeIf { it.isNotBlank() })?.let {
+                model.placeQuery = it
+                model.pendingLink = null
+                return@LaunchedEffect
+            }
+        }
         lastLink = incoming; openingLink = true; linkError = null
         hereOrigin = null; stopovers = emptyList()
         open = null; saved = null; picking = null; linkTrip = null
@@ -122,10 +146,9 @@ fun DirectionsOnline(model: KavModel) {
             val link = withContext(Dispatchers.IO) { MoovitLink.resolve(incoming) }
             if (link.sharedId != null) {
                 val session = Online.open()
-                val routingProvider = Online.openRoutingProvider()
                 val (shared, details) = withContext(Dispatchers.IO) {
                     val shared = Moovit.sharedItinerary(session, link.sharedId)
-                    shared to Moovit.hydrate(session, routingProvider, listOf(shared.trip))
+                    shared to Moovit.hydrate(session, listOf(shared.trip))
                 }
                 val start = shared.from ?: shared.trip.legs.firstOrNull { it.shape.isNotEmpty() }?.shape?.firstOrNull()
                     ?.let { place(T("Start", "התחלה"), it.first, it.second) }
@@ -212,11 +235,19 @@ fun DirectionsOnline(model: KavModel) {
         planning = true
         if (departAt != 0L) delay(250)
         try {
-            val s = Online.open(fromLL)
-            val rp = Online.openRoutingProvider(fromLL)
-            val res = withContext(Dispatchers.IO) {
-                rp.planItineraries(
-                    fromLL, toLL, departAt, timeType,
+            // Kav's own server plans the trip while it's chosen; Moovit when it isn't, or when the server can't. A shared
+            // trip Kav planned only Kav's planner can find again, whichever planner is chosen.
+            val link = linkTrip
+            val byKav = if (link != null) KavPlan.owns(link) && KavLive.enabled else KavPlan.wanted()
+            val kav = if (byKav) withContext(Dispatchers.IO) {
+                runCatching { KavPlan.plan(fromLL, toLL, departAt, timeType, routeTypesFor(filters), taxi = ResultFilter.TAXI in filters, stopovers) }
+                    .onFailure { android.util.Log.i("KavPlan", "Kav's planner didn't answer: $it") }
+                    .onSuccess { android.util.Log.i("KavPlan", "Kav planned ${it.plan.itineraries.size} routes") }.getOrNull()
+            } else null
+            val s = if (kav == null) Online.open(fromLL) else null
+            val res = kav?.plan ?: withContext(Dispatchers.IO) {
+                Moovit.planItineraries(
+                    checkNotNull(s), fromLL, toLL, departAt, timeType,
                     routeTypes = routeTypesFor(filters),
                     skipTaxi = stopovers.isNotEmpty() || ResultFilter.TAXI !in filters,
                     stopovers = stopovers, toName = toPlace?.name,
@@ -230,9 +261,9 @@ fun DirectionsOnline(model: KavModel) {
                         ?.let { raw = listOf(it) + raw }
                 }
             }
-            StopPhotos.prefetchIds(raw.flatMap { t -> t.rides.flatMap { r -> r.options.flatMap { listOf(it.fromStop, it.toStop) } } })
+            if (s != null) StopPhotos.prefetchIds(raw.flatMap { t -> t.rides.flatMap { r -> r.options.flatMap { listOf(it.fromStop, it.toStop) } } })
             val toHydrate = (raw + listOfNotNull(res.schedule())).distinct()
-            resolved = withContext(Dispatchers.IO) { Moovit.hydrate(s,rp, toHydrate) }
+            resolved = kav?.resolved ?: withContext(Dispatchers.IO) { Moovit.hydrate(checkNotNull(s), toHydrate) }
             model.activeJourney?.takeIf { active -> raw.any { it === active.trip } }?.let {
                 model.activeJourney = it.copy(resolved = Moovit.Resolved(
                     it.resolved.lines + resolved.lines, it.resolved.stops + resolved.stops,
@@ -310,9 +341,12 @@ fun DirectionsOnline(model: KavModel) {
         while (true) {
             if (wait) kotlinx.coroutines.delay(resolved.pollSecs.coerceIn(15, 120) * 1000L)
             wait = true
-            val s = runCatching { Online.open() }.getOrNull() ?: break
-            val rp = Online.openRoutingProvider()
-            val refreshed = withContext(Dispatchers.IO) { Moovit.refreshLive(s,rp, otherTrips, resolved) }
+            val refreshed = if (otherTrips.all { KavPlan.owns(it) }) {
+                withContext(Dispatchers.IO) { KavPlan.live(otherTrips, resolved) }
+            } else {
+                val s = runCatching { Online.open() }.getOrNull() ?: break
+                withContext(Dispatchers.IO) { Moovit.refreshLive(s, otherTrips, resolved) }
+            }
             resolved = Moovit.Resolved(
                 refreshed.lines + resolved.lines, refreshed.stops + resolved.stops,
                 refreshed.routeTypes + resolved.routeTypes, refreshed.live,
@@ -339,7 +373,7 @@ fun DirectionsOnline(model: KavModel) {
     }
 
     androidx.activity.compose.BackHandler(enabled = showResults && open == null && picking == null && linkTrip == null) {
-        showResults = false
+        leaveResults()
     }
 
     val under by underSearch(picking != null)
@@ -420,10 +454,9 @@ fun DirectionsOnline(model: KavModel) {
 
     if (linkError != null) {
         Column(Modifier.fillMaxSize()) {
-            ScreenHeader(T("Shared", "נסיעה"), T("trip", "משותפת"), back = { linkError = null; showResults = false })
+            ScreenHeader(T("Shared trip", "נסיעה משותפת"), back = { linkError = null; showResults = false })
             Note(linkError.orEmpty(), Modifier.padding(K.gap4))
-            Text(T("Try again", "נסו שוב"), color = K.accent,
-                modifier = Modifier.clickable { model.pendingLink = lastLink }.padding(K.gap4))
+            KavButton(T("Try again", "נסו שוב"), { model.pendingLink = lastLink }, Modifier.padding(horizontal = K.gap2), style = ButtonStyle.Plain)
         }
         return@AnimatedContent
     }
@@ -434,13 +467,13 @@ fun DirectionsOnline(model: KavModel) {
             Modifier.fillMaxSize(),
             state = resultsState,
             contentPadding = PaddingValues(bottom = K.gap6 + LocalBottomBarInset.current),
-            verticalArrangement = Arrangement.spacedBy(K.gap2),
+            verticalArrangement = Arrangement.spacedBy(K.gap3),
         ) {
             item(key = "trip") {
                 PlanHeader(
                     // With no start picked the trip starts where you are, so it says so even before the fix arrives.
                     from = endpointName(fromPlace) ?: hereName(),
-                    to = endpointName(toPlace) ?: T("Where do you want to go?…", "לאן תרצו להגיע?…"),
+                    to = endpointName(toPlace),
                     fromIsHere = fromIsHere,
                     toIsHere = isHere(toPlace),
                     onFrom = { picking = "from" },
@@ -448,12 +481,20 @@ fun DirectionsOnline(model: KavModel) {
                     stops = stopovers.map { it.name },
                     onAddStop = { picking = "stop" },
                     onRemoveStop = { i -> stopovers = stopovers.filterIndexed { j, _ -> j != i } },
+                    onMove = { a, b ->
+                        val dest = toPlace
+                        if (dest != null) {
+                            val way = (stopovers + dest).toMutableList()
+                            way.add(b, way.removeAt(a))
+                            toPlace = way.last(); stopovers = way.dropLast(1)
+                        }
+                    },
                     onSwap = {
                         val a = fromPlace
                         fromPlace = toPlace
                         toPlace = a ?: hereOrigin?.let(::herePlace)
                     },
-                    onBack = { showResults = false },
+                    onBack = { leaveResults() },
                 )
             }
             item(key = "when") {
@@ -496,7 +537,7 @@ fun DirectionsOnline(model: KavModel) {
                                 "לא התקבל מיקום מדויק. נסו שוב או בחרו נקודת התחלה.")
                             else T("Choose a start to find routes.", "בחרו נקודת התחלה כדי למצוא מסלולים."),
                         )
-                        if (findHereFailed && !findingHere) Text(T("Try again", "נסו שוב"), color = K.accent,
+                        if (findHereFailed && !findingHere) Text(T("Try again", "נסו שוב"), color = K.accentInk,
                             modifier = Modifier.clickable { hereRetry++ }.padding(vertical = K.gap3))
                     }
                 }
@@ -511,7 +552,7 @@ fun DirectionsOnline(model: KavModel) {
                 else -> {
                     if (timeType != Moovit.TIME_LAST) item(key = "shift") {
                         Row(
-                            Modifier.fillMaxWidth().padding(horizontal = K.gap3, vertical = K.gap1),
+                            Modifier.fillMaxWidth().padding(horizontal = K.gap4),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             fun nudge(delta: Long) {
@@ -520,16 +561,18 @@ fun DirectionsOnline(model: KavModel) {
                                 departAt = (base + delta).let { if (it < now + 60_000L) 0L else it }
                                 if (departAt == 0L) timeType = Moovit.TIME_DEPARTURE
                             }
-                            ShiftButton(T("‹ Earlier", "› מוקדם יותר")) { nudge(-15 * 60_000L) }
+                            KavChip(T("Earlier", "מוקדם יותר"), selected = false, onClick = { nudge(-15 * 60_000L) },
+                                icon = Icons.AutoMirrored.Rounded.KeyboardArrowLeft)
                             Spacer(Modifier.weight(1f))
                             Text(
                                 shown.firstOrNull()?.let {
                                     clockFormat().format(java.util.Date(it.dep * 1000))
                                 }.orEmpty(),
-                                fontSize = 12.sp, color = K.dim,
+                                style = K.type.caption.tabular,
                             )
                             Spacer(Modifier.weight(1f))
-                            ShiftButton(T("Later ›", "מאוחר יותר ‹")) { nudge(15 * 60_000L) }
+                            KavChip(T("Later", "מאוחר יותר"), selected = false, onClick = { nudge(15 * 60_000L) },
+                                trailing = Icons.AutoMirrored.Rounded.KeyboardArrowRight)
                         }
                     }
                     // Late at night or on Shabbat Moovit may only offer walking and cycling.
@@ -545,27 +588,26 @@ fun DirectionsOnline(model: KavModel) {
                         val from = ride?.let { resolved.stopName(it.fromStop) }
                         val to = ride?.let { resolved.stopName(it.toStop) }
                         if (from != null && to != null) item(key = "schedule") {
-                            Column(
-                                Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard)
-                                    .clickable(role = Role.Button) { open = OpenTrip(sched, resolved, from, to) }
-                                    .padding(K.gap4),
-                                verticalArrangement = Arrangement.spacedBy(K.gap1),
-                            ) {
-                                Text(T("View schedules", "לוחות זמנים"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                                Text(T("From $from to $to", "מ$from אל $to"), fontSize = 14.sp, color = K.muted)
+                            KavCard(Modifier.padding(horizontal = K.gap4), onClick = { open = OpenTrip(sched, resolved, from, to) }) {
+                                Text(T("View schedules", "לוחות זמנים"), style = K.type.headline)
+                                Text(T("From $from to $to", "מ$from אל $to"), style = K.type.subhead)
                             }
                         }
                     }
+                    // Israel Railways' own trains for the first route that takes the train, under the timetable card, where
+                    // Moovit's results show the train.
+                    railPair(shown, resolved)?.takeIf { sort == Sort.RECOMMENDED }?.let { rail ->
+                        item(key = "rail") {
+                            Box(Modifier.popIn(0, raw to sort)) { RailCard(model.net, rail, Modifier.padding(horizontal = K.gap4)) }
+                        }
+                    }
                     items(shown.size) { i ->
-                        Column(Modifier.padding(horizontal = K.gap3)) {
+                        Column(Modifier.padding(horizontal = K.gap4)) {
                             val heading = plan.heading(shown[i])
                             if (sort == Sort.RECOMMENDED && heading.isNotBlank() &&
                                 (i == 0 || plan.heading(shown[i - 1]) != heading)
                             ) {
-                                Text(
-                                    heading, style = DisplayItalic, fontSize = 12.sp, color = K.dim,
-                                    modifier = Modifier.padding(start = K.gap1, top = K.gap3, bottom = 2.dp),
-                                )
+                                SectionHeader(sentenceCase(heading))
                             }
                             Box(Modifier.popIn(i, raw to sort)) {
                                 ItineraryCard(shown[i], resolved) {
@@ -599,9 +641,9 @@ fun DirectionsOnline(model: KavModel) {
         if (which != null) {
         PlacePicker(
             title = when (which) {
-                "from" -> T("start…", "התחלה…")
-                "stop" -> T("stop on the way…", "עצירה בדרך…")
-                else -> T("destination…", "יעד…")
+                "from" -> T("Start", "התחלה")
+                "stop" -> T("Stop on the way", "עצירה בדרך")
+                else -> T("Where to?", "לאן?")
             },
             here = here,
             allowMyLocation = which != "fav" && which != "stop",
@@ -675,10 +717,10 @@ internal fun sameLines(candidate: Moovit.Itinerary, named: List<MoovitLink.Ride>
     return named.indices.all { i -> named[i].lineId in rides[i].lineChoices }
 }
 
-@Composable
-private fun ShiftButton(label: String, onClick: () -> Unit) {
-    Chip(label, lit = false, onClick = onClick)
-}
+// Moovit's English section names come in Title Case; Kav writes sentence case. Hebrew has no case to change.
+private fun sentenceCase(name: String): String =
+    if (name.any { it in 'א'..'ת' }) name else name.lowercase(java.util.Locale.US).replaceFirstChar { it.titlecase(java.util.Locale.US) }
+
 
 private fun whenLabel(departAt: Long, timeType: Int): String {
     if (timeType == Moovit.TIME_LAST) return T("Latest departure", "יציאה אחרונה")

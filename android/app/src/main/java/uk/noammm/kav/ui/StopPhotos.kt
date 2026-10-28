@@ -4,6 +4,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.LruCache
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -13,12 +16,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import uk.noammm.kav.data.KavPlan
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Net
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 object StopPhotos {
+    // On until the rider turns them off.
+    var chosen by mutableStateOf<Boolean?>(null)
+    val enabled get() = chosen ?: true
+
     private const val THUMB_PX = 192
     private const val FULL_PX = 1280
     private const val DISK_CAP = 80L shl 20
@@ -104,6 +112,14 @@ object StopPhotos {
 
     fun idNow(net: Net, stop: Int): Int? = ids[keyOf(net, stop)]
 
+    // A stop's id by its code for what runs without the screens (line alerts), from the file while it isn't loaded.
+    fun idOfCode(ctx: Context, code: Int): Int? = ids["c$code"] ?: runCatching {
+        val key = "c$code\t"
+        File(ctx.applicationContext.filesDir, "stop-ids-2.txt").takeIf { it.exists() }?.useLines { lines ->
+            lines.lastOrNull { it.startsWith(key) }?.substring(key.length)?.toIntOrNull()
+        }
+    }.getOrNull()
+
     // Searched for and not found, as opposed to a search that failed.
     fun knownMissing(net: Net, stop: Int) = keyOf(net, stop) in misses
 
@@ -129,13 +145,18 @@ object StopPhotos {
         return true
     }
 
-    fun thumbNow(stopId: Int): Bitmap? =
+    fun thumbNow(stopId: Int): Bitmap? = if (!enabled) null else
         urls[stopId]?.small()?.firstNotNullOfOrNull { thumbs.get(it) }
 
     // Null while it isn't known, or Moovit couldn't be asked.
     fun hasPhotosNow(stopId: Int): Boolean? = urls[stopId]?.takeIf(::fresh)?.small()?.isNotEmpty()
 
-    suspend fun hasPhotos(stopId: Int): Boolean? = if (stopId <= 0) null else urlsOf(stopId)?.small()?.isNotEmpty()
+    // A stop of a trip Kav planned has none: its id is Kav's, not Moovit's.
+    suspend fun hasPhotos(stopId: Int): Boolean? = when {
+        stopId <= 0 -> null
+        KavPlan.isKav(stopId) -> false
+        else -> urlsOf(stopId)?.small()?.isNotEmpty()
+    }
 
     suspend fun idOf(net: Net, stop: Int): Int? = withContext(Dispatchers.IO) {
         val key = keyOf(net, stop)
@@ -157,6 +178,7 @@ object StopPhotos {
     }
 
     private suspend fun urlsOf(stopId: Int): Urls? = withContext(Dispatchers.IO) {
+        if (KavPlan.isKav(stopId) || !enabled) return@withContext null
         urls[stopId]?.takeIf(::fresh)?.let { return@withContext it }
         try {
             val found = Moovit.stopImages(Online.open(), stopId)
@@ -245,10 +267,12 @@ object StopPhotos {
     }
 
     fun prefetchNet(net: Net, stops: List<Int>) {
+        if (!enabled) return
         for (s in stops) scope.launch { idOf(net, s)?.let { thumb(it) } }
     }
 
     fun prefetchIds(stopIds: List<Int>) {
+        if (!enabled) return
         for (id in stopIds.distinct()) if (id > 0) scope.launch { thumb(id) }
     }
 }

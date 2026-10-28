@@ -18,6 +18,11 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.spring
 
 private const val FAST = 240
 private const val MED = 360
@@ -112,3 +117,8 @@ fun Modifier.popIn(index: Int, key: Any?): Modifier {
         scaleY = 0.97f + 0.03f * p
     }
 }
+
+// A screen over the tabs (Settings, paying, the payment history, a report) slides up whole and opaque and back down,
+// so the screen under it never shows through a fade.
+fun modalIn(): EnterTransition = slideInVertically(spring(dampingRatio = 1f, stiffness = 400f)) { it }
+fun modalOut(): ExitTransition = slideOutVertically(spring(dampingRatio = 1f, stiffness = 400f)) { it }

@@ -7,11 +7,15 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
@@ -32,7 +36,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.Canvas
@@ -76,10 +79,16 @@ fun hhmm(s: Int): String {
     else "%d:%02d %s".format(Locale.US, (h + 11) % 12 + 1, m, if (h < 12) "AM" else "PM")
 }
 
-fun dur(s: Int): String {
-    val m = (s / 60.0).roundToInt()
-    return if (m >= 60) T("${m / 60}h ${m % 60}m", "${m / 60} שע' ${m % 60} דק'")
-    else T("$m min", "$m דק'")
+// A length of time, written one way everywhere: "55 min", "1 hr 8 min", "2 hr".
+fun dur(s: Int): String = durMinutes((s / 60.0).roundToInt())
+
+fun durMinutes(m: Int): String = durParts(m).joinToString(" ") { (n, unit) -> "$n $unit" }
+
+// Its numbers and their units, for setting the numbers larger.
+fun durParts(m: Int): List<Pair<Int, String>> = when {
+    m < 60 -> listOf(m to T("min", "דק׳"))
+    m % 60 == 0 -> listOf(m / 60 to T("hr", "שע׳"))
+    else -> listOf(m / 60 to T("hr", "שע׳"), m % 60 to T("min", "דק׳"))
 }
 
 fun nowSec(): Int {
@@ -91,7 +100,7 @@ fun relative(t: Int, from: Int = nowSec()): String? {
     val d = t - from
     if (d < 0 || d > 3600) return null
     val m = (d / 60.0).roundToInt()
-    return if (m <= 0) T("now", "עכשיו") else T("$m min", "$m דק'")
+    return if (m <= 0) T("now", "עכשיו") else T("$m min", "$m דק׳")
 }
 
 private const val EARTH = 6371000.0
@@ -173,25 +182,15 @@ fun DrawScope.drawWalker(tint: Color) {
     line(.52f, .36f, .72f, .46f)
 }
 
+// label: a train's number, which the timetable doesn't keep, where a live source has given it. type: the mode of a
+// line the timetable hasn't, as the live source has it, and agency its operator, by the ministry's id.
 @Composable
-fun LineBadge(net: Net, route: Int, modifier: Modifier = Modifier) {
-    val rType = net.rType.getOrElse(route) { 3 }
-    val plate = plateFor(rType)
-    Row(
-        modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(plate?.fill ?: K.plate)
-            .border(1.dp, plate?.edge ?: K.border, RoundedCornerShape(6.dp))
-            .padding(horizontal = 7.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        ModeGlyph(modeOf(rType), plate?.ink ?: K.dim, 12.dp)
-        Text(
-            net.rShort.getOrElse(route) { "·" }.ifBlank { "·" },
-            fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = plate?.ink ?: K.text,
-        )
-    }
+fun LineBadge(
+    net: Net, route: Int, modifier: Modifier = Modifier, label: String? = null, type: Int = net.rType.getOrElse(route) { 3 },
+    agency: Int = -1, dense: Boolean = false,
+) {
+    val plate = linePlate(type, -1) { Operators.of(net, route) ?: Operators.ofGtfs(agency) }
+    LinePlateBadge(label?.ifBlank { null } ?: net.rShort.getOrElse(route) { "" }, modeOf(type), plate, modifier, dense)
 }
 
 @Composable
@@ -313,10 +312,10 @@ fun WithTimetable(model: uk.noammm.kav.KavModel, content: @Composable (Net) -> U
         model.netError != null -> Column(Modifier.padding(K.gap4)) {
             Note(T("Could not open the offline timetable: ${model.netError}", "לא ניתן היה לפתוח את לוח הזמנים הלא מקוון: ${model.netError}"))
             Spacer(Modifier.height(K.gap3))
-            Chip(T("Retry", "נסו שוב"), false) {
+            KavButton(T("Try again", "נסו שוב"), style = ButtonStyle.Secondary, onClick = {
                 model.netError = null
                 model.netLoadAttempt++
-            }
+            })
         }
         else -> LoadingBlock(T("Opening the timetable", "פותחים את לוח הזמנים"))
     }
@@ -327,14 +326,9 @@ fun PreciseLocationNudge() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     if (uk.noammm.kav.hasPreciseLocation(ctx)) return
     if (!uk.noammm.kav.hasLocationPermission(ctx)) return
-    Row(
-        Modifier.padding(horizontal = K.gap3, vertical = K.gap2).fillMaxWidth()
-            .panel(12.dp)
-            .padding(K.gap3),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(T("Your location is not accurate", "המיקום שלכם אינו מדויק"), fontSize = 13.sp, color = K.text)
+    Column(Modifier.padding(horizontal = K.gap4, vertical = K.gap2).fillMaxWidth().panel(K.rCard).padding(K.gap4)) {
+        Column {
+            Text(T("Your location is not accurate", "המיקום שלכם אינו מדויק"), style = K.type.headline)
             Text(
                 T(
                     "Turn on ‘Use precise location’. Without it Android rounds your position " +
@@ -342,25 +336,21 @@ fun PreciseLocationNudge() {
                     "הפעילו את ‘השתמשו במיקום מדויק’. בלעדיו אנדרואיד מעגל את המיקום שלכם " +
                         "לכדי קילומטר בערך, מה שעלול לתכנן את הנסיעה מהעיר הלא נכונה.",
                 ),
-                fontSize = 11.sp, color = K.dim, lineHeight = 15.sp,
-                modifier = Modifier.padding(top = 3.dp),
+                style = K.type.subhead, modifier = Modifier.padding(top = 2.dp),
             )
         }
-        Spacer(Modifier.width(K.gap3))
-        Text(
-            T("Change settings", "שינוי הגדרות"), fontSize = 12.sp, color = K.text,
-            modifier = Modifier.panel(999.dp)
-                .clickable {
-                    runCatching {
-                        ctx.startActivity(
-                            android.content.Intent(
-                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                android.net.Uri.fromParts("package", ctx.packageName, null),
-                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
+        KavButton(
+            T("Change settings", "שינוי הגדרות"), style = ButtonStyle.Secondary, modifier = Modifier.padding(top = K.gap3),
+            onClick = {
+                runCatching {
+                    ctx.startActivity(
+                        android.content.Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.fromParts("package", ctx.packageName, null),
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
                 }
-                .padding(horizontal = 12.dp, vertical = 7.dp),
+            },
         )
     }
 }
@@ -384,23 +374,26 @@ fun AlertPip(category: Int, size: androidx.compose.ui.unit.Dp = 13.dp) {
 @Composable
 fun AlertRow(category: Int, text: String, groupId: Int = 0) {
     if (category < 3 || text.isBlank()) return
-    val tint = if (category >= 4) K.critical else K.problem
     val open = LocalServiceAlertOpener.current
+    // A quiet tile; the alert's colour comes with its warning glyph, and a chevron where it opens the notice.
     Row(
         Modifier.fillMaxWidth().padding(top = K.gap2)
-            .clip(RoundedCornerShape(8.dp))
-            .border(1.dp, tint, RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(K.rTile))
+            .background(K.fill)
             .then(
                 if (groupId > 0) Modifier.clickable(role = Role.Button) { open(groupId, text) }
                 else Modifier,
             )
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = K.gap3, vertical = K.gap2),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(K.gap2),
     ) {
-        AlertPip(category, 15.dp)
-        Spacer(Modifier.width(8.dp))
-        Text(text, fontSize = 13.sp, color = K.text, modifier = Modifier.weight(1f))
-        if (groupId > 0) Text(T.onward, fontSize = 15.sp, color = K.dim)
+        AlertPip(category, 18.dp)
+        Text(text, style = K.type.subhead, color = K.text, modifier = Modifier.weight(1f))
+        if (groupId > 0) androidx.compose.material3.Icon(
+            androidx.compose.material.icons.Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null,
+            tint = K.textTertiary, modifier = Modifier.size(20.dp),
+        )
     }
 }
 
@@ -415,19 +408,7 @@ fun ServiceAlertSheet(groupId: Int, fallbackLabel: String, onDismiss: () -> Unit
             .onFailure { failed = true }
     }
     BottomSheet(onDismiss) { close ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                fallbackLabel.ifBlank { T("Service alert", "הודעת שירות") },
-                fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                T("Close", "סגירה"), fontSize = 14.sp, color = K.accent,
-                modifier = Modifier.clip(RoundedCornerShape(K.rPill))
-                    .clickable(role = Role.Button) { close(onDismiss) }
-                    .padding(horizontal = K.gap2, vertical = K.gap1),
-            )
-        }
+        SheetHeader(fallbackLabel.ifBlank { T("Service alert", "הודעת שירות") }, { close(onDismiss) })
         Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
         val list = alerts
         when {
@@ -436,24 +417,24 @@ fun ServiceAlertSheet(groupId: Int, fallbackLabel: String, onDismiss: () -> Unit
             failed || list.isNullOrEmpty() ->
                 Text(
                     T("The operator published no further detail for this alert.", "המפעיל לא פרסם פרטים נוספים על הודעה זו."),
-                    fontSize = 14.sp, color = K.muted, modifier = Modifier.padding(top = K.gap3),
+                    style = K.type.subhead, modifier = Modifier.padding(top = K.gap3),
                 )
             else -> list.forEachIndexed { i, a ->
                 if (i > 0) {
                     Spacer(Modifier.height(K.gap3))
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(K.border))
+                    Separator(0.dp)
                 }
                 Spacer(Modifier.height(K.gap3))
                 a.title.takeIf { it.isNotBlank() }?.let {
-                    Text(it, fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium)
+                    Text(it, style = K.type.headline)
                     Spacer(Modifier.height(K.gap2))
                 }
                 alertWindow(a)?.let {
-                    Text(it, fontSize = 12.sp, color = K.dim)
+                    Text(it, style = K.type.caption)
                     Spacer(Modifier.height(K.gap2))
                 }
                 alertText(a)?.let {
-                    Text(it, fontSize = 14.sp, color = K.muted, lineHeight = 20.sp)
+                    Text(it, style = K.type.body, color = K.textSecondary)
                 }
             }
         }
@@ -472,6 +453,10 @@ fun BottomSheet(
     val close: (() -> Unit) -> Unit = { then -> if (after == null) { after = then; state.targetState = false } }
     androidx.activity.compose.BackHandler { close(onDismiss) }
     if (state.isIdle && !state.currentState) LaunchedEffect(Unit) { after?.invoke() }
+    // Pulled down by its grabber, the sheet follows the finger; let go far enough or fast enough and it closes,
+    // otherwise it springs back.
+    var pulled by remember { mutableFloatStateOf(0f) }
+    val far = with(androidx.compose.ui.platform.LocalDensity.current) { 120.dp.toPx() }
     androidx.compose.animation.AnimatedVisibility(
         state,
         enter = androidx.compose.animation.EnterTransition.None,
@@ -484,7 +469,7 @@ fun BottomSheet(
                         enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(160)),
                         exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)),
                     )
-                    .background(Color.Black.copy(alpha = .55f))
+                    .background(Color.Black.copy(alpha = .4f))
                     .clickable { close(onDismiss) },
             )
             Column(
@@ -500,14 +485,31 @@ fun BottomSheet(
                             androidx.compose.animation.core.tween(220, easing = androidx.compose.animation.core.FastOutLinearInEasing),
                         ) { it },
                     )
+                    .offset { androidx.compose.ui.unit.IntOffset(0, pulled.roundToInt()) }
                     .padding(bottom = maxOf(bottomCover(), LocalBottomBarInset.current))
                     .padding(K.gap3)
-                    .panel(K.rCard, solid = true)
-                    .clickable(enabled = false) {}
-                    .then(if (scrolls) Modifier.verticalScroll(rememberScrollState()) else Modifier)
-                    .padding(K.gap4)
-                    .animateContentSize(),
-            ) { content(close) }
+                    .panel(K.rSheet, solid = true)
+                    .clickable(enabled = false) {},
+            ) {
+                Box(
+                    Modifier.fillMaxWidth().height(24.dp).draggable(
+                        androidx.compose.foundation.gestures.rememberDraggableState { d -> pulled = (pulled + d).coerceAtLeast(0f) },
+                        androidx.compose.foundation.gestures.Orientation.Vertical,
+                        onDragStopped = { speed ->
+                            if (pulled > far || speed > 1500f) close(onDismiss)
+                            else androidx.compose.animation.core.animate(pulled, 0f, speed, spring(dampingRatio = 1f, stiffness = 500f)) { v, _ -> pulled = v }
+                        },
+                    ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.size(36.dp, 4.dp).clip(K.capsule).background(K.textTertiary.copy(alpha = .5f)))
+                }
+                Column(
+                    Modifier.then(if (scrolls) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                        .padding(start = K.gap4, end = K.gap4, bottom = K.gap4)
+                        .animateContentSize(),
+                ) { content(close) }
+            }
         }
     }
 }
@@ -530,8 +532,52 @@ private fun alertText(a: Moovit.ServiceAlert): String? {
         .toString().replace(Regex("\n{3,}"), "\n\n").trim().ifBlank { null }
 }
 
+// A stop of Kav's timetable (net, stop) by its photo: its Moovit id, which the photo is filed under, is found and kept on
+// the way, whatever the live times come from. For screens that know the stop by the timetable, or by Kav's own ids.
 @Composable
-internal fun StopGlyphOrPhoto(stopId: Int, mode: Mode?, thumb: Dp = 40.dp, mark: Dp = 17.dp, resolving: Boolean = false) {
+internal fun StopGlyphOrPhoto(
+    net: Net, stop: Int, mode: Mode?, thumb: Dp = 40.dp, mark: Dp = 17.dp, look: StopLook? = null,
+    kind: Mode = mode ?: Mode.BUS,
+) {
+    var id by remember(net, stop) { mutableStateOf(StopPhotos.idNow(net, stop) ?: -1) }
+    var looked by remember(net, stop) { mutableStateOf(id > 0) }
+    LaunchedEffect(net, stop, StopPhotos.enabled) {
+        if (StopPhotos.enabled) id = findMoovitId(net, stop, id) { looked = true } else looked = true
+    }
+    StopGlyphOrPhoto(id, mode, thumb, mark, resolving = !looked, look = look, kind = kind)
+}
+
+// The stop's Moovit id, for its photo and live times. A search that failed, as opposed to one that found nothing, is
+// tried again, less and less often, for as long as the stop is on screen.
+internal suspend fun findMoovitId(net: Net, stop: Int, known: Int, onTried: () -> Unit): Int {
+    var id = known
+    var wait = 2_000L
+    while (id <= 0) {
+        id = StopPhotos.idOf(net, stop) ?: -1
+        onTried()
+        if (id > 0 || StopPhotos.knownMissing(net, stop)) break
+        delay(wait)
+        wait = (wait * 2).coerceAtMost(60_000L)
+    }
+    return id
+}
+
+// look: where the stop is, for a stop with no photo to open in Street View instead. kind: the stop's mode, drawn where
+// its photo goes until one arrives, or for good when there is none.
+@Composable
+internal fun StopGlyphOrPhoto(
+    stopId: Int, mode: Mode?, thumb: Dp = 40.dp, mark: Dp = 17.dp, resolving: Boolean = false, look: StopLook? = null,
+    kind: Mode = mode ?: Mode.BUS,
+) {
+    // Photos off: nothing asked of Moovit, and the place kept.
+    if (!StopPhotos.enabled) {
+        when {
+            mode != null -> StationMark(mode, mark)
+            look != null -> NoPhoto(thumb, look)
+            else -> StopTile(thumb, kind)
+        }
+        return
+    }
     var bmp by remember(stopId) { mutableStateOf(StopPhotos.thumbNow(stopId)) }
     var has by remember(stopId) { mutableStateOf(StopPhotos.hasPhotosNow(stopId)) }
     var busy by remember(stopId) { mutableStateOf(bmp == null && stopId > 0) }
@@ -550,26 +596,27 @@ internal fun StopGlyphOrPhoto(stopId: Int, mode: Mode?, thumb: Dp = 40.dp, mark:
         }
     }
     val shot = bmp
-    if (shot == null) {
-        // A trip step keeps its mode mark unless a photo is on its way.
-        when {
-            (busy || resolving) && (mode == null || has == true) ->
-                PhotoBox(thumb, T("Loading the stop's photo", "טוענים את תמונת התחנה")) { Spinner(thumb * 0.4f) }
-            mode != null -> StationMark(mode, mark)
-            has != false && stopId > 0 -> PhotoBox(thumb, null) {}
-            else -> PhotoBox(thumb, null) {
-                Text(
-                    T("No image", "אין תמונה"), fontSize = 10.sp, lineHeight = 12.sp, color = K.dim,
-                    textAlign = TextAlign.Center, modifier = Modifier.padding(2.dp),
-                )
-            }
-        }
+    // A trip step keeps its mode mark unless a photo is on its way; a stop known to have none opens Street View.
+    if (shot == null && mode != null && !((busy || resolving) && has == true)) {
+        StationMark(mode, mark)
         return
     }
+    if (shot == null && !resolving && (has == false || stopId <= 0) && look != null) {
+        NoPhoto(thumb, look)
+        return
+    }
+    // Elsewhere the tile keeps the photo's place, and the photo fades in over it.
+    androidx.compose.animation.Crossfade(shot, animationSpec = tween(220), label = "stopPhoto") { photo ->
+        if (photo == null) StopTile(thumb, kind) else StopPhoto(stopId, photo, thumb)
+    }
+}
+
+@Composable
+private fun StopPhoto(stopId: Int, shot: android.graphics.Bitmap, thumb: Dp) {
     var open by remember { mutableStateOf(false) }
     Image(
         shot.asImageBitmap(), T("A photo of the stop", "תמונה של התחנה"),
-        Modifier.size(thumb).clip(RoundedCornerShape(10.dp)).clickable { open = true },
+        Modifier.size(thumb).clip(RoundedCornerShape(K.rTile)).clickable { open = true },
         contentScale = ContentScale.Crop,
     )
     if (open) {
@@ -585,24 +632,36 @@ internal fun StopGlyphOrPhoto(stopId: Int, mode: Mode?, thumb: Dp = 40.dp, mark:
     }
 }
 
-// Where the stop's photo goes: a spinner until it arrives, or a note when there is none.
+// Where a stop's photo goes while there is none: the stop's mode on a quiet tile of the photo's size and shape.
 @Composable
-private fun PhotoBox(size: Dp, label: String?, content: @Composable () -> Unit) {
+private fun StopTile(size: Dp, mode: Mode) {
     Box(
-        Modifier.size(size).panel(10.dp).then(if (label != null) Modifier.semantics { contentDescription = label } else Modifier),
+        Modifier.size(size).clip(RoundedCornerShape(K.rTile)).background(K.fill),
         contentAlignment = Alignment.Center,
-    ) { content() }
+    ) { ModeGlyph(mode, K.muted, size * .44f) }
 }
 
+// A stop with no photo: Street View's glyph on the tile, which opens it there.
 @Composable
-private fun Spinner(size: Dp) {
-    val turn by rememberInfiniteTransition(label = "photo").animateFloat(
+private fun NoPhoto(thumb: Dp, look: StopLook) {
+    Box(
+        Modifier.size(thumb).clip(RoundedCornerShape(K.rTile)).background(K.fill)
+            .semantics { contentDescription = T("No photo of this stop. See it in Street View", "אין תמונה של התחנה. צפייה ב-Street View") }
+            .clickable(role = Role.Button) { StreetViewer.open = look },
+        contentAlignment = Alignment.Center,
+    ) { Canvas(Modifier.size(thumb * .5f)) { streetGlyph(K.muted) } }
+}
+
+// A small turning arc, for something loading in its place.
+@Composable
+internal fun Spinner(size: Dp, track: Color = K.surface4, arc: Color = K.accent) {
+    val turn by rememberInfiniteTransition(label = "spinner").animateFloat(
         0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing)), label = "turn",
     )
     Canvas(Modifier.size(size)) {
-        val w = 2.dp.toPx()
+        val w = 2.5.dp.toPx()
         val box = Size(this.size.width - w, this.size.height - w)
-        drawArc(K.surface4, 0f, 360f, false, Offset(w / 2, w / 2), box, style = Stroke(w))
-        drawArc(K.accent, turn, 100f, false, Offset(w / 2, w / 2), box, style = Stroke(w, cap = StrokeCap.Round))
+        drawArc(track, 0f, 360f, false, Offset(w / 2, w / 2), box, style = Stroke(w))
+        drawArc(arc, turn, 100f, false, Offset(w / 2, w / 2), box, style = Stroke(w, cap = StrokeCap.Round))
     }
 }

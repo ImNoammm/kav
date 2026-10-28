@@ -28,6 +28,13 @@ object T {
 
     fun ltr(s: String): String = if (rtl) "\u2066" + s + "\u2069" else s
 
+    // A count and what it counts, singular for one: count(3, "1 stop", "תחנה אחת", "stops", "תחנות") is "3 stops".
+    fun count(n: Long, one: String, oneHe: String, many: String, manyHe: String): String =
+        if (n == 1L) invoke(one, oneHe) else invoke("$n $many", "$n $manyHe")
+
+    fun count(n: Int, one: String, oneHe: String, many: String, manyHe: String): String =
+        count(n.toLong(), one, oneHe, many, manyHe)
+
     val locale: java.util.Locale
         get() = java.util.Locale.forLanguageTag(if (rtl) "he-IL" else "en-GB")
 }

@@ -32,9 +32,9 @@ object MapFile {
     var state by mutableStateOf<State>(State.Missing)
         private set
 
-    // The map Kav draws: its own, from the file on the phone; satellite photos with its names on them; or its own with
-    // the hills shaded. The photos and the hills load online, as the map is looked at.
-    enum class Type { STANDARD, SATELLITE, TERRAIN }
+    // The map Kav draws: its own, from the file on the phone, or satellite photos with its names on them, which load
+    // online as the map is looked at.
+    enum class Type { STANDARD, SATELLITE }
 
     var type by mutableStateOf(Type.STANDARD)
 
@@ -65,20 +65,16 @@ object MapFile {
         return when (type) {
             Type.STANDARD -> json
             Type.SATELLITE -> satellite(JSONObject(json)).toString()
-            Type.TERRAIN -> terrain(JSONObject(json), light).toString()
         }
     }
 
     fun attribution(type: Type): String = when (type) {
         Type.STANDARD -> "Protomaps · © OpenStreetMap"
         Type.SATELLITE -> "Esri, Vantor, Earthstar Geographics · Protomaps · © OpenStreetMap"
-        Type.TERRAIN -> "Protomaps · © OpenStreetMap · terrain USGS, NOAA, Mapzen"
     }
 
     // Esri's World Imagery needs no key and has photos to zoom 19 over Israel.
     private const val PHOTOS = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-    // Mapzen's terrain on AWS's open data: heights to zoom 15, from USGS (SRTM, GMTED2010) and NOAA (ETOPO1) here.
-    private const val HEIGHTS = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 
     // The photos under the map's names: the land, water, buildings and roads drawn on top would hide what the photo
     // shows, so only the background and the names stay.
@@ -106,28 +102,6 @@ object MapFile {
         val paint = layer.optJSONObject("paint")?.takeIf { it.has("text-halo-color") } ?: return layer
         paint.put("text-color", "rgba(255,255,255,0.95)").put("text-halo-color", "rgba(0,0,0,0.75)").put("text-halo-width", 1.5)
         return layer
-    }
-
-    // Shaded hills over the map's own land, under its water, roads and names.
-    internal fun terrain(style: JSONObject, light: Boolean): JSONObject {
-        style.getJSONObject("sources").put("terrain", JSONObject()
-            .put("type", "raster-dem").put("tiles", JSONArray().put(HEIGHTS)).put("tileSize", 256).put("maxzoom", 15)
-            .put("encoding", "terrarium"))
-        val hills = JSONObject().put("id", "hills").put("type", "hillshade").put("source", "terrain").put("paint", JSONObject()
-            .put("hillshade-exaggeration", if (light) 0.35 else 0.5)
-            .put("hillshade-shadow-color", if (light) "rgba(0,0,0,0.35)" else "rgba(0,0,0,0.85)")
-            .put("hillshade-highlight-color", if (light) "rgba(255,255,255,0.5)" else "rgba(255,255,255,0.12)")
-            .put("hillshade-accent-color", if (light) "rgba(0,0,0,0.15)" else "rgba(0,0,0,0.4)"))
-        val layers = style.getJSONArray("layers")
-        val at = (0 until layers.length()).firstOrNull { layers.getJSONObject(it).optString("id") == "water" }
-            ?: minOf(1, layers.length())
-        val out = JSONArray()
-        for (i in 0 until layers.length()) {
-            if (i == at) out.put(hills)
-            out.put(layers.getJSONObject(i))
-        }
-        if (at >= layers.length()) out.put(hills)
-        return style.put("layers", out)
     }
 
     fun startDownload(ctx: Context) {

@@ -39,7 +39,10 @@ private const val ROUTE_HUE_RUNGS = 3
 
 private fun routeBase(ride: Moovit.Leg, r: Moovit.Resolved): Color {
     val info = r.line(ride.lineId) ?: return K.route
-    return plateFor(r.routeType(info.agencyId), info.agencyId)?.fill ?: K.route
+    val type = r.routeType(info.agencyId)
+    return plateFor(type, info.agencyId)?.fill
+        ?: busOperator(type, info.agencyId) { Operators.of(r, info.agencyId) }?.takeIf(::hued)?.let { onScreen(it) }
+        ?: K.route
 }
 
 private fun turned(base: Color, rung: Int): Color {
@@ -310,7 +313,7 @@ fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), hei
     }
     TileMap(
         points,
-        modifier.fillMaxWidth().height(height).panel(12.dp),
+        modifier.fillMaxWidth().height(height).panel(K.rTile),
         geometry = geometry,
         live = vehicleGeometry(vehicles, density) { vehicleAlpha.value },
     )

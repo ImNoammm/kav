@@ -12,9 +12,20 @@ services:
       - MOT_CA=/app/mot-ca.pem
       - PORT=8080
       - PYTHONDONTWRITEBYTECODE=1
+      - HISTORY=/history
+      - REALTIME=/realtime
+      - ETA=/eta/now.json
+      # The second planner, whose routes come after Kav's own; unset, it is not asked.
+      - OFFICIAL_URL=http://kav-otp-official:8080/otp/gtfs/v1
     volumes:
       - ./live.py:/app/live.py:ro
       - ./mot-ca.pem:/app/mot-ca.pem:ro
+      # When each bus passed each stop, kept ten weeks for the planner's predicted times.
+      - ./history:/history
+      # The planner's live updates, and the route directions they name trips by.
+      - ./otp/realtime:/realtime
+      # Kav's own predicted arrivals (kav-eta), which the planner and the app get instead of the ministry's.
+      - ./eta/out:/eta:ro
     user: "1000:1000"
     read_only: true
     mem_limit: 512m
@@ -27,8 +38,109 @@ services:
       interval: 60s
       timeout: 10s
       retries: 3
-    networks: [proxy-net]
+    networks: [proxy-net, kav-net]
+
+  # The trip planner: OpenTripPlanner on the ministry's timetable and OpenStreetMap, rebuilt every night by
+  # otp/rebuild.sh. Only kav-live reaches it.
+  kav-otp:
+    image: opentripplanner/opentripplanner:2.10.0
+    container_name: kav-otp
+    restart: unless-stopped
+    command: ["--load", "--serve"]
+    environment:
+      - JAVA_OPTS=-Xmx4g
+    volumes:
+      - ./otp/data/serve:/var/opentripplanner
+      - ./otp/realtime:/var/opentripplanner/realtime:ro
+    user: "1000:1000"
+    mem_limit: 5g
+    cpus: 2
+    logging:
+      options:
+        max-size: 1m
+        max-file: "2"
+    networks: [kav-net]
+
+  # The second planner: the same, on the ministry's own times (the timetable before otp/predict.py), rebuilt every night
+  # by otp/official-build.sh. Only kav-live reaches it.
+  kav-otp-official:
+    image: opentripplanner/opentripplanner:2.10.0
+    container_name: kav-otp-official
+    restart: unless-stopped
+    command: ["--load", "--serve"]
+    environment:
+      - JAVA_OPTS=-Xmx4g
+    volumes:
+      - ./otp/data/serve-official:/var/opentripplanner
+      - ./otp/realtime:/var/opentripplanner/realtime:ro
+    user: "1000:1000"
+    mem_limit: 6g
+    cpus: 2
+    logging:
+      options:
+        max-size: 1m
+        max-file: "2"
+    networks: [kav-net]
+
+  # Kav's own predicted bus arrivals (eta/eta.py), every 30 seconds, from kav-live's history, for kav-live to give the
+  # planner and the app; also a log beside the ministry's own times, to keep scoring them. Building each day's history
+  # medians takes a few GB for a minute or two, at midnight.
+  kav-eta:
+    build: ./eta
+    image: kav-eta
+    container_name: kav-eta
+    restart: unless-stopped
+    # polars can't check that the history it joins on is in order; it is (inputs.py sorts it), and says so every round.
+    command: python3 -u -W ignore::UserWarning /app/eta.py
+    environment:
+      - KAV_APP_KEY=${KAV_APP_KEY}
+      - HISTORY=/history
+      - BACKFILL=/backfill
+      - GTFS=/official/mot-gtfs.zip
+      # The lab's live5: live3_all fine-tuned with each bus's motion (eta/motion.py), and beside it the
+      # same fine-tune without, for the buses whose motion can't be told.
+      - MODEL=/models/live5_motion.npz
+      - MODEL_FALLBACK=/models/live5_control.npz
+      - RAIL=/models/rail
+      # Trains and Tel Aviv light rail beat the ministry's own times too.
+      - RAIL_HANDOVER=2,22
+      - REALTIME=/realtime
+      - OUT=/eta
+      - KAV_LIVE=http://kav-live:8080
+      - SPECIAL_DAYS=/special-days.txt
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - ./eta/eta.py:/app/eta.py:ro
+      - ./eta/inputs.py:/app/inputs.py:ro
+      - ./eta/motion.py:/app/motion.py:ro
+      - ./eta/rail_inputs.py:/app/rail_inputs.py:ro
+      - ./history:/history:ro
+      # Older days replayed from Hasadna's archive, for the six weeks of medians until kav-live has recorded them.
+      - ./eta/history-backfill:/backfill:ro
+      # The ministry's own timetable, which otp/prepare.py keeps.
+      - ./otp/data/official:/official:ro
+      # The planner's special days (otp/predict.py writes it in place), when Kav's times go the special day's way.
+      - ./otp/data/special-days.txt:/special-days.txt:ro
+      - ./eta/models:/models:ro
+      # Where kav-live lists the journeys on the road.
+      - ./otp/realtime:/realtime:ro
+      - ./eta/out:/eta
+      # Where polars spills to disk when memory runs short (it takes /var/tmp, whatever POLARS_TEMP_DIR says): on a
+      # read-only system the first spill fails and every later one panics.
+      - ./eta/spill:/var/tmp
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 8g
+    cpus: 4
+    logging:
+      options:
+        max-size: 1m
+        max-file: "2"
+    networks: [kav-net]
 
 networks:
   proxy-net:
     external: true
+  kav-net:
+    internal: true

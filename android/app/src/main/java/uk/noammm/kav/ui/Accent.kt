@@ -29,6 +29,11 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.ui.text.font.FontWeight
 
 val DefaultAccent = Color(0xFF9ABEFF)
 
@@ -94,8 +99,8 @@ fun AccentPicker(modifier: Modifier = Modifier, wheel: androidx.compose.ui.unit.
             AccentPresets.forEach { p ->
                 val selected = hsvOf(p.color).let { it[1] < .02f && hsv[1] < .02f || (kotlin.math.abs(it[0] - hsv[0]) < 2f && kotlin.math.abs(it[1] - hsv[1]) < .02f) }
                 Box(
-                    Modifier.size(30.dp).clip(RoundedCornerShape(999.dp)).background(p.color)
-                        .border(2.dp, if (selected) K.text else K.bg.copy(alpha = .6f), RoundedCornerShape(999.dp))
+                    Modifier.size(30.dp).clip(K.capsule).background(p.color)
+                        .border(2.dp, if (selected) K.text else K.bg.copy(alpha = .6f), K.capsule)
                         .semantics { contentDescription = p.label }
                         .clickable(role = Role.Button) { K.accent = p.color; onChange(p.color) },
                 )
@@ -108,59 +113,53 @@ fun AccentPicker(modifier: Modifier = Modifier, wheel: androidx.compose.ui.unit.
 fun AccentPreview(modifier: Modifier = Modifier) {
     Column(
         modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.bg)
-            .border(1.dp, K.border, RoundedCornerShape(K.rCard)).padding(K.gap3),
+            .border(0.5.dp, K.separator, RoundedCornerShape(K.rCard)).padding(K.gap3),
         verticalArrangement = Arrangement.spacedBy(K.gap2),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(T("Home", "בית"), style = Display, fontSize = 15.sp, modifier = Modifier.weight(1f))
-            Canvas(Modifier.size(14.dp)) {
-                val w = size.width
-                drawCircle(K.muted, w * .18f, Offset(w * .5f, w * .5f), style = Stroke(w * .11f))
-                drawCircle(K.muted, w * .44f, Offset(w * .5f, w * .5f), style = Stroke(w * .09f))
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().panel(16.dp)
-                .padding(horizontal = K.gap3, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2),
-        ) {
-            Canvas(Modifier.size(14.dp)) {
-                val w = size.width
-                drawCircle(K.accent, w * .29f, Offset(w * .40f, w * .40f), style = Stroke(w * .10f))
-                drawLine(K.accent, Offset(w * .63f, w * .63f), Offset(w * .88f, w * .88f), w * .10f, androidx.compose.ui.graphics.StrokeCap.Round)
-            }
-            Text(T("Where to?", "לאן?"), fontSize = 12.sp, color = K.muted)
-        }
-        Column(
-            Modifier.fillMaxWidth().panel(14.dp),
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
             Row(
-                Modifier.fillMaxWidth().background(K.accent.copy(alpha = .18f)).padding(horizontal = K.gap3, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                Modifier.weight(1f).height(32.dp).clip(K.capsule).background(K.fill).padding(horizontal = K.gap3),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2),
             ) {
-                Text(T("Wait for", "המתנה ל־"), fontSize = 10.sp, color = K.accent, modifier = Modifier.weight(1f))
-                Text(T("Resume", "המשך"), fontSize = 10.sp, color = K.accent)
+                Icon(Icons.Rounded.Search, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(14.dp))
+                Text(T("Where to?", "לאן?"), fontSize = 12.sp, color = K.textTertiary)
             }
-            Row(Modifier.padding(horizontal = K.gap3, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(32.dp).clip(K.capsule).background(K.fill), contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.Settings, contentDescription = null, tint = K.textSecondary, modifier = Modifier.size(16.dp))
+            }
+        }
+        Column(Modifier.fillMaxWidth().panel(K.rTile).padding(K.gap3), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(T("Current trip", "הנסיעה הנוכחית"), fontSize = 12.sp, color = K.textSecondary, modifier = Modifier.weight(1f))
+                Text(T("Resume", "המשך"), fontSize = 12.sp, color = K.accentInk, fontWeight = FontWeight.Medium)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
                 Text(
-                    "472", fontSize = 11.sp, color = K.text,
-                    modifier = Modifier.panel(5.dp).padding(horizontal = 5.dp, vertical = 1.dp),
+                    "472", fontSize = 12.sp, color = K.text, fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(K.fill).padding(horizontal = 6.dp, vertical = 1.dp),
                 )
-                Spacer(Modifier.width(K.gap2))
-                Text(T("to Tel Aviv", "לתל אביב"), fontSize = 10.sp, color = K.muted, modifier = Modifier.weight(1f))
-                Text(T("3 min", "3 דק׳"), fontSize = 11.sp, color = K.accent)
+                Text(T("to Tel Aviv", "לתל אביב"), fontSize = 12.sp, color = K.text, modifier = Modifier.weight(1f))
+                LiveGlyph(K.realtime, 10.dp)
+                Text(T("3 min", "3 דק׳"), fontSize = 12.sp, color = K.realtime, fontWeight = FontWeight.Medium)
             }
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(8.dp).clip(RoundedCornerShape(999.dp)).background(K.accent))
-            Spacer(Modifier.width(6.dp))
-            Text(T("Live", "בזמן אמת"), fontSize = 10.sp, color = K.accent, modifier = Modifier.weight(1f))
-            Row(
-                Modifier.clip(RoundedCornerShape(999.dp)).background(K.accent).padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(T("Start", "התחלה"), fontSize = 10.sp, color = K.onAccent)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+            Text(
+                T("Bus", "אוטובוס"), fontSize = 12.sp, color = K.onAccent, fontWeight = FontWeight.Medium,
+                modifier = Modifier.clip(K.capsule).background(K.accent).padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+            Text(
+                T("Train", "רכבת"), fontSize = 12.sp, color = K.textSecondary,
+                modifier = Modifier.clip(K.capsule).background(K.fill).padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+            Spacer(Modifier.weight(1f))
+            Box(Modifier.size(30.dp, 18.dp).clip(K.capsule).background(K.accent)) {
+                Box(Modifier.align(Alignment.CenterEnd).padding(2.dp).size(14.dp).clip(K.capsule).background(Color.White))
             }
         }
+        Box(
+            Modifier.fillMaxWidth().height(34.dp).clip(K.capsule).background(K.accent),
+            contentAlignment = Alignment.Center,
+        ) { Text(T("Start", "התחלה"), fontSize = 12.sp, color = K.onAccent, fontWeight = FontWeight.Medium) }
     }
 }

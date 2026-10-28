@@ -5,11 +5,9 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,7 +24,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -68,6 +65,10 @@ import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sinh
 import kotlin.math.tan
+import androidx.compose.animation.core.Animatable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.MyLocation
+import androidx.compose.material.icons.rounded.Navigation
 
 data class MapLine(
     val points: List<Pair<Double, Double>>,
@@ -172,6 +173,17 @@ private fun Style.ensureKavLayers() {
     ))
     addLayer(markLayer("kav-live-mark", SRC_LIVE_MARKS, turns = false))
     addLayer(markLayer("kav-live-turn", SRC_LIVE_MARKS, turns = true))
+}
+
+// A layer's opacity times a; a mark keeps its own alpha under it.
+private fun Style.fadeLayers(a: Float, vararg ids: String) {
+    for (id in ids) when (val layer = getLayer(id)) {
+        is CircleLayer -> layer.setProperties(PropertyFactory.circleOpacity(a), PropertyFactory.circleStrokeOpacity(a))
+        is SymbolLayer -> layer.setProperties(
+            PropertyFactory.iconOpacity(Expression.product(Expression.toNumber(Expression.get("alpha")), Expression.literal(a))),
+        )
+        else -> {}
+    }
 }
 
 private fun markLayer(id: String, source: String, turns: Boolean) = SymbolLayer(id, source).withProperties(
@@ -528,6 +540,8 @@ fun TileMap(
     keepZoom: Boolean = false,
     status: (@Composable () -> Unit)? = null,
     controls: (@Composable () -> Unit)? = null,
+    attribution: Boolean = true,
+    reveal: Any? = null,
 ) {
     val ctx = LocalContext.current
     val density = LocalDensity.current
@@ -604,6 +618,21 @@ fun TileMap(
             s.ensureKavLayers()
             s.ensureKavIcons()
             s.setKavLive(live)
+        }
+    }
+    // Stops and vehicles fade in when they first come and when what's shown changes (reveal), not pop up.
+    val stopsShown = geometry != null && (geometry.dots.isNotEmpty() || geometry.markers.isNotEmpty())
+    val liveShown = live != null && (live.dots.isNotEmpty() || live.markers.isNotEmpty())
+    val stopsFade = remember { Animatable(0f) }
+    val liveFade = remember { Animatable(0f) }
+    LaunchedEffect(stopsShown, reveal) { if (stopsShown) { stopsFade.snapTo(0f); stopsFade.animateTo(1f, tween(360)) } }
+    LaunchedEffect(liveShown, reveal) { if (liveShown) { liveFade.snapTo(0f); liveFade.animateTo(1f, tween(360)) } }
+    LaunchedEffect(style) {
+        val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
+        snapshotFlow { stopsFade.value to liveFade.value }.collect { (stopsA, liveA) ->
+            if (!s.isFullyLoaded) return@collect
+            s.fadeLayers(stopsA, "kav-dot", "kav-mark")
+            s.fadeLayers(liveA, "kav-live-dot", "kav-live-mark", "kav-live-turn")
         }
     }
     if (live?.halos?.isNotEmpty() == true) {
@@ -694,37 +723,51 @@ fun TileMap(
             Modifier.align(Alignment.TopStart).fillMaxWidth()
                 .padding(start = contentPadding.calculateStartPadding(layoutDirection) + K.gap2,
                     top = contentPadding.calculateTopPadding() + K.gap2,
-                    end = contentPadding.calculateEndPadding(layoutDirection) + K.gap2),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    end = contentPadding.calculateEndPadding(layoutDirection) + K.gap3),
+            horizontalArrangement = Arrangement.spacedBy(K.gap2),
             verticalAlignment = Alignment.Top,
         ) {
             Box(Modifier.weight(1f)) { status?.invoke() }
             controls?.invoke()
-            if (camera.manual || moved) Text(
-                if (follow != null) T("Follow", "עקבו") else T("Reset", "איפוס"),
-                fontSize = 11.sp, color = K.text,
-                modifier = Modifier.panel(999.dp)
-                    .clickable {
-                        look?.invoke(null, 0.0)
-                        val me = recenterOn?.takeIf { it.first.isFinite() && it.second.isFinite() }
-                        when {
-                            follow != null -> camera.resume()
-                            me != null -> camera.centre(WorldPoint(Geo.x(me.second), Geo.y(me.first)), scope)
-                            else -> camera.reset(worldPoints, viewport, padFraction, fitMaxZoom, scope)
-                        }
-                    }
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-            )
+            // Moved away: one round button brings the map back, following again or centred as it was.
+            androidx.compose.animation.AnimatedVisibility(
+                camera.manual || moved,
+                enter = androidx.compose.animation.fadeIn(tween(160)) + androidx.compose.animation.scaleIn(initialScale = .8f),
+                exit = androidx.compose.animation.fadeOut(tween(120)) + androidx.compose.animation.scaleOut(targetScale = .8f),
+            ) {
+                // Frosted, not liquid: the map is part of the backdrop a liquid pane draws, so a liquid button on it
+                // would draw itself without end and crash the render thread.
+                CompositionLocalProvider(LocalLiquidBackdrop provides null) {
+                    KavIconButton(
+                        if (follow != null) Icons.Rounded.Navigation else Icons.Rounded.MyLocation,
+                        if (follow != null) T("Follow", "עקבו") else T("Recentre", "מירכוז"),
+                        {
+                            look?.invoke(null, 0.0)
+                            val me = recenterOn?.takeIf { it.first.isFinite() && it.second.isFinite() }
+                            when {
+                                follow != null -> camera.resume()
+                                me != null -> camera.centre(WorldPoint(Geo.x(me.second), Geo.y(me.first)), scope)
+                                else -> camera.reset(worldPoints, viewport, padFraction, fitMaxZoom, scope)
+                            }
+                        },
+                        floating = true, tint = K.text, size = 44.dp,
+                    )
+                }
+            }
         }
 
-        Text(
-            MapFile.attribution(type),
-            fontSize = 8.sp, color = if (type == MapFile.Type.SATELLITE) Color.White else K.dim,
-            modifier = Modifier.align(Alignment.BottomEnd).alpha(0.8f)
-                .padding(end = contentPadding.calculateEndPadding(layoutDirection) + 6.dp,
-                    bottom = contentPadding.calculateBottomPadding() + 3.dp),
-        )
+        if (attribution) MapAttribution(Modifier.align(Alignment.BottomEnd)
+            .padding(end = contentPadding.calculateEndPadding(layoutDirection) + 6.dp,
+                bottom = contentPadding.calculateBottomPadding() + 3.dp))
     }
+}
+
+// The map's credit line, drawn by a screen whose own cards cover the map's corner (Navigate) where they end.
+@Composable
+internal fun MapAttribution(modifier: Modifier = Modifier) {
+    val type = MapFile.type
+    Text(MapFile.attribution(type), fontSize = 8.sp, color = if (type == MapFile.Type.SATELLITE) Color.White else K.dim,
+        modifier = modifier.alpha(0.8f))
 }
 
 @Composable
@@ -732,32 +775,28 @@ private fun MapDownloadCard(modifier: Modifier) {
     val ctx = LocalContext.current
     Box(modifier, contentAlignment = Alignment.Center) {
         Column(
-            Modifier.padding(K.gap4).panel(14.dp).padding(K.gap4),
+            Modifier.padding(K.gap4).panel(K.rCard).padding(K.gap4),
             verticalArrangement = Arrangement.spacedBy(K.gap2),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             when (val s = MapFile.state) {
                 is MapFile.State.Downloading -> {
-                    Box(Modifier.width(160.dp).height(6.dp).clip(RoundedCornerShape(999.dp)).background(K.surface4)) {
+                    Box(Modifier.width(160.dp).height(6.dp).clip(K.capsule).background(K.surface4)) {
                         Box(Modifier.fillMaxWidth(s.progress.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
                     }
                     Text(T("Downloading… ${(s.progress * 100).toInt()}%", "מורידים… ${(s.progress * 100).toInt()}%"), fontSize = 12.sp, color = K.dim)
                 }
                 else -> {
-                    Text(T("Download the map", "הורדת המפה"), fontSize = 14.sp, color = K.text, fontWeight = FontWeight.Medium)
+                    Text(T("Download the map", "הורדת המפה"), style = K.type.bodyStrong)
                     Text(
                         T(
                             "About ${MapFile.BYTES shr 20} MB for all of Israel, once. Then it works with no signal.",
                             "כ-${MapFile.BYTES shr 20} מגה-בייט לכל ישראל, פעם אחת. אחר כך היא עובדת גם בלי קליטה.",
                         ),
-                        fontSize = 12.sp, color = K.dim,
+                        style = K.type.subhead,
                     )
-                    if (s is MapFile.State.Failed) Text(T("Couldn't download it. ${s.why}", "ההורדה נכשלה. ${s.why}"), fontSize = 12.sp, color = K.critical)
-                    Box(
-                        Modifier.clip(RoundedCornerShape(K.rPill)).background(K.accent)
-                            .clickable { MapFile.startDownload(ctx) }
-                            .padding(horizontal = 18.dp, vertical = 8.dp),
-                    ) { Text(if (s is MapFile.State.Failed) T("Try again", "נסו שוב") else T("Download", "הורדה"), fontSize = 13.sp, color = K.onAccent, fontWeight = FontWeight.Medium) }
+                    if (s is MapFile.State.Failed) Text(T("Couldn't download it. ${s.why}", "ההורדה נכשלה. ${s.why}"), style = K.type.subhead, color = K.critical)
+                    KavButton(if (s is MapFile.State.Failed) T("Try again", "נסו שוב") else T("Download", "הורדה"), { MapFile.startDownload(ctx) })
                 }
             }
         }

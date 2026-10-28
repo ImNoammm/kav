@@ -9,6 +9,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,6 +40,14 @@ import uk.noammm.kav.data.Moovit
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.MyLocation
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloat
 
 @Composable
 internal fun HomeScreen(
@@ -58,12 +71,11 @@ internal fun HomeScreen(
     ) { history ->
     if (history) {
         Column(Modifier.fillMaxSize().background(K.bg)) {
-            ScreenHeader(T("Recent", "נסיעות"), T("trips", "אחרונות"), back = { allTrips = false })
+            ScreenHeader(T("Recent trips", "נסיעות אחרונות"), back = { allTrips = false })
             LazyColumn(Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = K.gap4, end = K.gap4, bottom = K.gap6 + LocalBottomBarInset.current),
-                verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+                contentPadding = PaddingValues(start = K.gap4, end = K.gap4, top = K.gap2, bottom = K.gap6 + LocalBottomBarInset.current)) {
                 items(recentTrips.size) { index ->
-                    Box(Modifier.fillMaxWidth().panel(K.rCard)) {
+                    Box(Modifier.groupItem(first = index == 0, last = index == recentTrips.lastIndex, inset = RECENT_INSET)) {
                         RecentTripRow(recentTrips[index]) { allTrips = false; onTrip(recentTrips[index]) }
                     }
                 }
@@ -76,31 +88,36 @@ internal fun HomeScreen(
     var alert by remember { mutableStateOf<Pair<Int, String>?>(null) }
     androidx.activity.compose.BackHandler(alert != null) { alert = null }
     CompositionLocalProvider(LocalServiceAlertOpener provides { group, label -> alert = group to label }) {
+    val recentNames = remember(recentTrips) {
+        recentTrips.map { it.to.name.substringBefore("/").trim() }.filter { it.isNotBlank() }.distinct().take(2)
+    }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            ScreenHeader(T("Home", "בית"), "", onSettings = { model.settingsOpen = true }, badge = model.update != null)
+            // No title: where to is what this screen is for, so it leads, with Settings beside it.
             FloatingTop(top = {
                 Row(
-                    Modifier.padding(start = K.gap4, end = K.gap4, top = K.gap2).fillMaxWidth().heightIn(min = 64.dp)
-                        .glassSurface(24.dp)
-                        .clickable(role = Role.Button, onClickLabel = T("Search destination", "חיפוש יעד"), onClick = onSearch)
-                        .padding(horizontal = K.gap5, vertical = K.gap4),
+                    Modifier.padding(start = K.gap4, end = K.gap4, top = K.gap3).fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(K.gap3),
                 ) {
-                    Canvas(Modifier.size(22.dp)) {
-                        val w = size.width
-                        drawCircle(K.accent, w * .29f, Offset(w * .40f, w * .40f), style = Stroke(w * .08f))
-                        drawLine(K.accent, Offset(w * .63f, w * .63f), Offset(w * .88f, w * .88f), w * .08f, StrokeCap.Round)
+                    Row(
+                        Modifier.weight(1f).heightIn(min = 52.dp)
+                            .glassSurface(26.dp)
+                            .clickable(role = Role.Button, onClickLabel = T("Search destination", "חיפוש יעד"), onClick = onSearch)
+                            .padding(horizontal = K.gap4),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(K.gap3),
+                    ) {
+                        Icon(Icons.Rounded.Search, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(20.dp))
+                        WhereTo(recentNames, Modifier.weight(1f))
                     }
-                    Text(T("Where to?", "לאן?"), fontSize = 19.sp, color = K.muted, modifier = Modifier.weight(1f))
+                    SettingsButton(model.update != null) { model.settingsOpen = true }
                 }
-            }, estimate = K.gap2 + 64.dp, fade = 28.dp) { topSpace, backdrop ->
+            }, estimate = K.gap3 + 52.dp, fade = 28.dp) { topSpace, backdrop ->
             LazyColumn(
                 Modifier.fillMaxSize().then(backdrop),
                 contentPadding = PaddingValues(start = K.gap4, end = K.gap4, top = topSpace + K.gap4,
                     bottom = K.gap6 + LocalBottomBarInset.current),
-                verticalArrangement = Arrangement.spacedBy(K.gap4),
             ) {
                 item {
                     FavouriteStrip(
@@ -113,59 +130,32 @@ internal fun HomeScreen(
                         onRemove = { f -> save(favourites.filter { it.id != f.id }) },
                     )
                 }
-                item {
-                    val journey = model.activeJourney
-                    if (journey != null) JourneyCard(model, journey, onResume)
-                    else Column(
-                        Modifier.fillMaxWidth().panel(K.rCard)
-                            .padding(K.gap5),
-                        verticalArrangement = Arrangement.spacedBy(K.gap2),
-                    ) {
-                        Text(T("Ready when you are", "מוכנים כשתרצו"), fontSize = 21.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                        Note(T("Choose a destination to see your route and what to do next.", "בחרו יעד כדי לראות את המסלול ואת הצעד הבא."))
-                    }
-                }
-                // Paying, the tickets still running and the history, in one card.
-                item {
-                    Column(Modifier.fillMaxWidth().panel(K.rCard)) {
-                        HomeShortcut(T("Pay for a ride", "תשלום על נסיעה"), { drawQr() }, Modifier.fillMaxWidth(), framed = false) {
-                            model.payOpen = true
+                model.activeJourney?.let { journey -> item { Box(Modifier.padding(top = K.gap4)) { JourneyCard(model, journey, onResume) } } }
+                // Paying, the tickets still running and the history, in one card, unless the rider has hidden paying.
+                if (Shown.payments) item {
+                    Column(Modifier.padding(top = K.gap4).fillMaxWidth().panel(K.rCard)) {
+                        ListRow(
+                            T("Pay for a ride", "תשלום על נסיעה"),
+                            leading = { Icon(Icons.Rounded.QrCodeScanner, contentDescription = null, tint = K.textSecondary, modifier = Modifier.size(24.dp)) },
+                            onClick = { model.payOpen = true },
+                        )
+                        if (Payer.signedIn) {
+                            PayTicketsCard(model)
+                            Separator()
+                            SpendSummary { model.payHistoryOpen = true }
                         }
-                        if (Payer.signedIn) PayTicketsCard(model)
                     }
                 }
                 if (recentTrips.isNotEmpty()) item {
-                    Column(verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-                        Text(T("Recent trips", "נסיעות אחרונות"), fontSize = 15.sp, color = K.muted, fontWeight = FontWeight.Medium)
-                        Column(Modifier.panel(K.rCard)) {
-                            recentTrips.take(if (model.activeJourney != null) 2 else 3).forEachIndexed { index, trip ->
-                                if (index > 0) Box(
-                                    Modifier.padding(start = 52.dp, end = K.gap4).fillMaxWidth()
-                                        .height(1.dp).background(K.border),
-                                )
-                                RecentTripRow(trip) { onTrip(trip) }
+                    Column {
+                        SectionHeader(
+                            T("Recent trips", "נסיעות אחרונות"),
+                            action = if (recentTrips.size > 3) T("See all", "הכול") else null, onAction = { allTrips = true },
+                        )
+                        ListGroup(inset = RECENT_INSET) {
+                            recentTrips.take(if (model.activeJourney != null) 2 else 3).forEach { trip ->
+                                row { RecentTripRow(trip) { onTrip(trip) } }
                             }
-                            Text(T("More", "עוד"), fontSize = 15.sp, color = K.accent,
-                                modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { allTrips = true }
-                                    .padding(horizontal = K.gap4, vertical = K.gap3))
-                        }
-                    }
-                }
-                item {
-                    Column(verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-                        Row(
-                            Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                            horizontalArrangement = Arrangement.spacedBy(K.gap3),
-                        ) {
-                            HomeShortcut(T("Found a bug?", "מצאתם באג?"), { drawBug() }, Modifier.weight(1f).fillMaxHeight()) {
-                                openLink(ctx, "$REPO_URL/issues/new?labels=bug&title=bug%3A%20")
-                            }
-                            HomeShortcut(T("Request a feature?", "רוצים פיצ'ר חדש?"), { drawBulb() }, Modifier.weight(1f).fillMaxHeight()) {
-                                openLink(ctx, "$REPO_URL/issues/new?labels=enhancement&title=feature%3A%20")
-                            }
-                        }
-                        HomeShortcut(T("Buy me a coffee", "קנו לי קפה"), { drawCoffee() }, Modifier.fillMaxWidth()) {
-                            openLink(ctx, COFFEE_URL)
                         }
                     }
                 }
@@ -202,22 +192,23 @@ internal fun HomeScreen(
     }
 }
 
+// The name a trip planned from the rider's own position is saved with (DirectionsOnline), in either language.
+private val SAVED_STARTS = setOf("Saved start", "נקודת ההתחלה השמורה")
+
+// A recent trip's row: its separator starts under the text, past the clock.
+private val RECENT_INSET = K.gap4 + 24.dp + K.gap3
+
 @Composable
 private fun RecentTripRow(trip: RecentTrip, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp)
-            .clickable(role = Role.Button, onClick = onClick).padding(K.gap4),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(K.gap4),
-    ) {
-        ClockGlyph(K.dim, 20.dp)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(trip.to.name, fontSize = 15.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(T("from ", "מ־") + (trip.from?.name ?: T("Current location", "המיקום הנוכחי")),
-                fontSize = 13.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        Text(tripWhen(trip.at), fontSize = 12.sp, color = K.dim)
-    }
+    ListRow(
+        trip.to.name,
+        subtitle = trip.from?.name?.takeUnless { it in SAVED_STARTS }?.let { T("from ", "מ־") + it }
+            ?: T("from Current location", "מהמיקום הנוכחי"),
+        value = tripWhen(trip.at),
+        leading = { Icon(Icons.Rounded.Schedule, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(24.dp)) },
+        onClick = onClick,
+        chevron = false,
+    )
 }
 
 private fun tripWhen(at: Long): String {
@@ -254,83 +245,54 @@ private fun JourneyCard(model: KavModel, journey: ActiveJourney, onResume: () ->
     ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = K.gap4), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(T("Current trip", "הנסיעה הנוכחית"), fontSize = 13.sp, color = K.dim)
-                Text(T("To ${journey.toLabel}", "אל ${journey.toLabel}"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium,
+                Text(T("Current trip", "הנסיעה הנוכחית"), style = K.type.caption)
+                Text(T("To ${journey.toLabel}", "אל ${journey.toLabel}"), style = K.type.headline,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Text(
-                T("Resume", "המשך"), fontSize = 14.sp, color = K.accent, fontWeight = FontWeight.Medium,
-                modifier = Modifier.clip(RoundedCornerShape(K.rPill))
-                    .clickable(role = Role.Button, onClickLabel = T("Resume trip", "המשך נסיעה"), onClick = onResume)
-                    .padding(horizontal = K.gap3, vertical = K.gap2),
-            )
+            // Just the play mark, no circle around it; still a full 48 to the touch.
+            Box(
+                Modifier.size(48.dp).clip(CircleShape).semantics { contentDescription = T("Resume trip", "המשך נסיעה") }
+                    .clickable(role = Role.Button, onClick = onResume),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = K.accentInk, modifier = Modifier.size(32.dp)) }
         }
         val ceiling = with(LocalDensity.current) { 230.dp.roundToPx() }
         val pageHeights = remember(steps) { mutableStateMapOf<Int, Int>() }
         HorizontalPager(
             state = pager,
             modifier = Modifier.pageSized(pager, pageHeights, ceiling, bottom = false),
-            contentPadding = PaddingValues(horizontal = K.gap4),
-            pageSpacing = K.gap2,
+            pageSpacing = K.gap4,
             verticalAlignment = Alignment.Top,
             beyondViewportPageCount = 1,
         ) { page ->
-            Column(Modifier.fillMaxWidth().onSizeChanged { pageHeights[page] = it.height }.animateContentSize()) {
-                CurrentStepButton(page, current) { scope.launch { pager.animateScrollToPage(current) } }
+            Column(Modifier.fillMaxWidth().padding(horizontal = K.gap4).onSizeChanged { pageHeights[page] = it.height }.animateContentSize()) {
                 StepCard(steps[page], journey.resolved, active = page == current, now = now, chosen = journey.chosen,
                     fix = model.fix,
                     onChoose = { leg, option ->
                         model.activeJourney?.takeIf { it.trip === journey.trip }
                             ?.let { model.activeJourney = it.copy(chosen = it.chosen + (leg to option)) }
                     },
-                    pay = { leg, ride -> TripPay(model, leg, ride, journey.resolved) },
+                    pay = if (Shown.payments) { leg, ride -> TripPay(model, leg, ride, journey.resolved) } else null,
                     report = { model.report = it })
             }
         }
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = K.gap4),
-            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
-        ) {
-            for (i in steps.indices) {
-                val on = i == pager.currentPage
-                Box(
-                    Modifier.padding(horizontal = 3.dp).size(if (on) 7.dp else 5.dp).clip(RoundedCornerShape(999.dp))
-                        .background(if (i == current) K.accent else if (on) K.text else K.surface4),
+        // The dots in the middle; back to the step on now, from another, at the end of the same row.
+        Box(Modifier.fillMaxWidth().heightIn(min = 36.dp).padding(horizontal = K.gap3), contentAlignment = Alignment.Center) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                for (i in steps.indices) StepDot(looked = i == pager.currentPage, now = i == current)
+            }
+            androidx.compose.animation.AnimatedVisibility(
+                pager.currentPage != current, Modifier.align(Alignment.CenterEnd),
+                enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(180)),
+                exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(120)),
+            ) {
+                KavIconButton(
+                    Icons.Rounded.MyLocation, T("Back to the current step", "חזרה לשלב הנוכחי"),
+                    { scope.launch { pager.animateScrollToPage(current) } }, tint = K.accentInk, size = 36.dp,
                 )
             }
         }
     }
-}
-
-@Composable
-private fun HomeShortcut(label: String, icon: DrawScope.() -> Unit, modifier: Modifier, framed: Boolean = true, onClick: () -> Unit) {
-    Row(
-        modifier.heightIn(min = 64.dp).then(if (framed) Modifier.panel(K.rCard) else Modifier)
-            .clickable(role = Role.Button, onClick = onClick).padding(K.gap4),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(K.gap3),
-    ) {
-        Canvas(Modifier.size(20.dp)) { icon() }
-        Text(label, fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium)
-    }
-}
-
-private fun DrawScope.drawBug() {
-    val w = size.width
-    drawCircle(K.accent, w * .26f, Offset(w * .5f, w * .56f), style = Stroke(w * .08f))
-    drawLine(K.accent, Offset(w * .5f, w * .30f), Offset(w * .5f, w * .82f), w * .08f, StrokeCap.Round)
-    for (s in listOf(-1f, 1f)) {
-        drawLine(K.accent, Offset(w * (.5f + s * .19f), w * .38f), Offset(w * (.5f + s * .40f), w * .28f), w * .08f, StrokeCap.Round)
-        drawLine(K.accent, Offset(w * (.5f + s * .26f), w * .58f), Offset(w * (.5f + s * .45f), w * .58f), w * .08f, StrokeCap.Round)
-        drawLine(K.accent, Offset(w * (.5f + s * .19f), w * .76f), Offset(w * (.5f + s * .40f), w * .86f), w * .08f, StrokeCap.Round)
-    }
-}
-
-private fun DrawScope.drawBulb() {
-    val w = size.width
-    drawCircle(K.accent, w * .24f, Offset(w * .5f, w * .38f), style = Stroke(w * .08f))
-    drawLine(K.accent, Offset(w * .38f, w * .72f), Offset(w * .62f, w * .72f), w * .08f, StrokeCap.Round)
-    drawLine(K.accent, Offset(w * .42f, w * .86f), Offset(w * .58f, w * .86f), w * .08f, StrokeCap.Round)
 }
 
 internal fun DrawScope.drawQr() {
@@ -342,14 +304,71 @@ internal fun DrawScope.drawQr() {
     drawRect(K.accent, Offset(w * .80f, w * .80f), Size(w * .10f, w * .10f))
 }
 
-private fun DrawScope.drawCoffee() {
-    val w = size.width
-    drawRoundRect(
-        K.accent, topLeft = Offset(w * minOf(mirrorX(.18f), mirrorX(.62f)), w * .42f),
-        size = Size(w * .44f, w * .40f), cornerRadius = CornerRadius(w * .10f), style = Stroke(w * .08f),
-    )
-    drawCircle(K.accent, w * .12f, Offset(w * mirrorX(.72f), w * .58f), style = Stroke(w * .08f))
-    for (x in listOf(.30f, .50f)) {
-        drawLine(K.accent, Offset(w * mirrorX(x), w * .14f), Offset(w * mirrorX(x), w * .30f), w * .08f, StrokeCap.Round)
+// How many times Kav has come to the front: counted by MainActivity, so the hint below plays once per opening and not
+// on every return to the Home tab.
+internal object Openings {
+    var count by mutableIntStateOf(0)
+}
+
+private object WhereToHint {
+    var playedFor = -1
+}
+
+// "Where to?" types itself once each time Kav opens: it writes the words, erases them letter by letter, writes the
+// two latest destinations the same way, then writes "Where to?" again and stays. Never while animations are off.
+@Composable
+private fun WhereTo(recent: List<String>, modifier: Modifier = Modifier) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val whereTo = T("Where to?", "לאן?")
+    val opening = Openings.count
+    var shown by remember { mutableStateOf(if (WhereToHint.playedFor == opening) whereTo else "") }
+    var typing by remember { mutableStateOf(false) }
+    LaunchedEffect(opening) {
+        if (WhereToHint.playedFor == opening) { shown = whereTo; return@LaunchedEffect }
+        WhereToHint.playedFor = opening
+        val still = android.provider.Settings.Global.getFloat(
+            ctx.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
+        ) == 0f
+        if (still) { shown = whereTo; return@LaunchedEffect }
+        suspend fun write(words: String) {
+            for (n in 1..words.length) { shown = words.take(n); kotlinx.coroutines.delay(70) }
+        }
+        suspend fun erase() {
+            while (shown.isNotEmpty()) { shown = shown.dropLast(1); kotlinx.coroutines.delay(35) }
+        }
+        typing = true
+        try {
+            shown = ""
+            kotlinx.coroutines.delay(300)
+            write(whereTo)
+            kotlinx.coroutines.delay(900)
+            for (name in recent) {
+                erase(); kotlinx.coroutines.delay(250)
+                write(name); kotlinx.coroutines.delay(1100)
+            }
+            if (recent.isNotEmpty()) { erase(); kotlinx.coroutines.delay(250); write(whereTo) }
+        } finally {
+            shown = whereTo
+            typing = false
+        }
     }
+    Row(modifier.clearAndSetSemantics { contentDescription = whereTo }, verticalAlignment = Alignment.CenterVertically) {
+        Text(shown, style = K.type.body, color = K.textTertiary, maxLines = 1, overflow = TextOverflow.Clip)
+        if (typing) TypingCaret()
+    }
+}
+
+// A thin blinking caret after the words while they type.
+@Composable
+private fun TypingCaret() {
+    val blink = androidx.compose.animation.core.rememberInfiniteTransition(label = "caret")
+    val on by blink.animateFloat(
+        1f, 0f,
+        androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(500, easing = { if (it < .5f) 0f else 1f }),
+            androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+        label = "caretBlink",
+    )
+    Box(Modifier.padding(start = 1.dp).size(1.5.dp, 20.dp).graphicsLayer { alpha = on }.background(K.accentInk))
 }

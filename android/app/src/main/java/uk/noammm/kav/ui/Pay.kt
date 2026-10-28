@@ -95,6 +95,15 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlin.math.roundToInt
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material.icons.rounded.QrCode
+import androidx.compose.foundation.shape.CircleShape
 
 // Where the phone is for paying, kept as HopOn's app keeps it while it is open: the newest fix with its time and
 // accuracy, at any accuracy, never a mocked one. Pay listens while it is open; paying from elsewhere waits for a fix.
@@ -234,6 +243,8 @@ object Payer {
         ctx.deleteSharedPreferences("moovit-pay")
         val s = ctx.getSharedPreferences("rav-pass", Context.MODE_PRIVATE)
         store = s
+        // "Skip for now" holds until the account changes, not just for this run of the app.
+        skipped = s.getBoolean("card_skipped", false)
         session = s.getString("session", null)?.let(Seal::open)?.let { json ->
             runCatching { JSONObject(json).let { RavPass.Session(it.getString("token"), it.getString("uid")) } }.getOrNull()
         }
@@ -312,6 +323,7 @@ object Payer {
     // Paying without a card on file for now: HopOn says so in its own words if it needs one.
     fun skipCard() {
         skipped = true
+        store?.edit()?.putBoolean("card_skipped", true)?.apply()
         missing = missing?.minus(Setup.CARD)
     }
 
@@ -321,7 +333,8 @@ object Payer {
             session = s
             signedIn = true
             missing = null; skipped = false
-            store?.edit()?.putString("session", Seal.close(JSONObject().put("token", s.token).put("uid", s.uid).toString()))?.apply()
+            store?.edit()?.putString("session", Seal.close(JSONObject().put("token", s.token).put("uid", s.uid).toString()))
+                ?.remove("card_skipped")?.apply()
         }
     }
 
@@ -455,11 +468,11 @@ private fun ConnectStart(onNext: () -> Unit) {
     ) {
         Canvas(Modifier.size(56.dp)) { drawQr() }
         Text(T("Pay for bus rides with Rav-Pass", "תשלום על נסיעות באוטובוס עם רב-פס"),
-            fontSize = 22.sp, color = K.text, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+            style = K.type.title, textAlign = TextAlign.Center)
         Text(T("Scan the QR code on the bus and pay with your Rav-Pass account, right from Kav. No account yet? You " +
             "can open one here.",
             "סורקים את קוד ה-QR באוטובוס ומשלמים עם חשבון רב-פס שלכם, ישירות מ-Kav. אין לכם חשבון? אפשר לפתוח אחד כאן."),
-            fontSize = 15.sp, lineHeight = 21.sp, color = K.muted, textAlign = TextAlign.Center)
+            style = K.type.body, color = K.muted, textAlign = TextAlign.Center)
         Spacer(Modifier.height(K.gap2))
         PayButton(T("Continue", "המשך"), false, onClick = onNext)
     }
@@ -520,7 +533,7 @@ private fun AboutCard(title: String, content: @Composable ColumnScope.() -> Unit
         Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap5),
         verticalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
-        Text(title, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+        Text(title, style = K.type.headline)
         content()
     }
 }
@@ -528,7 +541,7 @@ private fun AboutCard(title: String, content: @Composable ColumnScope.() -> Unit
 @Composable
 private fun AboutStep(n: Int, text: String) {
     Row(horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
-        Text("$n", fontSize = 15.sp, color = K.accent, fontWeight = FontWeight.SemiBold)
+        Text("$n", style = K.type.body, color = K.accentInk, fontWeight = FontWeight.SemiBold)
         Note(text, color = K.muted)
     }
 }
@@ -551,14 +564,14 @@ internal fun failure(e: Throwable): String = when (e) {
 private fun PayButton(text: String, busy: Boolean, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     val waiting = busy || Payer.purchasing || Payer.payingLater
     Box(
-        modifier.fillMaxWidth().heightIn(min = 50.dp).clip(RoundedCornerShape(K.rPill))
-            .background(if (waiting || !enabled) K.surface4 else K.accent)
+        modifier.fillMaxWidth().heightIn(min = 52.dp).clip(K.capsule)
+            .background(if (waiting || !enabled) K.fill else K.accent)
             .clickable(enabled = !waiting && enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(if (waiting) T("One moment…", "רגע…") else text, fontSize = 16.sp,
-            color = if (waiting || !enabled) K.muted else K.onAccent, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2))
+        Text(if (waiting) T("One moment…", "רגע…") else text, style = K.type.bodyStrong,
+            color = if (waiting || !enabled) K.textTertiary else K.onAccent, textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = K.gap5, vertical = K.gap2))
     }
 }
 
@@ -636,20 +649,20 @@ private fun SignIn() {
     ) {
         when (val s = step) {
             SignInStep.Phone -> {
-                Text(T("Sign in or sign up", "התחברות או הרשמה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                Text(T("Sign in or sign up", "התחברות או הרשמה"), style = K.type.headline)
                 Note(T("Rav-Pass sends a code by SMS to this number. A number without an account gets a new one.",
                     "רב-פס שולחת קוד ב-SMS למספר הזה. מספר בלי חשבון מקבל חשבון חדש."), color = K.muted)
                 Row(horizontalArrangement = Arrangement.spacedBy(K.gap2), verticalAlignment = Alignment.CenterVertically) {
                     Row(
-                        Modifier.heightIn(min = 48.dp).glassSurface(K.rControl).clip(RoundedCornerShape(K.rControl))
+                        Modifier.heightIn(min = 52.dp).clip(K.capsule).background(K.fill)
                             .clickable(role = Role.Button, onClickLabel = T("Choose the country", "בחירת מדינה")) { picking = true }
                             .padding(horizontal = K.gap3),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Text(flagOf(region), fontSize = 16.sp)
-                        LtrText("+$country", 15.sp, K.text)
-                        Text("▾", fontSize = 11.sp, color = K.dim)
+                        LtrText("+$country", 16.sp, K.text)
+                        Icon(Icons.Rounded.ExpandMore, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(18.dp))
                     }
                     KavField(phone, { v ->
                         val typed = v.filter { c -> c.isDigit() || c == '-' || c == '+' }
@@ -677,7 +690,7 @@ private fun SignIn() {
             }
             is SignInStep.Code -> {
                 val sentTo = RavPass.phoneParts(s.phone, s.country)?.let { (c, n) -> T.ltr(shownNumber(c, n)) } ?: s.phone
-                Text(T("The code Rav-Pass sent to $sentTo", "הקוד שרב-פס שלחה ל-$sentTo"), fontSize = 15.sp, color = K.muted)
+                Text(T("The code Rav-Pass sent to $sentTo", "הקוד שרב-פס שלחה ל-$sentTo"), style = K.type.body, color = K.muted)
                 KavField(code, { v ->
                     code = v.filter(Char::isDigit).take(6)
                     // HopOn's codes have four digits, and its app checks one as soon as it is typed.
@@ -685,7 +698,7 @@ private fun SignIn() {
                 }, "1234", keyboard = KeyboardType.NumberPassword, autoFocus = true)
                 PayButton(T("Confirm", "אישור"), w.busy) { if (code.length >= 4) confirm(s.phone, s.country) }
                 Row(horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
-                    Text(T("Send it again", "שליחה מחדש"), fontSize = 14.sp, color = K.accent,
+                    Text(T("Send it again", "שליחה מחדש"), fontSize = 14.sp, color = K.accentInk,
                         modifier = Modifier.clickable(enabled = !w.busy, role = Role.Button) { send(s.phone, s.country) }
                             .padding(vertical = K.gap2))
                     Text(T("Change number", "שינוי מספר"), fontSize = 14.sp, color = K.muted,
@@ -720,20 +733,20 @@ private fun CountryPicker(onDismiss: () -> Unit, onPick: (String) -> Unit) {
     }
     Dialog(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().panel(K.rCard, solid = true).padding(K.gap4), verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-            Text(T("Country", "מדינה"), fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Country", "מדינה"), style = K.type.headline)
             KavField(query, { query = it }, T("Search by name or code", "חיפוש לפי שם או קידומת"))
             androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
                 items(shown.size, key = { shown[it].first }) { i ->
                     val (region, code, name) = shown[i]
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl))
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile))
                             .clickable(role = Role.Button) { onPick(region) }
                             .padding(horizontal = K.gap2, vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(K.gap3),
                     ) {
                         Text(flagOf(region), fontSize = 18.sp)
-                        Text(name, fontSize = 15.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text(name, style = K.type.body, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         LtrText("+$code", 14.sp, K.dim)
                     }
                 }
@@ -752,18 +765,18 @@ private fun TermsAgreement(agreed: Boolean, links: RavPass.Settings?, onChange: 
                 .background(if (agreed) K.accent else K.surface4).border(1.dp, if (agreed) K.accent else K.border, RoundedCornerShape(6.dp))
                 .clickable(role = Role.Checkbox) { onChange(!agreed) },
             contentAlignment = Alignment.Center,
-        ) { if (agreed) Text("✓", fontSize = 14.sp, color = K.onAccent, fontWeight = FontWeight.SemiBold) }
+        ) { if (agreed) Icon(Icons.Rounded.Check, contentDescription = null, tint = K.onAccent, modifier = Modifier.size(16.dp)) }
         Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
             Note(T("By signing up, you agree to Rav-Pass's terms of service and privacy policy",
                 "השימוש בשירות מותנה בהסכמתך לתנאי השימוש ומדיניות הפרטיות של רב-פס"),
                 Modifier.clickable(role = Role.Checkbox) { onChange(!agreed) }, color = K.muted)
             Row(horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
                 links?.termsUrl?.let { url ->
-                    Text(T("Terms of service", "תנאי השימוש"), fontSize = 14.sp, color = K.accent,
+                    Text(T("Terms of service", "תנאי השימוש"), fontSize = 14.sp, color = K.accentInk,
                         modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
                 }
                 links?.privacyUrl?.let { url ->
-                    Text(T("Privacy policy", "מדיניות הפרטיות"), fontSize = 14.sp, color = K.accent,
+                    Text(T("Privacy policy", "מדיניות הפרטיות"), fontSize = 14.sp, color = K.accentInk,
                         modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
                 }
             }
@@ -814,7 +827,7 @@ private fun TermsStep() {
                 s?.privacyUrl?.let { T("Privacy policy", "מדיניות הפרטיות") to it },
                 s?.motTermsUrl?.let { T("Ministry of Transport terms", "תנאי משרד התחבורה") to it },
             ).forEach { (label, url) ->
-                Text(label, fontSize = 14.sp, color = K.accent,
+                Text(label, fontSize = 14.sp, color = K.accentInk,
                     modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
             }
         }
@@ -838,15 +851,15 @@ private fun DetailsStep() {
     var last by rememberSaveable { mutableStateOf(a?.last.orEmpty()) }
     var email by rememberSaveable { mutableStateOf(a?.email.orEmpty()) }
     PayStep {
-        Text(T("Your details", "הפרטים שלכם"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+        Text(T("Your details", "הפרטים שלכם"), style = K.type.headline)
         Note(T("Rav-Pass asks for your name and email before a card is added. Its receipts go to this email.",
             "רב-פס מבקשת שם ואימייל לפני הוספת כרטיס. הקבלות שלה נשלחות לאימייל הזה."), color = K.muted)
         Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
-            Text(T("First name", "שם פרטי"), fontSize = 13.sp, color = K.dim)
+            Text(T("First name", "שם פרטי"), style = K.type.subhead)
             KavField(first, { first = it.take(40) }, T("First name", "שם פרטי"))
-            Text(T("Last name", "שם משפחה"), fontSize = 13.sp, color = K.dim)
+            Text(T("Last name", "שם משפחה"), style = K.type.subhead)
             KavField(last, { last = it.take(40) }, T("Last name", "שם משפחה"))
-            Text(T("Email", "אימייל"), fontSize = 13.sp, color = K.dim)
+            Text(T("Email", "אימייל"), style = K.type.subhead)
             KavField(email, { email = it.trim().take(80) }, "name@example.com", keyboard = KeyboardType.Email)
         }
         PayButton(T("Save", "שמירה"), w.busy) {
@@ -947,7 +960,7 @@ private fun CardStep(canSkip: Boolean) {
         w.error?.let { Note(it, color = K.critical) }
         // The code can come after the page closed; and a card waiting for one can be added again for a new code.
         Text(if (askCode) T("Add the card again", "הוספת הכרטיס מחדש") else T("Got a code from your card company? Enter it",
-            "קיבלתם קוד מחברת האשראי? הזינו אותו"), fontSize = 14.sp, color = K.accent,
+            "קיבלתם קוד מחברת האשראי? הזינו אותו"), fontSize = 14.sp, color = K.accentInk,
             modifier = Modifier.clickable(enabled = !w.busy, role = Role.Button) { w.error = null; askCode = !askCode; code = "" }
                 .padding(vertical = K.gap2))
         if (canSkip) Text(T("Skip for now", "דילוג בינתיים"), fontSize = 14.sp, color = K.muted,
@@ -970,7 +983,7 @@ private fun CardPage(url: String, onClose: () -> Unit, onEnd: (RavPass.CardEnd) 
     val ended = rememberUpdatedState(onEnd)
     Column(Modifier.fillMaxSize().padding(bottom = LocalBottomBarInset.current)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = K.gap4, vertical = K.gap2), verticalAlignment = Alignment.CenterVertically) {
-            Text(T("Add a card", "הוספת כרטיס"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+            Text(T("Add a card", "הוספת כרטיס"), style = K.type.headline,
                 modifier = Modifier.weight(1f))
             CancelLink(onClose)
         }
@@ -1014,22 +1027,22 @@ internal fun PaymentsSection(model: KavModel) {
     val now = System.currentTimeMillis()
     val card = Payer.cards.firstOrNull { !it.expired(now) && it.default } ?: Payer.cards.firstOrNull { !it.expired(now) }
     Column(
-        Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(14.dp).padding(K.gap3).animateContentSize(),
+        Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard).padding(K.gap4).animateContentSize(),
         verticalArrangement = Arrangement.spacedBy(K.gap2),
     ) {
-        Text(a?.name?.ifBlank { null } ?: T("Your Rav-Pass account", "חשבון רב-פס שלכם"), fontSize = 15.sp, color = K.text)
-        a?.phone?.takeIf { it.isNotBlank() }?.let { LtrText(it, 13.sp, K.dim) }
-        if (card != null) LtrText(listOf(card.brand, "•••• ${card.last4}").filter { it.isNotBlank() }.joinToString(" "), 13.sp, K.dim)
-        else if (a != null) Text(T("No card on the account yet", "עוד אין כרטיס בחשבון"), fontSize = 13.sp, color = K.problem)
-        a?.profiles?.takeIf { it.isNotEmpty() }?.let { Text(it.joinToString(", "), fontSize = 13.sp, color = K.dim) }
+        Text(a?.name?.ifBlank { null } ?: T("Your Rav-Pass account", "חשבון רב-פס שלכם"), style = K.type.body)
+        a?.phone?.takeIf { it.isNotBlank() }?.let { LtrText(it, 14.sp, K.dim) }
+        if (card != null) LtrText(listOf(card.brand, "•••• ${card.last4}").filter { it.isNotBlank() }.joinToString(" "), 14.sp, K.dim)
+        else if (a != null) Text(T("No card on the account yet", "עוד אין כרטיס בחשבון"), style = K.type.subhead, color = K.problem)
+        a?.profiles?.takeIf { it.isNotEmpty() }?.let { Text(it.joinToString(", "), style = K.type.subhead) }
         Text(T(
             "Kav pays with your Rav-Pass account, and nothing else in Kav uses it.",
             "Kav משלמת עם חשבון רב-פס שלכם, ושום דבר אחר ב-Kav לא משתמש בו.",
-        ), fontSize = 11.sp, color = K.dim, lineHeight = 16.sp)
+        ), style = K.type.subhead)
         Row(horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
-            Text(T("Payment history", "היסטוריית תשלומים"), fontSize = 14.sp, color = K.accent,
+            Text(T("Payment history", "היסטוריית תשלומים"), fontSize = 14.sp, color = K.accentInk,
                 modifier = Modifier.clickable(role = Role.Button) { model.payHistoryOpen = true }.padding(vertical = K.gap1))
-            Text(if (card == null) T("Add a card", "הוספת כרטיס") else T("Change card", "החלפת כרטיס"), fontSize = 14.sp, color = K.accent,
+            Text(if (card == null) T("Add a card", "הוספת כרטיס") else T("Change card", "החלפת כרטיס"), fontSize = 14.sp, color = K.accentInk,
                 modifier = Modifier.clickable(role = Role.Button) { Payer.addingCard = true; model.payOpen = true }.padding(vertical = K.gap1))
             Text(T("Sign out", "התנתקות"), fontSize = 14.sp, color = K.muted,
                 modifier = Modifier.clickable(enabled = !Payer.purchasing && !Payer.payingLater, role = Role.Button) { leaving = true }
@@ -1106,6 +1119,7 @@ private fun Paying(model: KavModel) {
         tripKey = null
         model.activeJourney?.takeIf { it.paymentKey == journey }
             ?.let { model.activeJourney = it.copy(paid = it.paid + (leg to key)) }
+        if (journey != null) TripTickets.bought["$journey/$leg"] = key
     }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -1496,7 +1510,7 @@ private fun Paying(model: KavModel) {
                         picks != null -> PayStep {
                             LineCard(b)
                             RidePicks(picks) { pick(it) }
-                            Text(T("Another line? See the lines around you", "קו אחר? הקווים סביבכם"), fontSize = 14.sp, color = K.accent,
+                            Text(T("Another line? See the lines around you", "קו אחר? הקווים סביבכם"), fontSize = 14.sp, color = K.accentInk,
                                 modifier = Modifier.clickable(role = Role.Button) { look { around(b) } }.padding(vertical = K.gap1))
                             CancelLink { backOut() }
                         }
@@ -1516,7 +1530,7 @@ private fun Paying(model: KavModel) {
                             if (run == null || fixedEnd) StopCard(T("Boarding stop", "תחנת עלייה"), b.from?.name ?: T("Not found", "לא נמצאה"))
                             else StopDropdown(T("Boarding stop", "תחנת עלייה"), run.stops, b.from) { s -> bus = b.boardingAt(s) }
                             if (fixedEnd) StopCard(T("Getting off at", "תחנת ירידה"), to?.name?.ifBlank { null } ?: T("Where HopOn says", "לפי הופ-און"))
-                            if ((runs?.size ?: 0) > 1) Text(T("Other direction", "לכיוון השני"), fontSize = 14.sp, color = K.accent,
+                            if ((runs?.size ?: 0) > 1) Text(T("Other direction", "לכיוון השני"), fontSize = 14.sp, color = K.accentInk,
                                 modifier = Modifier.clickable(role = Role.Button) { switchRun() }.padding(vertical = K.gap1))
                             val choices = if (fixedEnd || run == null) emptyList() else b.from?.let { bandsFor(b.bands, run.stops, it.code) }.orEmpty()
                             if (choices.isNotEmpty()) BandDropdown(choices, band) { band = it }
@@ -1527,9 +1541,9 @@ private fun Paying(model: KavModel) {
                             PayButton(T("Validate ride and charge me", "צרו לי כרטיס נסיעה וחייבו אותי בתשלום"), busy,
                                 enabled = quote?.total != null) { pay() }
                             AddButton(T("Asshole mode", "מצב מנייאק"), detail = T(
-                                "have a popup in the app/a \"PAY QUICK\" button in the notification so you can pay quickly when you see an inspector on the line",
+                                "have a popup in the app/a \"QUICK PAY\" button in the notification so you can pay quickly when you see an inspector on the line",
                                 "חלונית באפליקציה / כפתור \"תשלום מהיר!\" בהתראה, כדי שתוכלו לשלם במהירות כשרואים פקח בקו",
-                            ), modifier = Modifier.border(1.dp, K.accent, RoundedCornerShape(K.rPill))) {
+                            ), modifier = Modifier.border(1.dp, K.accent, RoundedCornerShape(K.rCard))) {
                                 val route = b.routeId ?: return@AddButton
                                 val from = b.from ?: return@AddButton
                                 val end = to ?: return@AddButton
@@ -1547,15 +1561,15 @@ private fun Paying(model: KavModel) {
                     val st = station
                     when {
                         choosing -> PayStep {
-                            Text(m.label, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                            Text(m.label, style = K.type.headline)
                             StationList(m, lastFix) { stationAtPosition(m, it) }
                             CancelLink { backOut() }
                         }
                         st == null -> LoadingBlock(T("Finding your station…", "מאתרים את התחנה…"))
                         else -> PinnedStep(top = {
-                            Text(m.label, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                            Text(m.label, style = K.type.headline)
                             StopCard(T("Entry station", "תחנת כניסה"), st.stop?.name ?: T("Not found", "לא נמצאה"))
-                            Text(T("Not this station? Choose it", "לא התחנה הזו? בחרו אותה"), fontSize = 14.sp, color = K.accent,
+                            Text(T("Not this station? Choose it", "לא התחנה הזו? בחרו אותה"), fontSize = 14.sp, color = K.accentInk,
                                 modifier = Modifier.clickable(role = Role.Button) { choosing = true }.padding(vertical = K.gap1))
                             if (m.kind == RavPass.Kind.OTHER) Passengers(guests, if (guestsBlocked) 0 else Payer.settings?.guestsMax ?: 10) { guests = it }
                             FareNotes(quote)
@@ -1573,11 +1587,11 @@ private fun Paying(model: KavModel) {
                     val e = exitStation
                     when {
                         choosing -> PayStep {
-                            Text(T("Exit station", "תחנת יציאה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                            Text(T("Exit station", "תחנת יציאה"), style = K.type.headline)
                             entranceStation?.let { s ->
                                 Column(Modifier.fillMaxWidth().panel(K.rCard).clickable(role = Role.Button) { exitAtPosition(s.lat to s.lon) }
                                     .padding(horizontal = K.gap4, vertical = K.gap3)) {
-                                    Text(s.name, fontSize = 15.sp, color = K.text)
+                                    Text(s.name, style = K.type.body)
                                     Text(T("Where you entered: leaving here closes the ride with no distance travelled",
                                         "התחנה שבה נכנסתם: יציאה כאן סוגרת את הנסיעה בלי מרחק נסיעה"), fontSize = 12.sp, color = K.dim)
                                 }
@@ -1587,12 +1601,12 @@ private fun Paying(model: KavModel) {
                         }
                         e == null -> LoadingBlock(T("Finding your station…", "מאתרים את התחנה…"))
                         else -> PayStep {
-                            Text(T("Exit station", "תחנת יציאה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                            Text(T("Exit station", "תחנת יציאה"), style = K.type.headline)
                             StopCard(T("Exit station", "תחנת יציאה"), e.stop?.name ?: T("Not found", "לא נמצאה"))
-                            Text(T("Not this station? Choose it", "לא התחנה הזו? בחרו אותה"), fontSize = 14.sp, color = K.accent,
+                            Text(T("Not this station? Choose it", "לא התחנה הזו? בחרו אותה"), fontSize = 14.sp, color = K.accentInk,
                                 modifier = Modifier.clickable(role = Role.Button) { choosing = true }.padding(vertical = K.gap1))
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(T("Estimated fare for this ride:", "המחיר המשוער לנסיעה:"), fontSize = 15.sp, color = K.muted,
+                                Text(T("Estimated fare for this ride:", "המחיר המשוער לנסיעה:"), style = K.type.body, color = K.muted,
                                     modifier = Modifier.weight(1f))
                                 LtrText(quote?.total?.text ?: "…", 18.sp, K.text, FontWeight.Medium)
                             }
@@ -1617,17 +1631,23 @@ private fun Paying(model: KavModel) {
                                     "The camera wouldn't start. Close other apps using it and open this page again.",
                                     "המצלמה לא נפתחה. סגרו אפליקציות אחרות שמשתמשות בה ופתחו את הדף שוב.",
                                 ), modifier = Modifier.padding(K.gap4))
-                                else -> QrScanner(Modifier.matchParentSize(), onFail = { cameraBroken = true }) { qr ->
-                                    beforeNew { onScanned(qr) }
+                                else -> {
+                                    QrScanner(Modifier.matchParentSize(), onFail = { cameraBroken = true }) { qr ->
+                                        beforeNew { onScanned(qr) }
+                                    }
+                                    // What to point the camera at, drawn faintly where it should land.
+                                    Icon(
+                                        Icons.Rounded.QrCode, contentDescription = T("Scan the bus QR code", "סריקת קוד ה-QR באוטובוס"),
+                                        tint = Color.White.copy(alpha = .35f), modifier = Modifier.fillMaxSize(.46f),
+                                    )
                                 }
                             }
                         }
                     }
-                    Note(T("Scan the QR code by the driver or the doors.", "סורקים את הברקוד שליד הנהג או הדלתות."), color = K.muted)
                     Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
                         Text(T("At a station", "בתחנה"), fontSize = 14.sp, color = K.muted)
                         Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                            StationMode.entries.forEach { m -> Chip(m.label, false) { beforeNew { startStation(m) } } }
+                            StationMode.entries.forEach { m -> KavButton(m.label, { beforeNew { startStation(m) } }, style = ButtonStyle.Secondary) }
                         }
                     }
                     if (!located) Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
@@ -1693,7 +1713,7 @@ private fun Paying(model: KavModel) {
 private fun FareNotes(q: RavPass.Quote?) {
     val notes = q?.notes?.takeIf { it.isNotEmpty() } ?: return
     Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-        Text(T("Fare information:", "כיצד המחיר מחושב?"), fontSize = 13.sp, color = K.dim)
+        Text(T("Fare information:", "כיצד המחיר מחושב?"), style = K.type.subhead)
         notes.forEach { Note(it, color = K.muted) }
     }
 }
@@ -1707,7 +1727,7 @@ private fun StationPrice(m: StationMode, st: RavPass.Station, q: RavPass.Quote?)
         q?.total?.takeIf { m != StationMode.TRAIN || it.agorot > 0 }?.let { total ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(q.km?.let { T("Up to $it km ride price", "מחיר לנסיעה עד $it ק\"מ") } ?: T("Ride price", "מחיר הנסיעה"),
-                    fontSize = 15.sp, color = K.muted, modifier = Modifier.weight(1f))
+                    style = K.type.body, color = K.muted, modifier = Modifier.weight(1f))
                 LtrText(total.text, 22.sp, K.text, FontWeight.Medium)
             }
         }
@@ -1747,7 +1767,7 @@ private fun PinnedStep(top: @Composable ColumnScope.() -> Unit, bottom: @Composa
 
 @Composable
 private fun CancelLink(onClick: () -> Unit) {
-    Text(T("Cancel", "ביטול"), fontSize = 15.sp, color = K.muted,
+    Text(T("Cancel", "ביטול"), style = K.type.body, color = K.muted,
         modifier = Modifier.clickable(role = Role.Button, onClick = onClick).padding(K.gap2))
 }
 
@@ -1763,12 +1783,12 @@ private fun LineCard(b: RavPass.Bus) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
-        Box(Modifier.clip(RoundedCornerShape(K.rControl)).background(agencyColor(b.color)).padding(horizontal = K.gap3, vertical = K.gap1)) {
+        Box(Modifier.clip(RoundedCornerShape(K.rBadge)).background(agencyColor(b.color)).padding(horizontal = K.gap3, vertical = K.gap1)) {
             LtrText(b.line.ifBlank { "?" }, 18.sp, Color.White, FontWeight.SemiBold)
         }
         Column(Modifier.weight(1f)) {
             Text(T("Towards", "לכיוון"), fontSize = 12.sp, color = K.dim)
-            Text(b.towards.ifBlank { "-" }, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(b.towards.ifBlank { "-" }, style = K.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1777,7 +1797,7 @@ private fun LineCard(b: RavPass.Bus) {
 private fun StopCard(label: String, name: String) {
     Column(Modifier.fillMaxWidth().panel(K.rCard).padding(K.gap4), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
         Text(label, fontSize = 12.sp, color = K.dim)
-        Text(name, fontSize = 15.sp, color = K.text)
+        Text(name, style = K.type.body)
     }
 }
 
@@ -1796,9 +1816,9 @@ private fun BandDropdown(bands: List<RavPass.Band>, chosen: Int, onChoose: (Int)
         ) {
             Column(Modifier.weight(1f)) {
                 Text(T("Fare", "תעריף"), fontSize = 12.sp, color = K.dim)
-                Text(T("Up to ${current.km} km", "עד ${current.km} ק\"מ"), fontSize = 15.sp, color = K.text)
+                Text(T("Up to ${current.km} km", "עד ${current.km} ק\"מ"), style = K.type.body)
             }
-            LtrText(current.price.text, 15.sp, K.text, FontWeight.Medium)
+            LtrText(current.price.text, 16.sp, K.text, FontWeight.Medium)
             Canvas(Modifier.size(14.dp).graphicsLayer { rotationZ = turn }) {
                 val w = size.width
                 drawLine(K.muted, Offset(w * .2f, w * .38f), Offset(w * .5f, w * .66f), w * .12f, StrokeCap.Round)
@@ -1813,8 +1833,8 @@ private fun BandDropdown(bands: List<RavPass.Band>, chosen: Int, onChoose: (Int)
                             .padding(horizontal = K.gap4),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(T("Up to ${band.km} km", "עד ${band.km} ק\"מ"), fontSize = 15.sp, color = K.muted, modifier = Modifier.weight(1f))
-                        LtrText(band.price.text, 15.sp, K.text)
+                        Text(T("Up to ${band.km} km", "עד ${band.km} ק\"מ"), style = K.type.body, color = K.muted, modifier = Modifier.weight(1f))
+                        LtrText(band.price.text, 16.sp, K.text)
                     }
                 }
             }
@@ -1825,7 +1845,7 @@ private fun BandDropdown(bands: List<RavPass.Band>, chosen: Int, onChoose: (Int)
 // HopOn's suggested rides on a bus it couldn't place the rider on, as its app lists them: the line, from where, to where.
 @Composable
 private fun RidePicks(picks: List<RavPass.Suggestion>, onPick: (RavPass.Suggestion) -> Unit) {
-    Text(T("Which ride is this?", "באיזו נסיעה מדובר?"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+    Text(T("Which ride is this?", "באיזו נסיעה מדובר?"), style = K.type.headline)
     Column(Modifier.fillMaxWidth().panel(K.rCard)) {
         picks.forEach { s ->
             Row(
@@ -1838,8 +1858,7 @@ private fun RidePicks(picks: List<RavPass.Suggestion>, onPick: (RavPass.Suggesti
                     Text(listOf(s.from.name, s.fromCity).filter { it.isNotBlank() }.joinToString(", "), fontSize = 14.sp, color = K.text,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     s.to?.let { end ->
-                        Text("→ " + listOf(end.name, s.toCity).filter { it.isNotBlank() }.joinToString(", "), fontSize = 13.sp,
-                            color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("→ " + listOf(end.name, s.toCity).filter { it.isNotBlank() }.joinToString(", "), style = K.type.subhead, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -1861,8 +1880,8 @@ private fun StopDropdown(label: String, stops: List<RavPass.Stop>, chosen: RavPa
         ) {
             Column(Modifier.weight(1f)) {
                 Text(label, fontSize = 12.sp, color = K.dim)
-                Text(chosen?.name ?: T("Choose your stop", "בחרו את התחנה שלכם"), fontSize = 15.sp,
-                    color = if (chosen == null) K.accent else K.text)
+                Text(chosen?.name ?: T("Choose your stop", "בחרו את התחנה שלכם"), style = K.type.body,
+                    color = if (chosen == null) K.accentInk else K.text)
             }
             Canvas(Modifier.size(14.dp).graphicsLayer { rotationZ = turn }) {
                 val w = size.width
@@ -1873,7 +1892,7 @@ private fun StopDropdown(label: String, stops: List<RavPass.Stop>, chosen: RavPa
         androidx.compose.animation.AnimatedVisibility(open) {
             Column {
                 stops.forEach { s ->
-                    Text(s.name, fontSize = 15.sp, color = if (s.code == chosen?.code) K.accent else K.muted,
+                    Text(s.name, style = K.type.body, color = if (s.code == chosen?.code) K.accentInk else K.muted,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Button) { onChoose(s); open = false }
                             .padding(horizontal = K.gap4, vertical = K.gap3))
                 }
@@ -1891,10 +1910,10 @@ private fun Passengers(guests: Int, max: Int, onChange: (Int) -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(K.gap3),
         ) {
-            Text(T("Number of passengers", "מספר נוסעים"), fontSize = 15.sp, color = K.text, modifier = Modifier.weight(1f))
-            if (max > 0) Chip("−", false) { if (guests > 0) onChange(guests - 1) }
+            Text(T("Number of passengers", "מספר נוסעים"), style = K.type.body, modifier = Modifier.weight(1f))
+            if (max > 0) KavIconButton(Icons.Rounded.Remove, T("One less", "אחד פחות"), { if (guests > 0) onChange(guests - 1) }, size = 40.dp)
             androidx.compose.animation.AnimatedContent(guests + 1, label = "passengers") { Text("$it", fontSize = 16.sp, color = K.text) }
-            if (max > 0) Chip("+", false) { if (guests < max) onChange(guests + 1) }
+            if (max > 0) KavIconButton(Icons.Rounded.Add, T("One more", "אחד יותר"), { if (guests < max) onChange(guests + 1) }, size = 40.dp)
         }
         if (guests > 0) Note(T("Occasional passengers pay full price, according to the Ministry of Transportation",
             "נוסעים מזדמנים משלמים מחיר מלא, בהתאם להנחיית משרד התחבורה"))
@@ -1911,11 +1930,11 @@ private fun PriceLine(q: RavPass.Quote?, chosen: Boolean, failed: String? = null
         else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
             Text(q?.km?.let { T("Up to $it km ride price", "מחיר לנסיעה עד $it ק\"מ") }
                 ?: if (chosen) T("Pricing…", "מחשבים מחיר…") else T("Choose your stop to see the price", "בחרו תחנה כדי לראות את המחיר"),
-                fontSize = 15.sp, color = K.muted, modifier = Modifier.weight(1f))
+                style = K.type.body, color = K.muted, modifier = Modifier.weight(1f))
             q?.total?.let { LtrText(it.text, 22.sp, K.text, FontWeight.Medium) }
         }
         Payer.settings?.pricesUrl?.let { url ->
-            Text(T("How is the price calculated?", "כיצד המחיר מחושב?"), fontSize = 13.sp, color = K.accent,
+            Text(T("How is the price calculated?", "כיצד המחיר מחושב?"), style = K.type.subhead, color = K.accentInk,
                 modifier = Modifier.clickable(role = Role.Button) { openLink(ctx, url) }.padding(vertical = K.gap1))
         }
     }
@@ -1924,12 +1943,13 @@ private fun PriceLine(q: RavPass.Quote?, chosen: Boolean, failed: String? = null
 @Composable
 private fun AddButton(text: String, detail: String? = null, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
-        modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(K.rPill)).panel(K.rPill)
+        modifier.fillMaxWidth().heightIn(min = 48.dp).clip(if (detail == null) K.capsule else RoundedCornerShape(K.rCard))
+            .background(K.fill)
             .clickable(enabled = !Payer.purchasing && !Payer.payingLater, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Column(Modifier.padding(horizontal = K.gap3, vertical = K.gap2), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(text, fontSize = 15.sp, color = K.accent, fontWeight = FontWeight.Medium)
+            Text(text, style = K.type.bodyStrong, color = K.accentInk)
             if (detail != null) Text(detail, fontSize = 12.sp, lineHeight = 16.sp, color = K.muted,
                 textAlign = TextAlign.Center, modifier = Modifier.padding(top = K.gap1))
         }
@@ -1942,10 +1962,10 @@ private fun PayDialog(
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().panel(K.rCard, solid = true).padding(K.gap5), verticalArrangement = Arrangement.spacedBy(K.gap4)) {
-            Text(title, fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(title, style = K.type.title)
             Note(text, color = K.muted)
             PayButton(yes, false, onClick = onYes)
-            Text(no, fontSize = 15.sp, color = K.muted,
+            Text(no, style = K.type.body, color = K.muted,
                 modifier = Modifier.align(Alignment.CenterHorizontally).clickable(role = Role.Button, onClick = onDismiss)
                     .padding(K.gap2))
         }
@@ -2008,11 +2028,11 @@ private fun TicketRow(t: RavPass.Ticket, now: Long, inset: Dp = K.gap4, onClick:
     ) {
         Canvas(Modifier.size(20.dp)) { drawQr() }
         Column(Modifier.weight(1f)) {
-            Text(ticketName(t) + if (t.guests > 0) "  ×${t.guests + 1}" else "", fontSize = 15.sp,
+            Text(ticketName(t) + if (t.guests > 0) "  ×${t.guests + 1}" else "", style = K.type.body,
                 color = if (valid) K.text else K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(T("Bought ", "נקנה ב-") + clockOf(t.boughtUtc), fontSize = 13.sp, color = K.dim)
+            Text(T("Bought ", "נקנה ב-") + clockOf(t.boughtUtc), style = K.type.subhead)
         }
-        Text(ticketStatus(t, now), fontSize = 13.sp, color = if (valid) good else K.dim, maxLines = 1)
+        Text(ticketStatus(t, now), style = K.type.subhead, color = if (valid) good else K.dim, maxLines = 1)
     }
 }
 
@@ -2033,9 +2053,6 @@ internal fun PayTicketsCard(model: KavModel) {
         live.forEachIndexed { i, t ->
             Box(Modifier.popIn(i, t.id)) { TicketRow(t, now) { Payer.showRef = t.id.toString(); model.payOpen = true } }
         }
-        Text(T("More", "עוד"), fontSize = 15.sp, color = K.accent,
-            modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { model.payHistoryOpen = true }
-                .padding(horizontal = K.gap4, vertical = K.gap3))
     }
 }
 
@@ -2085,15 +2102,15 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap1),
                         modifier = Modifier.padding(end = 26.dp).heightIn(min = 26.dp)) {
                         Canvas(Modifier.size(14.dp)) { drawQr() }
-                        Text(T("Bus", "אוטובוס") + " · " + T("Line ${p.line}", "קו ${p.line}"), fontSize = 13.sp, color = K.text,
+                        Text(T("Bus", "אוטובוס") + " · " + T("Line ${p.line}", "קו ${p.line}"), style = K.type.subhead, color = K.text,
                             fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Payer.laterError?.let {
-                        Text(it, fontSize = 11.sp, lineHeight = 13.sp, color = K.critical,
+                        Text(it, style = K.type.caption, color = K.critical,
                             maxLines = 4, overflow = TextOverflow.Ellipsis)
                     }
                     Box(
-                        Modifier.fillMaxWidth().heightIn(min = 36.dp).clip(RoundedCornerShape(K.rPill))
+                        Modifier.fillMaxWidth().heightIn(min = 36.dp).clip(K.capsule)
                             .background(if (Payer.payingLater) K.surface4 else K.accent)
                             .clickable(enabled = !Payer.payingLater, role = Role.Button) {
                                 Payer.payLater(ctx, { key, leg, journey -> TripService.notePaid(ctx, key, leg, journey) })
@@ -2101,16 +2118,16 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(if (Payer.payingLater) T("Paying…", "משלמים…")
-                            else T("PAY QUICK", "תשלום מהיר!"),
-                            fontSize = 13.sp, color = if (Payer.payingLater) K.muted else K.onAccent, fontWeight = FontWeight.Medium,
+                            else T("QUICK PAY", "תשלום מהיר!"),
+                            style = K.type.subhead, color = if (Payer.payingLater) K.muted else K.onAccent, fontWeight = FontWeight.Medium,
                             maxLines = 1)
                     }
                 }
                 Box(
-                    Modifier.align(Alignment.TopEnd).padding(4.dp).size(26.dp).clip(RoundedCornerShape(K.rPill))
+                    Modifier.align(Alignment.TopEnd).padding(4.dp).size(26.dp).clip(CircleShape)
                         .background(K.critical).clickable(enabled = !Payer.payingLater, role = Role.Button) { dropping = true },
                     contentAlignment = Alignment.Center,
-                ) { Text("✕", fontSize = 13.sp, color = Color.White, fontWeight = FontWeight.SemiBold) }
+                ) { Icon(Icons.Rounded.Close, contentDescription = T("Drop this ride", "ביטול הנסיעה"), tint = Color.White, modifier = Modifier.size(16.dp)) }
             } else if (paid != null) {
                 Column(
                     Modifier.fillMaxWidth().clickable(role = Role.Button) {
@@ -2119,9 +2136,9 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("✓", fontSize = 28.sp, color = good, fontWeight = FontWeight.SemiBold)
-                    Text(T("Paid", "שולם"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium)
-                    Text(T("Show ticket", "הצגת הכרטיס"), fontSize = 12.sp, color = K.accent)
+                    Icon(Icons.Rounded.Check, contentDescription = null, tint = good, modifier = Modifier.size(32.dp))
+                    Text(T("Paid", "שולם"), style = K.type.bodyStrong)
+                    Text(T("Show ticket", "הצגת הכרטיס"), fontSize = 12.sp, color = K.accentInk)
                 }
             }
         }
@@ -2132,10 +2149,20 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
 // for a bus, paid by its code); and the trip's own boarding station, sent by its own position.
 internal class PayFor(val leg: Int, val station: StationMode?, val at: Pair<Double, Double>?, val journey: String?)
 
+// The key a trip's tickets go by, the same before and after it starts.
+internal val Moovit.Itinerary.paymentKey get() = "$guid:$dep"
+
+// Tickets bought from a trip's own page, by trip and leg, so its ride shows them there and once the trip starts.
+// For as long as Kav runs; the tickets themselves are kept by Payer.
+internal object TripTickets {
+    val bought = androidx.compose.runtime.mutableStateMapOf<String, String>()
+}
+
 // A ride's own payment inside its trip's cards, paid the way its mode is: the code on board a bus; light rail, train and
-// Carmelit at the station. Once bought, its ticket, as on the home screen.
+// Carmelit at the station. Once bought, its ticket, as on the home screen. trip: the trip shown, when it isn't the one
+// under way.
 @Composable
-internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit.Resolved) {
+internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit.Resolved, trip: Moovit.Itinerary? = null) {
     val agency = r.line(ride.lineId)?.agencyId ?: -1
     val type = r.routeType(agency)
     val station = when {
@@ -2148,18 +2175,20 @@ internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit
         }
     }
     val board = r.stop(ride.fromStop) ?: r.stop(ride.stops.firstOrNull() ?: -1)
-    val key = model.activeJourney?.paid?.get(legIndex)
+    val journey = trip?.paymentKey ?: model.activeJourney?.paymentKey
+    val key = model.activeJourney?.takeIf { it.paymentKey == journey }?.paid?.get(legIndex)
+        ?: journey?.let { TripTickets.bought["$it/$legIndex"] }
     val now = rememberNow()
     val bought = key?.let { k -> Payer.tickets.firstOrNull { it.id.toString() == k } }
     LaunchedEffect(key) { if (key != null) runCatching { Payer.refresh() } }
     // Paying gets a card of its own under the ride's line.
     Spacer(Modifier.height(K.gap3))
-    Column(Modifier.fillMaxWidth().panel(K.rControl)) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.fill)) {
         if (bought != null) TicketRow(bought, now, inset = K.gap3) { Payer.showRef = bought.id.toString(); model.payOpen = true }
         if (bought == null || (!bought.valid(now) && !bought.needsExit)) Row(
             Modifier.fillMaxWidth()
                 .clickable(role = Role.Button) {
-                    model.payFor = PayFor(legIndex, station, if (station != null) board?.point else null, model.activeJourney?.paymentKey)
+                    model.payFor = PayFor(legIndex, station, if (station != null) board?.point else null, journey)
                     model.payOpen = true
                 }
                 // The title's font keeps room above its capitals, so half a dp less on top centres the text you see.
@@ -2174,10 +2203,10 @@ internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit
                     StationMode.TRAIN -> T("Pay at the train station", "תשלום בתחנת הרכבת")
                     StationMode.LIGHT_RAIL -> T("Pay at the light rail station", "תשלום בתחנת הרכבת הקלה")
                     StationMode.CARMELIT -> T("Pay at the Carmelit station", "תשלום בתחנת הכרמלית")
-                }, fontSize = 15.sp, color = K.accent, fontWeight = FontWeight.Medium)
+                }, style = K.type.bodyStrong)
                 Text(if (station == null) T("Scan the QR code on the bus", "סורקים את קוד ה-QR באוטובוס")
                     else board?.name ?: T("Kav finds the station you're at", "Kav מאתרת את התחנה שבה אתם נמצאים"),
-                    fontSize = 12.sp, color = K.dim)
+                    style = K.type.subhead)
             }
         }
     }
@@ -2229,8 +2258,8 @@ private fun StationList(m: StationMode, near: Pair<Double, Double>?, onPick: (Pa
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(K.gap3),
             ) {
-                Text(s.name, fontSize = 15.sp, color = K.text, modifier = Modifier.weight(1f))
-                s.metres?.let { LtrText(distanceLabel(it), 13.sp, K.dim) }
+                Text(s.name, style = K.type.body, modifier = Modifier.weight(1f))
+                s.metres?.let { LtrText(distanceLabel(it), 14.sp, K.dim) }
             }
         }
     }
@@ -2242,7 +2271,7 @@ private fun LinePicks(
     around: List<RavPass.Nearby>, found: List<RavPass.Nearby>?, query: String, onQuery: (String) -> Unit,
     onPick: (RavPass.Nearby) -> Unit,
 ) {
-    Text(T("Which line are you on?", "באיזה קו אתם?"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+    Text(T("Which line are you on?", "באיזה קו אתם?"), style = K.type.headline)
     KavField(query, onQuery, T("Line number", "מספר קו"), keyboard = KeyboardType.Number)
     val shown = if (query.isBlank()) around else found
     when {
@@ -2260,7 +2289,7 @@ private fun LinePicks(
                     LtrText(n.line, 17.sp, K.text, FontWeight.SemiBold)
                     Column(Modifier.weight(1f)) {
                         if (n.from.isNotBlank()) Text(n.from, fontSize = 14.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (n.to.isNotBlank()) Text("→ " + n.to, fontSize = 13.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (n.to.isNotBlank()) Text("→ " + n.to, style = K.type.subhead, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -2340,14 +2369,14 @@ private fun TicketView(t: RavPass.Ticket, onExit: () -> Unit, onAgain: () -> Uni
             color = K.muted)
         HorizontalPager(pager, Modifier.fillMaxWidth()) { i ->
             val code = t.codes.getOrNull(i)
-            if (valid && code != null) QrCode(code, Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl)))
-            else Box(Modifier.fillMaxWidth().heightIn(min = 120.dp).panel(K.rControl), contentAlignment = Alignment.Center) {
+            if (valid && code != null) QrCode(code, Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)))
+            else Box(Modifier.fillMaxWidth().heightIn(min = 120.dp).panel(K.rTile), contentAlignment = Alignment.Center) {
                 Text(T("This ticket is no longer valid", "הכרטיס הזה כבר לא בתוקף"), fontSize = 16.sp, color = K.dim)
             }
         }
         if (t.codes.size > 1) LtrText("${pager.currentPage + 1} / ${t.codes.size}", 14.sp, K.muted)
         if (t.utn.isNotBlank()) LtrText(t.utn, 14.sp, K.muted)
-        Text(ticketName(t), fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        Text(ticketName(t), style = K.type.title, textAlign = TextAlign.Center)
         Text(ticketStatus(t, now), fontSize = 16.sp, color = if (valid) good else K.dim, fontWeight = FontWeight.Medium)
         t.transferUntilUtc.takeIf { it > now }?.let { Note(T("Free transfers until ${clockOf(it)}", "מעברים ללא תשלום עד ${clockOf(it)}"), color = K.muted) }
         listOfNotNull(

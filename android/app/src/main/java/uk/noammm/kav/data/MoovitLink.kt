@@ -92,17 +92,23 @@ object MoovitLink {
         )
     }
 
+    private fun point(text: String): Pair<Double, Double>? {
+        val parts = text.split(',')
+        if (parts.size < 2) return null
+        val lat = parts[0].trim().toDoubleOrNull() ?: return null
+        val lon = parts[1].trim().toDoubleOrNull() ?: return null
+        if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return null
+        return (lat to lon).takeIf { lat != 0.0 || lon != 0.0 }
+    }
+
+    // A point typed or pasted as text, as maps copy it: "32.0853, 34.7818", or with a space for the comma.
+    fun coordinates(text: String): Pair<Double, Double>? =
+        Regex("^\\s*(-?\\d{1,2}\\.\\d+)\\s*[,\\s]\\s*(-?\\d{1,3}\\.\\d+)\\s*$").find(text)
+            ?.let { point("${it.groupValues[1]},${it.groupValues[2]}") }
+
     // geo: links (RFC 5870, plus Android's ?q=): a point, a point with "(label)", or a place name to search for.
     // Kav plans the way there from where you are, as apps like GeoShare expect of a navigation app.
     private fun geo(body: String): Plan? {
-        fun point(text: String): Pair<Double, Double>? {
-            val parts = text.split(',')
-            if (parts.size < 2) return null
-            val lat = parts[0].trim().toDoubleOrNull() ?: return null
-            val lon = parts[1].trim().toDoubleOrNull() ?: return null
-            if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return null
-            return (lat to lon).takeIf { lat != 0.0 || lon != 0.0 }
-        }
         val q = parameters(body.substringAfter('?', "").substringBefore('#'))["q"]?.trim().orEmpty()
         val labelled = Regex("^(-?[\\d.]+)\\s*,\\s*(-?[\\d.]+)\\s*(?:\\((.*)\\))?$").find(q)
         val at = labelled?.let { point("${it.groupValues[1]},${it.groupValues[2]}") }

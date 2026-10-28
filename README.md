@@ -39,10 +39,12 @@ you're on the way.
 - Live bus locations on the map, free. Moovit now charges for them in its own
   app (Moovit+), but in Kav they stay free. They come from Moovit unless you
   switch on Kav's own server ([server/](server)), which takes them straight from
-  the Ministry of Transport's real-time feed, often fresher than Moovit's. It
-  only learns the lines, stops or rough area you're looking at, through
-  Cloudflare, and keeps no logs. If it's ever down, Kav goes back to Moovit's
-  until it's up again.
+  the Ministry of Transport's real-time feed, often fresher than Moovit's. With
+  it on, you can also turn on Kav's own planner in Settings, which plans your
+  trips on the ministry's timetable with OpenTripPlanner instead of Moovit. It
+  only learns the lines, stops or rough area you're looking at and the start
+  and end of a trip you plan, through Cloudflare, and keeps no logs. If it's ever down, Kav goes
+  back to Moovit until it's up again.
 - A live screen with every stop around you and the buses reporting their
   position.
 - Departure boards for every station, and a page for every line with its route
@@ -70,12 +72,12 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-2.7.apk --repo ImNoammm/kav
+gh attestation verify kav-3.0.apk --repo ImNoammm/kav
 ```
 
 First launch fetches the map, about 176 MB once. It lives on the phone from then
 on, so the map works offline and no tile server sees where you look. The
-satellite and terrain maps you can pick in Settings load online.
+satellite map you can pick in Settings loads online.
 
 ## Building it
 
@@ -95,19 +97,24 @@ tools/fetch.sh
 KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
 ```
 
-A build of your own gets its live buses from Moovit: Kav's server only answers
-the APKs from Releases.
+A build of your own gets its live buses from Moovit, or from a server of your own
+(below): Kav's server only answers the APKs from Releases.
+
+## Running your own server
+
+Coming soon: everything Kav's server does, on a machine of your own.
 
 ## Credits
 
 - Map data © OpenStreetMap contributors, from the Protomaps build, drawn with
-  MapLibre. Satellite photos from Esri, hill shading from Mapzen's terrain tiles
-  on AWS.
+  MapLibre. Satellite photos from Esri.
 - The liquid glass shaders come from Kyant0's
   [AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache
   License 2.0).
 - Timetables, and live buses when Kav's server is on, from the Israel Ministry
-  of Transport. Trip plans, and live buses otherwise, from Moovit.
+  of Transport. With Kav's own planner on, trips are planned on that timetable
+  and OpenStreetMap by [OpenTripPlanner](https://github.com/opentripplanner/OpenTripPlanner);
+  otherwise trip plans come from Moovit, and live buses too with the server off.
 - Places and exact addresses from Google Maps' public web search, asked the way
   a logged-out browser asks it: no key, no account, no cookies. It gets the typed
   text and the area above. The request recipe is
@@ -118,6 +125,13 @@ the APKs from Releases.
   ignored. See [recipe/README.md](recipe/README.md).
 - Addresses Google doesn't have from GovMap, the Survey of Israel's map, sent
   just the typed text.
+- Street View from Google, shown inside Kav only when you open it on a stop.
+  Google then sees that spot and your IP address, and its viewer keeps no
+  cookies.
+- Train times between two stations from Israel Railways' own timetable, asked
+  only when you open that card. It learns the two stations and the day.
+- The operator colours come from [@szaionz](https://github.com/szaionz)'s
+  route_colors branch.
 - Thanks to the amazing team at [HTTP Toolkit](https://httptoolkit.com), who
   kindly gave Kav a free Pro licence. It's what Kav uses to study how Moovit's
   app talks to its servers.

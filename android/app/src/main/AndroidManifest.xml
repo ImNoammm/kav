@@ -33,6 +33,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
 
+    <!-- Line alerts you set wake Kav at their times; a restart drops the phone's alarms,
+         so Kav sets them again once it's back up. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <!-- Deliberately NOT declared, and why each one is refused:
            ADVERTISING_ID            - there is no advertising
            ACCESS_BACKGROUND_LOCATION- nothing tracks you between sessions
@@ -165,6 +169,18 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="ongoing transit trip status" />
         </service>
+
+        <!-- line alerts: their alarm, and the restart, update or new clock that sets it again -->
+        <receiver
+            android:name=".LineAlertReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <!-- the downloaded update, readable by the installer and nobody else -->
         <provider

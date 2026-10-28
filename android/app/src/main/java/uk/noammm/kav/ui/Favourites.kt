@@ -31,7 +31,6 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -39,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import uk.noammm.kav.data.Moovit
 import kotlin.math.roundToInt
+import androidx.compose.ui.graphics.Color
 
 class Favourite(val id: String, val name: String, val icon: String, val place: Moovit.Place?) {
     fun copy(name: String = this.name, icon: String = this.icon, place: Moovit.Place? = this.place) =
@@ -163,7 +163,7 @@ fun FavouriteStrip(
                             scaleX = lift
                             scaleY = lift
                         }
-                        .clip(RoundedCornerShape(K.rControl))
+                        .clip(RoundedCornerShape(K.rTile))
                         .then(
                             if (!inEdit) Modifier
                             else Modifier.pointerInput(favourites, dir) {
@@ -205,16 +205,16 @@ fun FavouriteStrip(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Box(
-                            Modifier.size(46.dp).clip(RoundedCornerShape(14.dp))
-                                .background(if (set) K.accent.copy(alpha = .16f) else K.surface1.copy(alpha = .62f))
+                            Modifier.size(48.dp).clip(RoundedCornerShape(K.rTile))
+                                .background(if (set) K.fill else Color.Transparent)
                                 .border(
-                                    if (set || lifted) 1.dp else 0.5.dp,
-                                    if (lifted) K.accent else if (set) K.accent.copy(alpha = .5f) else K.text.copy(alpha = .14f),
-                                    RoundedCornerShape(14.dp),
+                                    if (lifted) 1.5.dp else 1.dp,
+                                    if (lifted) K.accent else if (set) Color.Transparent else K.separator,
+                                    RoundedCornerShape(K.rTile),
                                 ),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(favouriteIcon(f.icon), contentDescription = null, tint = if (set) K.accent else K.muted, modifier = Modifier.size(24.dp))
+                            Icon(favouriteIcon(f.icon), contentDescription = null, tint = if (set) K.text else K.textTertiary, modifier = Modifier.size(24.dp))
                         }
                         androidx.compose.animation.AnimatedVisibility(
                             visible = inEdit && removable,
@@ -225,7 +225,7 @@ fun FavouriteStrip(
                             exit = scaleOut(tween(140), targetScale = .5f) + fadeOut(tween(120)),
                         ) {
                             Box(
-                                Modifier.size(24.dp).clip(RoundedCornerShape(999.dp)).background(K.critical)
+                                Modifier.size(24.dp).clip(K.capsule).background(K.critical)
                                     .clickable(
                                         role = Role.Button,
                                         onClickLabel = T("Remove ${f.label}", "הסרת ${f.label}"),
@@ -236,8 +236,12 @@ fun FavouriteStrip(
                             }
                         }
                     }
-                    Spacer(Modifier.height(5.dp))
-                    Text(f.label, fontSize = 12.sp, color = if (set) K.text else K.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(K.gap1))
+                    // Letters differ in width and the system font may be large, so a name a little too wide for the tile
+                    // (a six-letter הרצליה where יהודית fits) shrinks to fit before it is cut.
+                    var labelSize by remember(f.label) { mutableStateOf(12.sp) }
+                    Text(f.label, style = K.type.caption, fontSize = labelSize, color = if (set) K.text else K.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        softWrap = false, onTextLayout = { if (it.didOverflowWidth && labelSize > 9.sp) labelSize *= 0.9f })
                 }
             }
             if (manage) EditControls(
@@ -259,7 +263,7 @@ fun FavouriteStrip(
         ) {
             Text(
                 T("Drag to reorder, tap to edit", "גררו לסידור, הקישו לעריכה"),
-                fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = K.type.caption, color = K.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = horizontalPadding),
             )
         }
@@ -309,7 +313,7 @@ private fun EditControls(editing: Boolean, onToggle: () -> Unit, onAdd: () -> Un
 private fun PlaceLine(f: Favourite, onChange: () -> Unit) {
     val p = f.place
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).panel(K.rControl)
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).panel(K.rTile)
             .clickable(
                 role = Role.Button,
                 onClickLabel = T("Change where ${f.label} is", "שינוי המיקום של ${f.label}"),
@@ -330,7 +334,7 @@ private fun PlaceLine(f: Favourite, onChange: () -> Unit) {
                 Text(it, fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        Text(T("Change", "שינוי"), fontSize = 13.sp, color = K.accent)
+        Text(T("Change", "שינוי"), style = K.type.subhead, color = K.accentInk)
     }
 }
 
@@ -345,25 +349,20 @@ private fun StripTile(
     iconModifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val fill by animateColorAsState(
-        if (on) K.accent.copy(alpha = .16f) else K.surface1.copy(alpha = .62f), tween(220), label = "tileFill",
-    )
-    val edge by animateColorAsState(if (on) K.accent else K.text.copy(alpha = .14f), tween(220), label = "tileEdge")
-    val ink by animateColorAsState(if (on) K.accent else K.muted, tween(220), label = "tileInk")
+    val fill by animateColorAsState(if (on) K.accent else K.fill, tween(220), label = "tileFill")
+    val ink by animateColorAsState(if (on) K.onAccent else K.textSecondary, tween(220), label = "tileInk")
     Column(
-        modifier.width(72.dp).clip(RoundedCornerShape(K.rControl))
+        modifier.width(72.dp).clip(RoundedCornerShape(K.rTile))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(vertical = K.gap2),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
-            Modifier.size(46.dp).clip(RoundedCornerShape(14.dp))
-                .background(fill)
-                .border(if (on) 1.dp else 0.5.dp, edge, RoundedCornerShape(14.dp)),
+            Modifier.size(48.dp).clip(RoundedCornerShape(K.rTile)).background(fill),
             contentAlignment = Alignment.Center,
         ) { Icon(icon, contentDescription = description, tint = ink, modifier = iconModifier.size(24.dp)) }
-        Spacer(Modifier.height(5.dp))
-        Text(label, fontSize = 12.sp, color = ink)
+        Spacer(Modifier.height(K.gap1))
+        Text(label, style = K.type.caption, color = K.textSecondary)
     }
 }
 
@@ -384,7 +383,7 @@ fun FavouriteEditor(
         ) {
             Text(
                 if (existing == null) T("New favourite", "מועדף חדש") else existing.label,
-                fontSize = 18.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+                style = K.type.title,
             )
             if (existing?.id != Favourite.HOME) KavField(name, { name = it }, T("Name", "שם"), autoFocus = existing == null)
             if (existing != null && onChangePlace != null) PlaceLine(existing, onChangePlace)
@@ -395,36 +394,27 @@ fun FavouriteEditor(
                 items(FavouriteIcons, key = { it.first }) { (key, vector) ->
                     val on = key == icon
                     Box(
-                        Modifier.size(52.dp).clip(RoundedCornerShape(14.dp))
+                        Modifier.size(52.dp).clip(RoundedCornerShape(K.rTile))
                             .background(if (on) K.accent.copy(alpha = .18f) else K.plate)
-                            .border(1.dp, if (on) K.accent else K.border, RoundedCornerShape(14.dp))
+                            .border(1.dp, if (on) K.accent else K.border, RoundedCornerShape(K.rTile))
                             .clickable(role = Role.RadioButton) { icon = key },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(vector, contentDescription = key, tint = if (on) K.accent else K.muted, modifier = Modifier.size(26.dp))
+                        Icon(vector, contentDescription = key, tint = if (on) K.accentInk else K.muted, modifier = Modifier.size(26.dp))
                     }
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                if (onRemove != null) Box(
-                    Modifier.heightIn(min = 44.dp).panel(K.rPill)
-                        .clickable(role = Role.Button, onClick = onRemove).padding(horizontal = K.gap4),
-                    contentAlignment = Alignment.Center,
-                ) { Text(T("Remove", "הסרה"), fontSize = 14.sp, color = K.critical) }
+                if (onRemove != null) {
+                    KavButton(T("Remove", "הסרה"), onRemove, Modifier.heightIn(min = 52.dp), style = ButtonStyle.Destructive)
+                }
                 Spacer(Modifier.weight(1f))
-                Box(
-                    Modifier.heightIn(min = 44.dp).panel(K.rPill)
-                        .clickable(role = Role.Button, onClick = onDismiss).padding(horizontal = K.gap4),
-                    contentAlignment = Alignment.Center,
-                ) { Text(T("Cancel", "ביטול"), fontSize = 14.sp, color = K.text) }
+                KavButton(T("Cancel", "ביטול"), onDismiss, Modifier.heightIn(min = 52.dp), style = ButtonStyle.Secondary)
                 val ready = name.isNotBlank() || existing?.id == Favourite.HOME
-                Box(
-                    Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(K.rPill))
-                        .background(if (ready) K.accent else K.surface4)
-                        .clickable(enabled = ready, role = Role.Button) { onSave(name.trim().ifBlank { existing?.name ?: "" }, icon) }
-                        .padding(horizontal = K.gap4),
-                    contentAlignment = Alignment.Center,
-                ) { Text(if (existing == null) T("Next", "הבא") else T("Save", "שמירה"), fontSize = 14.sp, color = if (ready) K.onAccent else K.muted, fontWeight = FontWeight.Medium) }
+                KavButton(
+                    if (existing == null) T("Next", "הבא") else T("Save", "שמירה"),
+                    { onSave(name.trim().ifBlank { existing?.name ?: "" }, icon) }, enabled = ready,
+                )
             }
         }
     }

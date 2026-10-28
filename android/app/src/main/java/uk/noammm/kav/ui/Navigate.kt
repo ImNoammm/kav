@@ -17,9 +17,19 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.rounded.ArrowBackIos
+import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material3.Icon
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
@@ -33,7 +43,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
@@ -53,7 +62,12 @@ import kotlinx.coroutines.launch
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.shownName
 import java.util.Date
+import kotlin.math.roundToInt
+import androidx.compose.material.icons.rounded.OutlinedFlag
+import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.unit.Constraints
 
 private val hm get() = clockFormat()
 
@@ -64,6 +78,8 @@ internal sealed class Step {
     class Walk(
         val leg: Moovit.Leg, val toStop: Int, val toRide: Moovit.Leg?,
         override val focus: List<Pair<Double, Double>>,
+        // The wait before that ride and the ride's leg, for the option the rider chose there.
+        val toWait: Moovit.Leg? = null, val toLeg: Int = -1,
     ) : Step()
     class Wait(
         val ride: Moovit.Leg, val wait: Moovit.Leg?, val legIndex: Int,
@@ -77,7 +93,11 @@ internal sealed class Step {
     ) : Step()
     class Taxi(val leg: Moovit.Leg, override val focus: List<Pair<Double, Double>>) : Step()
     class Cycle(val leg: Moovit.Leg, override val focus: List<Pair<Double, Double>>) : Step()
-    class Arrive(val label: String, val time: Long, override val focus: List<Pair<Double, Double>>) : Step()
+    class Arrive(
+        val label: String, val time: Long, override val focus: List<Pair<Double, Double>>,
+        // The walk the trip ends with, when it does: the way the place is seen in Street View.
+        val walk: List<Pair<Double, Double>> = emptyList(),
+    ) : Step()
 }
 
 internal fun buildSteps(trip: Moovit.Itinerary, fromLabel: String, toLabel: String): List<Step> {
@@ -101,9 +121,10 @@ internal fun buildSteps(trip: Moovit.Itinerary, fromLabel: String, toLabel: Stri
                     fromStop = l.fromStop, toStop = all[j - 1].toStop,
                     meters = metres, shape = all.subList(i, j).flatMap { it.shape },
                 )
-                val boards = all.drop(j).firstOrNull { it.kind != Moovit.LegKind.WAIT }
-                    ?.takeIf { it.kind == Moovit.LegKind.RIDE }
-                out.add(Step.Walk(merged, merged.toStop, boards, merged.shape.ifEmpty { whole }))
+                val k = (j until all.size).firstOrNull { all[it].kind != Moovit.LegKind.WAIT }
+                    ?.takeIf { all[it].kind == Moovit.LegKind.RIDE }
+                out.add(Step.Walk(merged, merged.toStop, k?.let { all[it] }, merged.shape.ifEmpty { whole },
+                    k?.let { all.getOrNull(it - 1)?.takeIf { w -> w.kind == Moovit.LegKind.WAIT } }, k ?: -1))
             }
             Moovit.LegKind.RIDE -> {
                 val wait = all.getOrNull(i - 1)?.takeIf { it.kind == Moovit.LegKind.WAIT }
@@ -121,9 +142,19 @@ internal fun buildSteps(trip: Moovit.Itinerary, fromLabel: String, toLabel: Stri
             else -> {}
         }
     }
-    out.add(Step.Arrive(toLabel, trip.arr, all.lastOrNull { it.shape.isNotEmpty() }?.shape ?: whole))
+    out.add(Step.Arrive(toLabel, trip.arr, all.lastOrNull { it.shape.isNotEmpty() }?.shape ?: whole,
+        all.takeLastWhile { it.kind == Moovit.LegKind.WALK }.flatMap { it.shape }))
     return out
 }
+
+// A boarding option's outline: the chosen line stands out (white on the dark looks, the strong grey on the light one)
+// and the rest stay muted. K.border is white on the dark looks, so it can't be the muted one there.
+internal fun choiceOutline(picked: Boolean): Color =
+    if (picked) K.accentInk else K.borderStrong
+
+// The option a stored choice means: that one while the leg still offers it, else the first (a refreshed plan can offer
+// fewer lines). The card's outline and the planned ride both go by it, so they never disagree.
+internal fun boardingIndex(pick: Int, count: Int): Int = if (pick in 0 until count) pick else 0
 
 internal fun boardingChoice(
     ride: Moovit.Leg,
@@ -131,7 +162,7 @@ internal fun boardingChoice(
     pick: Int,
 ): Pair<Moovit.Leg, Moovit.Leg?> {
     val options = Moovit.boardingOptions(ride, wait)
-    return options.getOrNull(pick) ?: options.first()
+    return options[boardingIndex(pick, options.size)]
 }
 
 internal fun chosenLegs(trip: Moovit.Itinerary, chosen: Map<Int, Int>): List<Moovit.Leg> =
@@ -155,7 +186,7 @@ internal fun tripArrival(
 @Composable
 fun StartButton(onClick: () -> Unit) {
     Row(
-        Modifier.clip(RoundedCornerShape(999.dp)).background(K.live)
+        Modifier.clip(K.capsule).background(K.live)
             .clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -222,7 +253,8 @@ fun NavigateScreen(
                 following = following, tapped = tappedBus, onTap = { tappedBus = it },
                 Modifier.fillMaxSize().glassBackdrop(liquid),
                 contentPadding = if (compact) PaddingValues(top = 96.dp, end = panelWidth, bottom = bottomInset + 12.dp)
-                    else PaddingValues(top = 138.dp, bottom = cardHeight + 88.dp + bottomInset))
+                    else PaddingValues(top = 138.dp, bottom = cardHeight + 88.dp + bottomInset),
+                attribution = compact)
 
             Column(Modifier.align(Alignment.TopStart)
                 .then(if (compact) Modifier.width(maxWidth - panelWidth) else Modifier.fillMaxWidth())) {
@@ -231,30 +263,18 @@ fun NavigateScreen(
                         .padding(K.gap2),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(
-                        Modifier.size(48.dp).clip(RoundedCornerShape(24.dp))
-                            .semantics { contentDescription = T("Back to home", "חזרה לבית") }
-                            .clickable(role = Role.Button, onClick = onExit),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(T.backward, fontSize = 28.sp, color = K.text)
-                    }
+                    KavIconButton(Icons.AutoMirrored.Rounded.ArrowBackIos, T("Back to home", "חזרה לבית"), onExit,
+                        tint = K.text)
                     Column(Modifier.weight(1f)) {
                         val riding = (steps.getOrNull(currentStep) as? Step.Ride)
                             ?.let { boardingChoice(it.ride, it.wait, chosen[it.legIndex] ?: 0).first }
                         val arrive = tripArrival(trip, r, chosen, riding, fix, now)
-                        Text(T("Your trip", "הנסיעה שלכם"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                        Text(T("Trip", "נסיעה"), style = K.type.headline)
                         Text("${dur((arrive - now).toInt().coerceAtLeast(0))} · ${hm.format(Date(arrive * 1000))}",
-                            fontSize = 12.sp, color = K.muted, maxLines = 1)
+                            style = K.type.subhead.tabular, maxLines = 1)
                     }
-                    Box(
-                        Modifier.size(48.dp).clip(RoundedCornerShape(24.dp))
-                            .semantics { contentDescription = T("Show trip plan", "הצגת המסלול") }
-                            .clickable(role = Role.Button, onClick = onPlan),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        PlanGlyph()
-                    }
+                    KavIconButton(Icons.AutoMirrored.Rounded.FormatListBulleted, T("Show trip plan", "הצגת המסלול"), onPlan,
+                        tint = K.text)
                 }
                 if (!compact) StepStrip(pager.currentPage, steps.size, currentStep) { target ->
                     scope.launch { pager.animateScrollToPage(target) }
@@ -271,6 +291,10 @@ fun NavigateScreen(
                         scope.launch { pager.animateScrollToPage(target) }
                     }
                     Spacer(Modifier.height(K.gap2))
+                } else {
+                    // The map's credit sits in the right corner just above the card, whatever the card's height or the
+                    // language's direction.
+                    MapAttribution(Modifier.align(AbsoluteAlignment.Right).absolutePadding(right = K.gap3 + 6.dp, bottom = 3.dp))
                 }
                 androidx.compose.animation.AnimatedContent(
                     targetState = bus,
@@ -304,22 +328,19 @@ fun NavigateScreen(
                             steps[page], r, active = page == currentStep, now = now,
                             chosen = chosen, fix = fix,
                             onChoose = ::choose,
-                            pay = { leg, ride -> TripPay(model, leg, ride, r) },
+                            pay = if (Shown.payments) { leg, ride -> TripPay(model, leg, ride, r) } else null,
                             report = { model.report = it },
                         )
                     }
                 }
                 Row(
-                    Modifier.fillMaxWidth().padding(K.gap3).glassSurface()
-                        .padding(horizontal = K.gap3, vertical = K.gap2),
-                    verticalAlignment = Alignment.CenterVertically,
+                    Modifier.padding(K.gap3).fillMaxWidth().heightIn(min = 52.dp).glassSurface(K.rCard)
+                        .clickable(role = Role.Button, onClick = onStop),
+                    horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(T("End trip", "סיום נסיעה"), fontSize = 14.sp, color = K.text,
-                        modifier = Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(K.rControl))
-                            .clickable(role = Role.Button, onClick = onStop)
-                            .padding(horizontal = K.gap3, vertical = K.gap3))
-                    Spacer(Modifier.weight(1f))
-                    Text(T.ltr("${pager.currentPage + 1} / ${steps.size}"), fontSize = 12.sp, color = K.dim)
+                    Icon(Icons.Rounded.Close, contentDescription = null, tint = K.critical, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(K.gap2))
+                    Text(T("End trip", "סיום נסיעה"), style = K.type.bodyStrong, color = K.critical)
                 }
                 }
                 }
@@ -335,15 +356,15 @@ internal fun CurrentStepButton(page: Int, current: Int, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(bottom = K.gap2),
         horizontalArrangement = if (back) Arrangement.Start else Arrangement.End) {
         Row(
-            Modifier.glassSurface(K.rControl).heightIn(min = 44.dp)
+            Modifier.heightIn(min = 44.dp).glassSurface(22.dp)
                 .clickable(role = Role.Button, onClick = onClick)
                 .padding(horizontal = K.gap3, vertical = K.gap2),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(K.gap2),
         ) {
-            if (back) Text(T.backward, color = K.text, fontSize = 22.sp)
-            Text(T("Current step", "השלב הנוכחי"), color = K.text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            if (!back) Text(T.onward, color = K.text, fontSize = 22.sp)
+            if (back) Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, contentDescription = null, tint = K.text, modifier = Modifier.size(20.dp))
+            Text(T("Current step", "השלב הנוכחי"), style = K.type.subhead, color = K.text, fontWeight = FontWeight.Medium)
+            if (!back) Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = K.text, modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -351,8 +372,8 @@ internal fun CurrentStepButton(page: Int, current: Int, onClick: () -> Unit) {
 @Composable
 private fun StepStrip(current: Int, count: Int, live: Int, goTo: (Int) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = K.gap3).glassSurface(K.rControl)
-            .height(48.dp).padding(horizontal = K.gap2),
+        Modifier.fillMaxWidth().padding(horizontal = K.gap3).height(48.dp).glassSurface(24.dp)
+            .padding(horizontal = K.gap1),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Arrow(back = true, enabled = current > 0) { goTo(current - 1) }
@@ -369,8 +390,7 @@ private fun StepStrip(current: Int, count: Int, live: Int, goTo: (Int) -> Unit) 
                         .clickable(role = Role.Button) { goTo(i) },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Box(Modifier.size(if (on) 7.dp else 5.dp).clip(RoundedCornerShape(999.dp))
-                        .background(if (i == live) K.accent else if (on) K.text else K.surface4))
+                    StepDot(looked = on, now = i == live)
                 }
             }
         }
@@ -378,22 +398,26 @@ private fun StepStrip(current: Int, count: Int, live: Int, goTo: (Int) -> Unit) 
     }
 }
 
+// A step's dot: wider for the step looked at, the accent for the step the rider is on.
+@Composable
+internal fun StepDot(looked: Boolean, now: Boolean) {
+    val width by animateDpAsState(if (looked) 16.dp else 6.dp, spring(dampingRatio = 1f, stiffness = 500f), label = "dot")
+    Box(Modifier.padding(horizontal = 3.dp).size(width, 6.dp).clip(K.capsule)
+        .background(if (now) K.accent else if (looked) K.text else K.fillStrong))
+}
+
 @Composable
 private fun Arrow(back: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    val tint = if (enabled) K.text else K.surface4
     Box(
-        Modifier.size(44.dp).clip(RoundedCornerShape(999.dp))
+        Modifier.size(44.dp).clip(CircleShape)
             .semantics { contentDescription = if (back) T("Previous step", "שלב קודם") else T("Next step", "שלב הבא") }
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.size(14.dp)) {
-            val w = size.width; val h = size.height
-            val x1 = mirrorX(if (back) .64f else .38f)
-            val x2 = mirrorX(if (back) .34f else .68f)
-            drawLine(tint, Offset(w * x1, h * .18f), Offset(w * x2, h * .5f), w * .13f, StrokeCap.Round)
-            drawLine(tint, Offset(w * x2, h * .5f), Offset(w * x1, h * .82f), w * .13f, StrokeCap.Round)
-        }
+        Icon(
+            if (back) Icons.AutoMirrored.Rounded.KeyboardArrowLeft else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null, tint = if (enabled) K.text else K.textTertiary, modifier = Modifier.size(24.dp),
+        )
     }
 }
 
@@ -413,13 +437,18 @@ internal fun StepCard(
 ) {
     when (step) {
         is Step.Start -> Card(T("Start from", "התחלה מ-"), active) {
-            Text(step.label, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(step.label, style = K.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(T("Leave at ${hm.format(Date(step.time * 1000))}", "יציאה בשעה ${hm.format(Date(step.time * 1000))}"), fontSize = 12.sp, color = K.dim)
         }
 
         is Step.Arrive -> Card(T("Arrive", "הגעה"), active) {
-            Text(step.label, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(hm.format(Date(step.time * 1000)), fontSize = 12.sp, color = K.dim)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+                Column(Modifier.weight(1f)) {
+                    Text(step.label, style = K.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(hm.format(Date(step.time * 1000)), style = K.type.subhead.tabular)
+                }
+                lookAhead(step.walk)?.let { StreetViewButton(it, step.label) }
+            }
         }
 
         is Step.Walk -> {
@@ -432,26 +461,28 @@ internal fun StepCard(
                 StopLine(
                     stop?.name ?: T("your stop", "התחנה שלכם"), stop?.code,
                     step.toRide?.let { legMode(it, r) },
-                    platform = step.toRide?.let { r.platform(it) }.orEmpty(),
+                    // The chosen line's platform, from the plan's departures too, as the wait and trip details show it.
+                    platform = step.toRide?.let { boardingChoice(it, step.toWait, chosen[step.toLeg] ?: 0) }
+                        ?.let { (ride, wait) -> r.platform(ride, wait) }.orEmpty(),
                     stopId = step.toStop,
-                    streetView = stop?.point?.takeIf { step.toRide != null },
+                    streetView = step.toRide?.let { ride -> stop?.point?.let { lookAt(it, ride, r) } },
                 )
             }
         }
 
-        is Step.Taxi -> Card(T("Take a taxi", "נסיעה במונית"), active, trailing = T("${step.leg.minutes} min", "${step.leg.minutes} דק׳")) {
-            Text(T("Continue with Gett", "המשיכו עם Gett"), fontSize = 15.sp, color = K.text)
+        is Step.Taxi -> Card(T("Take a taxi", "נסיעה במונית"), active, trailing = durMinutes(step.leg.minutes)) {
+            Text(T("Continue with Gett", "המשיכו עם Gett"), style = K.type.body)
             Spacer(Modifier.height(K.gap2))
             GettButton(step.leg)
         }
 
-        is Step.Cycle -> Card(T("Cycle ${step.leg.minutes} min", "אופניים ${step.leg.minutes} דק׳"), active) {
-            Text(T("Follow the route to your next stop", "המשיכו במסלול אל התחנה הבאה"), fontSize = 15.sp, color = K.text)
+        is Step.Cycle -> Card(cycleLabel(step.leg), active) {
+            Text(T("Follow the route to your next stop", "המשיכו במסלול אל התחנה הבאה"), style = K.type.body)
         }
 
         is Step.Wait -> {
             val options = Moovit.boardingOptions(step.ride, step.wait)
-            val pick = (chosen[step.legIndex] ?: 0).coerceIn(0, options.lastIndex)
+            val pick = boardingIndex(chosen[step.legIndex] ?: 0, options.size)
             Card(if (options.size > 1) T("Select a line", "בחרו קו") else T("Wait for", "המתנה ל-"), active) {
                 options.forEachIndexed { index, (ride, wait) ->
                     if (index > 0) Spacer(Modifier.height(K.gap2))
@@ -460,13 +491,9 @@ internal fun StepCard(
                         Modifier.fillMaxWidth()
                             .then(
                                 if (options.size > 1) Modifier
-                                    .clip(RoundedCornerShape(K.rControl))
+                                    .clip(RoundedCornerShape(K.rTile))
                                     .background(if (picked) K.plate else Color.Transparent)
-                                    .border(
-                                        1.dp,
-                                        if (picked) K.borderStrong else K.border,
-                                        RoundedCornerShape(K.rControl),
-                                    )
+                                    .border(1.dp, choiceOutline(picked), RoundedCornerShape(K.rTile))
                                     .semantics { selected = picked }
                                     .clickable(role = Role.RadioButton) {
                                         onChoose(step.legIndex, index)
@@ -508,30 +535,21 @@ internal fun StepCard(
             val header = when {
                 active && progress >= 1f && left <= 1 -> T("Get off at the next stop", "רדו בתחנה הבאה")
                 active && progress >= 1f -> T("Get off in $left stops", "ירידה בעוד $left תחנות")
-                stops.size > 1 -> T("Ride ${stops.size - 1} stops to", "נסיעה ${stops.size - 1} תחנות אל")
+                stops.size > 1 -> T("Ride ", "נסיעה ") + T.count(stops.size - 1, "1 stop", "תחנה אחת", "stops", "תחנות") + T(" to", " אל")
                 else -> T("Ride to", "נסיעה אל")
             }
             val scroll = rememberScrollState()
             var railTop by remember { mutableIntStateOf(0) }
-            Card(header, active, trailing = T("$mins min", "$mins דק׳"), scroll = scroll) {
-                StopLine(alight?.name ?: T("your stop", "התחנה שלכם"), alight?.code, legMode(ride, r), stopId = ride.toStop)
-                // Changing trains there: whether the next one leaves from the platform this one comes in at.
-                step.change?.let { boardingChoice(it.ride, it.wait, chosen[it.legIndex] ?: 0) }?.let { (next, nextWait) ->
-                    val code = (r.stop(next.fromStop) ?: Moovit.knownStop(next.fromStop))?.code
-                    val there = next.fromStop == ride.toStop || !code.isNullOrBlank() && code == alight?.code
-                    val inAt = if (there && r.isTrain(ride) && r.isTrain(next)) r.alightPlatform(ride) else ""
-                    val out = if (inAt.isNotBlank()) r.platform(next, nextWait) else ""
-                    if (out.isNotBlank()) Text(
-                        if (inAt == out) T("Your next train leaves from the same platform", "הרכבת הבאה יוצאת מאותו רציף")
-                        else T("You arrive on platform $inAt · your next train leaves from platform $out",
-                            "מגיעים לרציף $inAt · הרכבת הבאה יוצאת מרציף $out"),
-                        fontSize = 13.sp, color = K.muted, modifier = Modifier.padding(top = K.gap1),
-                    )
+            Card(header, active, trailing = durMinutes(mins.toInt()), scroll = scroll) {
+                StopLine(alight?.name ?: T("your stop", "התחנה שלכם"), alight?.code, legMode(ride, r), stopId = ride.toStop,
+                    streetView = alight?.point?.let { lookAt(it, ride, r) })
+                platformChange(step, ride, r, chosen)?.let {
+                    Text(it, style = K.type.subhead, modifier = Modifier.padding(top = K.gap1))
                 }
                 Spacer(Modifier.height(K.gap2))
-                LineRow(ride, r)
-                if (report != null) rideReport(ride, r, busOn(ride, r, trip), now)?.let {
-                    ReportLink(T("Report a problem on this ride", "דיווח על בעיה בנסיעה הזו")) { report(it) }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+                    Box(Modifier.weight(1f)) { LineRow(ride, r) }
+                    if (report != null) rideReport(ride, r, busOn(ride, r, trip), now)?.let { ReportButton { report(it) } }
                 }
                 // Above the stops, so a long ride's payment is in sight without scrolling.
                 pay?.invoke(step.legIndex, ride)
@@ -559,40 +577,57 @@ internal fun StepCard(
 @Composable
 private fun StopLine(
     name: String, code: String?, mode: Mode?, platform: String = "", stopId: Int = -1,
-    streetView: Pair<Double, Double>? = null,
+    streetView: StreetLook? = null,
 ) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-        if (mode != null || stopId > 0) {
-            StopGlyphOrPhoto(stopId, mode)
-            Spacer(Modifier.width(K.gap2))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        val lines: @Composable () -> Unit = {
+            Column {
+                Text(name, style = K.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (!code.isNullOrBlank()) Text(T("Stop ", "תחנה ") + code, fontSize = 12.sp, color = K.dim)
+            }
         }
-        Column(Modifier.weight(1f)) {
-            Text(name, fontSize = 15.sp, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (!code.isNullOrBlank()) Text(T("Stop ", "תחנה ") + code, fontSize = 12.sp, color = K.dim)
+        if (mode != null || stopId > 0) MarkedLines(stopId, mode, lines, Modifier.weight(1f)) {
+            if (platform.isNotBlank()) PlatformTag(platform)
+        } else Column(Modifier.weight(1f)) {
+            lines()
             if (platform.isNotBlank()) {
                 Spacer(Modifier.height(K.gap1))
                 PlatformTag(platform)
             }
-            if (streetView != null) StreetViewLink(streetView)
+        }
+        if (streetView != null) {
+            Spacer(Modifier.width(K.gap2))
+            StreetViewButton(streetView, name)
         }
     }
 }
 
+// A stop's mark beside its name and number: exactly as tall as those two lines together and centred on them, whatever
+// the name's length or the font size. below: the platform, under the lines, not counted in the mark's height.
 @Composable
-private fun PlanGlyph() {
-    Canvas(Modifier.size(18.dp)) {
-        val w = size.width; val h = size.height; val sw = w * .09f
-        val x = w * .18f
-        drawLine(K.text, Offset(x, h * .18f), Offset(x, h * .82f), sw, StrokeCap.Round)
-        listOf(.18f, .50f, .82f).forEach { y ->
-            drawCircle(K.text, w * .13f, Offset(x, h * y))
-            drawLine(K.text, Offset(w * .42f, h * y), Offset(w * .88f, h * y), sw, StrokeCap.Round)
+private fun MarkedLines(
+    stopId: Int, mode: Mode?, lines: @Composable () -> Unit, modifier: Modifier = Modifier, below: @Composable () -> Unit,
+) {
+    SubcomposeLayout(modifier) { c ->
+        val gap = K.gap3.roundToPx()
+        fun measureLines(mark: Int, key: String) = subcompose(key, lines).first()
+            .measure(Constraints(maxWidth = (c.maxWidth - mark - gap).coerceAtLeast(0)))
+        // Measured once with a guess at the mark, then again with room for the mark it really gets.
+        val first = measureLines(40.dp.roundToPx(), "guess")
+        val text = measureLines(first.height, "lines")
+        val size = text.height
+        val mark = subcompose("mark") { StopGlyphOrPhoto(stopId, mode, thumb = size.toDp(), mark = size.toDp()) }
+            .map { it.measure(Constraints.fixed(size, size)) }
+        val under = subcompose("below", below).map { it.measure(Constraints(maxWidth = (c.maxWidth - size - gap).coerceAtLeast(0))) }
+        val underHeight = under.maxOfOrNull { it.height }?.takeIf { it > 0 }?.let { it + K.gap1.roundToPx() } ?: 0
+        layout(c.maxWidth, size + underHeight) {
+            mark.forEach { it.placeRelative(0, 0) }
+            text.placeRelative(size + gap, 0)
+            under.forEach { it.placeRelative(size + gap, size + K.gap1.roundToPx()) }
         }
     }
 }
 
-// Each stop ahead shows its time from `times`, green when it's live; without times, arriveUtc is the last stop's (0 for
-// none). `follow` gets where the row of the stop last passed starts, each time the bus passes another.
 @Composable
 internal fun StopRail(
     stops: List<Int>,
@@ -648,7 +683,7 @@ internal fun StopRail(
                     Spacer(Modifier.width(20.dp + K.gap2))
                     Text(
                         names[id]?.name ?: "…",
-                        fontSize = 13.sp,
+                        style = K.type.subhead,
                         color = if (done) K.dim else K.text,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(vertical = 3.dp),
@@ -673,11 +708,11 @@ private fun LineRow(ride: Moovit.Leg, r: Moovit.Resolved) {
     val info = r.line(ride.lineId)
     val agency = info?.agencyId ?: -1
     val rt = if (info != null) r.routeType(agency) else 3
-    val plate = plateFor(rt, agency)
+    val plate = linePlate(rt, agency) { Operators.of(r, agency) }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(
-            Modifier.width(IntrinsicSize.Min).clip(RoundedCornerShape(7.dp)).background(plate?.fill ?: K.plate)
-                .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(7.dp)),
+            Modifier.width(IntrinsicSize.Min).clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.plate)
+                .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),
         ) {
             Row(
                 Modifier.padding(start = 6.dp, end = 8.dp, top = 3.dp, bottom = 2.dp),
@@ -694,8 +729,8 @@ private fun LineRow(ride: Moovit.Leg, r: Moovit.Resolved) {
         }
         Spacer(Modifier.width(K.gap3))
         Text(
-            info?.destination?.ifBlank { null }?.let { T("to $it", "לכיוון $it") } ?: "",
-            fontSize = 13.sp, color = K.muted, maxLines = 2,
+            info?.destination?.ifBlank { null }?.let { T("to ${shownName(it)}", "לכיוון ${shownName(it)}") } ?: "",
+            style = K.type.subhead, maxLines = 2,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
         )
     }
@@ -718,11 +753,11 @@ private fun Card(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                header, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                header, style = K.type.subhead, fontWeight = FontWeight.Medium,
                 color = if (active) K.live else K.text, modifier = Modifier.weight(1f),
             )
             if (trailing != null) Text(
-                trailing, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                trailing, style = K.type.subhead, fontWeight = FontWeight.Medium,
                 color = if (active) K.live else K.muted,
             )
         }
@@ -784,6 +819,7 @@ private fun NavigateMap(
     onTap: (Long?) -> Unit = {},
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
+    attribution: Boolean = true,
 ) {
     val picked = chosenLegs(trip, chosen)
     val legs = picked.filter { it.shape.size >= 2 }
@@ -907,7 +943,7 @@ private fun NavigateMap(
         TileMap(framedPoints, modifier, focusKey = step to chosenRide?.tripId,
             fitMaxZoom = if (step is Step.Walk || step is Step.Arrive) 18.4f else Geo.MAX_Z.toFloat(),
             recenterOn = here, contentPadding = contentPadding, follow = follow,
-            geometry = geometry, live = live,
+            geometry = geometry, live = live, attribution = attribution,
             onTap = { at, proj ->
                 onTap(vehicles.map { it to (proj.point(it.lat, it.lon) - at).getDistance() }
                     .filter { it.second <= reach }.minByOrNull { it.second }?.first?.tripId
@@ -930,17 +966,12 @@ private fun VehicleCard(
         val number = leg.shortName.ifBlank { line?.number.orEmpty() }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                listOfNotNull(number.ifBlank { null }, line?.destination?.ifBlank { null }?.let { T("to $it", "אל $it") })
+                listOfNotNull(number.ifBlank { null }, line?.destination?.ifBlank { null }?.let { T("to ${shownName(it)}", "אל ${shownName(it)}") })
                     .joinToString(" · "),
                 fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Box(
-                Modifier.size(44.dp).clip(RoundedCornerShape(K.rControl))
-                    .semantics { contentDescription = T("Close", "סגירה") }
-                    .clickable(role = Role.Button, onClick = onClose),
-                contentAlignment = Alignment.Center,
-            ) { Text("✕", fontSize = 16.sp, color = K.muted) }
+            KavIconButton(Icons.Rounded.Close, T("Close", "סגירה"), onClose, size = 36.dp)
         }
         val (headline, tint) = when {
             a.vehicleStatus == 3 -> T("Not departed yet", "טרם יצא") to K.dim
@@ -950,40 +981,98 @@ private fun VehicleCard(
         Text(headline, fontSize = 14.sp, color = tint)
         if (a.sampleUtc > 0) Text(
             updatedLabel(a),
-            fontSize = 13.sp, color = K.dim,
+            style = K.type.subhead,
         )
         val eta = a.rtUtc.takeIf { it > 0 } ?: a.staticUtc
         r.stopName(a.stopId)?.takeIf { it.isNotBlank() && eta > 0 }?.let {
             // Marked and coloured like the search results' departures.
             val d = a.departure()
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(T("At $it: ", "ב$it: "), fontSize = 13.sp, color = K.muted)
+                Text(T("At $it: ", "ב$it: "), style = K.type.subhead)
                 DepMarkGlyph(d, 12.dp); Spacer(Modifier.width(4.dp))
-                Text(whenLabel(eta, now), fontSize = 13.sp, color = depColour(d), fontWeight = FontWeight.SemiBold)
+                Text(whenLabel(eta, now), style = K.type.subhead, color = depColour(d), fontWeight = FontWeight.SemiBold)
             }
         }
-        if (a.platform.isNotBlank()) Text(T("Platform ${a.platform}", "רציף ${a.platform}"), fontSize = 13.sp, color = K.muted)
-        KavLive.plateOf(a.vehicleId)?.let { Text(T("Number plate $it", "מספר רישוי $it"), fontSize = 13.sp, color = K.muted) }
+        if (a.platform.isNotBlank()) Text(T("Platform ${a.platform}", "רציף ${a.platform}"), style = K.type.subhead)
+        KavLive.plateOf(a.vehicleId)?.let { Text(T("Number plate $it", "מספר רישוי $it"), style = K.type.subhead) }
         rideReport(leg, r, a, now)?.let { report ->
-            Text(T("Report this bus", "דיווח על האוטובוס הזה"), fontSize = 14.sp, color = K.accent,
+            Text(T("Report this bus", "דיווח על האוטובוס הזה"), fontSize = 14.sp, color = K.accentInk,
                 modifier = Modifier.clickable(role = Role.Button) { onReport(report) }.padding(vertical = K.gap1))
         }
     }
 }
 
+// Street View of a stop or place: a small round button at the end of its name, with Street View's own figure.
 @Composable
-private fun ReportLink(text: String, onClick: () -> Unit) {
-    Text(text, fontSize = 13.sp, color = K.accent,
-        modifier = Modifier.padding(top = K.gap1).clickable(role = Role.Button, onClick = onClick).padding(vertical = K.gap1))
+internal fun StreetViewButton(look: StreetLook, name: String) {
+    Box(
+        Modifier.size(36.dp).clip(CircleShape).background(K.fill)
+            .semantics { contentDescription = T("See $name in Street View", "צפייה ב-$name ב-Street View") }
+            .clickable(role = Role.Button) { StreetViewer.open = StopLook(look, name) },
+        contentAlignment = Alignment.Center,
+    ) { Canvas(Modifier.size(18.dp)) { streetGlyph(K.textSecondary) } }
 }
 
-// A look at a stop in Street View, for one that's hidden or has no sign. Only when tapped: Google learns the spot.
+// Reporting a problem on a ride to the ministry: a flag at the end of the ride's line.
 @Composable
-internal fun StreetViewLink(at: Pair<Double, Double>) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    Text(T("Street View", "Street View"), fontSize = 13.sp, color = K.accent,
-        modifier = Modifier.padding(top = K.gap1).clickable(role = Role.Button) { openStreetView(ctx, at.first, at.second) }
-            .padding(vertical = K.gap1))
+internal fun ReportButton(onClick: () -> Unit) =
+    KavIconButton(Icons.Rounded.OutlinedFlag, T("Report a problem on this ride", "דיווח על בעיה בנסיעה הזו"), onClick, size = 36.dp)
+
+// Changing trains where the ride ends: whether the next one leaves from the platform this one comes in at. The next
+// train's platform whenever it is known, as the trip's details show it; the one this train comes in at only comes with
+// the live times where the rider gets off, often not yet. Null when it isn't a change of trains there, or the next
+// one's platform isn't known.
+internal fun platformChange(step: Step.Ride, ride: Moovit.Leg, r: Moovit.Resolved, chosen: Map<Int, Int>): String? {
+    val (next, nextWait) = step.change?.let { boardingChoice(it.ride, it.wait, chosen[it.legIndex] ?: 0) } ?: return null
+    val code = (r.stop(next.fromStop) ?: Moovit.knownStop(next.fromStop))?.code
+    val alight = (r.stop(ride.toStop) ?: Moovit.knownStop(ride.toStop))?.code
+    val there = next.fromStop == ride.toStop || !code.isNullOrBlank() && code == alight
+    val out = if (there && r.isTrain(ride) && r.isTrain(next)) r.platform(next, nextWait) else ""
+    if (out.isBlank()) return null
+    val inAt = r.alightPlatform(ride)
+    return when {
+        inAt.isBlank() -> T("Your next train leaves from platform $out", "הרכבת הבאה יוצאת מרציף $out")
+        inAt == out -> T("Your next train leaves from the same platform", "הרכבת הבאה יוצאת מאותו רציף")
+        else -> T("You arrive on platform $inAt · your next train leaves from platform $out",
+            "מגיעים לרציף $inAt · הרכבת הבאה יוצאת מרציף $out")
+    }
+}
+
+// Where Street View stands and which way it looks, in degrees clockwise from north; without a heading Google picks one,
+// which tends to be down the road. target: what it looks at, so a panorama Google took a few metres off still faces it.
+internal class StreetLook(
+    val at: Pair<Double, Double>, val heading: Int? = null, val target: Pair<Double, Double>? = at.takeIf { heading == null },
+)
+
+// How far from the middle of the road a stop on it has its kerb, roughly.
+private const val KERB_M = 6.0
+
+// A stop as seen from the road its line takes: from the road's nearest point, facing the stop. One the road runs right
+// over is on its right, where traffic drives here. Without the road, the stop itself, facing wherever Google likes.
+internal fun lookAt(stop: Pair<Double, Double>, road: List<Pair<Double, Double>>): StreetLook {
+    if (road.size < 2) return StreetLook(stop)
+    val at = onRoute(stop, road)
+    if (metres(at.first, at.second, stop.first, stop.second) >= 3) {
+        return StreetLook(at, Math.floorMod(bearing(at.first, at.second, stop.first, stop.second).roundToInt(), 360), stop)
+    }
+    val heading = bearingAlong(at.first, at.second, road)?.plus(90f) ?: return StreetLook(stop)
+    return StreetLook(at, Math.floorMod(heading.roundToInt(), 360), offsetBy(stop, heading, KERB_M))
+}
+
+// A stop of a ride, seen from the road the ride takes. A train's line, or a cable car's, is no road to stand on: the
+// station itself then.
+internal fun lookAt(stop: Pair<Double, Double>, ride: Moovit.Leg, r: Moovit.Resolved): StreetLook =
+    lookAt(stop, if (legMode(ride, r) in OFF_ROAD) emptyList() else ride.shape)
+
+private val OFF_ROAD = setOf(Mode.SUBWAY, Mode.TRAIN, Mode.FERRY, Mode.CABLE, Mode.GONDOLA, Mode.FUNICULAR)
+
+// A place at the end of a walk, seen from the walk a little before it, facing it.
+internal fun lookAhead(walk: List<Pair<Double, Double>>): StreetLook? {
+    val to = walk.lastOrNull() ?: return null
+    if (walk.size < 2) return StreetLook(to)
+    val stand = pointAlong(walk, pathLength(walk) - 20) ?: return StreetLook(to)
+    if (metres(stand.first, stand.second, to.first, to.second) < 3) return StreetLook(to)
+    return StreetLook(stand, Math.floorMod(bearing(stand.first, stand.second, to.first, to.second).roundToInt(), 360), to)
 }
 
 internal fun rideStopPoints(legs: List<Moovit.Leg>, stops: Map<Int, Moovit.StopInfo>): List<Pair<Int, Pair<Double, Double>>> =

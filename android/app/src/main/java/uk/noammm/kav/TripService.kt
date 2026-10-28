@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import uk.noammm.kav.data.JourneyFile
+import uk.noammm.kav.data.RavPass
 import uk.noammm.kav.ui.Fix
 import uk.noammm.kav.ui.Payer
 import uk.noammm.kav.ui.T
@@ -158,12 +159,21 @@ class TripService : Service() {
         val now = System.currentTimeMillis() / 1000
         val due = listOfNotNull(
             tripAlert(journey, step, latest, now),
-            transferAlert(journey, step, Payer.transferUntil(now * 1000)?.div(1000), now),
+            busTicket(journey, now * 1000).let { (ticket, leg) -> transferAlert(journey, step, ticket?.transferUntilUtc?.div(1000), now, leg) },
         ).firstOrNull { it.key !in fired } ?: return
         fired.add(due.key)
         sent.edit().clear().putString(trip, fired.joinToString(",")).apply()
         alert(this, due.title, due.text)
-        if (Prefs.spokenAlerts(this)) Speaker.say(this, due.spoken)
+        if (Prefs.spokenAlerts(this) && Speaker.mayTalk(this)) Speaker.say(this, due.spoken)
+    }
+
+    // This trip's ticket whose free transfer lasts longest, with the leg it paid for: one bought from the trip's own cards,
+    // else one bought since the trip set out (from the home screen, say). Not a train's, and not an earlier trip's.
+    private fun busTicket(journey: ActiveJourney, nowMs: Long): Pair<RavPass.Ticket?, Int?> {
+        val bus = Payer.tickets.filter { it.agencyCode != RavPass.RAILWAYS && it.transferUntilUtc > nowMs }
+        val legOf = journey.paid.entries.associate { (leg, key) -> key to leg }
+        bus.filter { it.id.toString() in legOf }.maxByOrNull { it.transferUntilUtc }?.let { return it to legOf[it.id.toString()] }
+        return bus.filter { it.boughtUtc >= (journey.trip.dep - 1_800) * 1000 }.maxByOrNull { it.transferUntilUtc } to null
     }
 
     private fun advance() {
@@ -184,13 +194,13 @@ class TripService : Service() {
         val latest = listOfNotNull(fix, TripBridge.fixNow?.invoke()).maxByOrNull { it.at }
         return tripNotice(journey, step, latest, System.currentTimeMillis() / 1000, Prefs.accent(this))?.copy(pay = when {
             Payer.payingLater -> T("Paying…", "משלמים…")
-            Payer.pending != null -> T("PAY QUICK", "תשלום מהיר!")
+            Payer.pending != null -> T("QUICK PAY", "תשלום מהיר!")
             Payer.paidLater != null -> T("Paid", "שולם")
             else -> null
         })
     }
 
-    // "PAY QUICK": the bus ride kept with Asshole mode is bought. A failure comes as an alert with HopOn's reason; "Paid"
+    // "QUICK PAY": the bus ride kept with Asshole mode is bought. A failure comes as an alert with HopOn's reason; "Paid"
     // stays on the button for a few seconds, as on the app's square.
     private fun pay() {
         Payer.payLater(this, { key, leg, journey -> notePaid(this, key, leg, journey) }) {

@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.R
 import uk.noammm.kav.data.Updates
+import androidx.compose.runtime.LaunchedEffect
 
 @Composable
 fun UpdatePrompt(model: KavModel) {
@@ -39,21 +40,17 @@ fun UpdatePrompt(model: KavModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
                 AppIcon(56.dp)
                 Column {
-                    Text("Kav", fontSize = 20.sp, color = K.text, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        T.ltr("${Updates.installedVersion(ctx)} → ${release.version}"),
-                        fontSize = 15.sp, color = K.accent, fontWeight = FontWeight.Medium,
-                    )
+                    Text("Kav", style = K.type.title)
+                    Text(T.ltr("${Updates.installedVersion(ctx)} → ${release.version}"), style = K.type.subhead.tabular)
                 }
             }
             ReleaseNotes(release, maxHeight = 260.dp)
             UpdateProgress(model)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                Box(
-                    Modifier.weight(1f).heightIn(min = 46.dp).panel(K.rPill)
-                        .clickable(role = Role.Button) { model.updateDismissed = true },
-                    contentAlignment = Alignment.Center,
-                ) { Text(T("No", "לא"), fontSize = 15.sp, color = K.text) }
+                KavButton(
+                    T("Later", "אחר כך"), { model.updateDismissed = true }, Modifier.weight(1f).heightIn(min = 52.dp),
+                    style = ButtonStyle.Secondary,
+                )
                 UpdateButton(model, Modifier.weight(1f)) { model.startUpdate(ctx) }
             }
         }
@@ -77,11 +74,10 @@ private fun AppIcon(size: androidx.compose.ui.unit.Dp) {
 @Composable
 private fun ReleaseNotes(release: Updates.Release, maxHeight: androidx.compose.ui.unit.Dp) {
     val notes = release.notes.trim().ifBlank { release.name.ifBlank { T("No release notes.", "אין הערות גרסה.") } }
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).border(0.5.dp, K.text.copy(alpha = .14f), RoundedCornerShape(14.dp))
-            .heightIn(max = maxHeight).verticalScroll(rememberScrollState()).padding(K.gap3),
-    ) {
-        Text(notes, fontSize = 13.sp, color = K.muted, lineHeight = 19.sp)
+    Column(Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState())) {
+        Separator(0.dp)
+        Spacer(Modifier.height(K.gap3))
+        Text(notes, style = K.type.subhead)
     }
 }
 
@@ -89,7 +85,7 @@ private fun ReleaseNotes(release: Updates.Release, maxHeight: androidx.compose.u
 private fun UpdateProgress(model: KavModel) {
     model.updateProgress?.let { p ->
         Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-            Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)).background(K.surface4)) {
+            Box(Modifier.fillMaxWidth().height(6.dp).clip(K.capsule).background(K.surface4)) {
                 Box(Modifier.fillMaxWidth(p.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
             }
             Text(
@@ -105,17 +101,7 @@ private fun UpdateProgress(model: KavModel) {
 @Composable
 private fun UpdateButton(model: KavModel, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val busy = model.updateProgress != null
-    Box(
-        modifier.heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill))
-            .background(if (busy) K.surface4 else K.accent)
-            .clickable(enabled = !busy, role = Role.Button, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            if (busy) T("Updating…", "מעדכנים…") else T("Update", "עדכון"), fontSize = 15.sp,
-            color = if (busy) K.muted else K.onAccent, fontWeight = FontWeight.Medium,
-        )
-    }
+    KavButton(if (busy) T("Updating…", "מעדכנים…") else T("Update", "עדכון"), onClick, modifier, busy = busy)
 }
 
 @Composable
@@ -124,15 +110,22 @@ fun UpdateSection(model: KavModel) {
     val scope = rememberCoroutineScope()
     val release = model.update
     var checking by remember { mutableStateOf(false) }
+    // The notes of the version in hand, from the same release list the update check reads, when it's the newest.
+    var installedNotes by remember { mutableStateOf<Updates.Release?>(null) }
+    LaunchedEffect(release) {
+        if (release != null) return@LaunchedEffect
+        installedNotes = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Updates.latest() } }.getOrNull()
+            ?.takeIf { it.version.removePrefix("v") == Updates.installedVersion(ctx).removePrefix("v") }
+    }
     Column(
-        Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(14.dp)
-            .padding(K.gap3),
+        Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard)
+            .padding(K.gap4),
         verticalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
             AppIcon(40.dp)
             Column(Modifier.weight(1f)) {
-                Text(T.ltr("Kav ${Updates.installedVersion(ctx)}"), fontSize = 14.sp, color = K.text)
+                Text(T.ltr("Kav ${Updates.installedVersion(ctx)}"), style = K.type.headline)
                 Text(
                     when {
                         release != null -> T("${release.version} is available", "גרסה ${release.version} זמינה")
@@ -141,20 +134,20 @@ fun UpdateSection(model: KavModel) {
                         model.updateChecked -> T("This is the newest release", "זו הגרסה העדכנית ביותר")
                         else -> T("Not checked yet", "עוד לא נבדק")
                     },
-                    fontSize = 12.sp, color = if (release != null) K.accent else K.dim,
+                    style = K.type.subhead, color = if (release != null) K.accentInk else K.textSecondary,
                 )
             }
             if (release != null) UpdateButton(model) { model.startUpdate(ctx) }
-            else Chip(if (checking) T("Checking…", "בודקים…") else T("Check for updates", "בדקו עדכונים"), false) {
-                if (checking) return@Chip
+            else KavButton(if (checking) T("Checking…", "בודקים…") else T("Check for updates", "בדקו עדכונים"), {
+                if (checking) return@KavButton
                 scope.launch {
                     checking = true
                     model.checkForUpdate(ctx)
                     checking = false
                 }
-            }
+            }, style = ButtonStyle.Secondary)
         }
-        if (release != null) ReleaseNotes(release, maxHeight = 200.dp)
+        (release ?: installedNotes)?.let { ReleaseNotes(it, maxHeight = 240.dp) }
         UpdateProgress(model)
     }
 }

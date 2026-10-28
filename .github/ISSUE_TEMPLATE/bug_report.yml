@@ -1,0 +1,66 @@
+name: Bug report / דיווח על באג
+description: Something in Kav doesn't work the way it should. / משהו ב-Kav לא עובד כמו שצריך.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting it. Write in English or Hebrew, whichever you like.
+        Opened from Kav, the version, Android, phone and setup at the bottom are already filled in.
+
+        תודה על הדיווח. אפשר לכתוב באנגלית או בעברית, מה שנוח לכם.
+        אם פתחתם את הטופס מתוך Kav, הגרסה, ה-Android, הטלפון וההגדרות למטה כבר מולאו.
+  - type: textarea
+    id: what
+    attributes:
+      label: What went wrong? / מה השתבש?
+      description: What you saw, and what you expected instead. / מה ראיתם, ומה ציפיתם לראות במקום.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to see it happen / איך לראות את זה קורה
+      description: >-
+        The steps, and the line, stop, station or trip it happened on, with the day and time: timetables and live
+        times change, so the time helps a lot.
+        / הצעדים, והקו, התחנה או הנסיעה שבהם זה קרה, עם היום והשעה: לוחות הזמנים והזמנים בזמן אמת משתנים, אז השעה
+        עוזרת מאוד.
+      placeholder: |
+        1. Planned a trip from Haifa Merkaz to Tel Aviv Savidor, leaving at 08:30 on Sunday
+        2. Opened the second route
+        3. ...
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or a screen recording / צילומי מסך או הקלטת מסך
+      description: >-
+        Drag them in here. Check they show nothing you'd rather keep to yourself, like your home on the map.
+        / גררו אותם לכאן. בדקו שלא רואים בהם משהו שתעדיפו לשמור לעצמכם, כמו הבית שלכם על המפה.
+  - type: input
+    id: version
+    attributes:
+      label: Kav version / גרסת Kav
+      description: Settings, under Updates. / בהגדרות, תחת עדכונים.
+      placeholder: "2.7"
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version / גרסת Android
+      placeholder: "16"
+  - type: input
+    id: device
+    attributes:
+      label: Phone / טלפון
+      placeholder: Google Pixel 8
+  - type: input
+    id: setup
+    attributes:
+      label: Kav's setup / ההגדרות של Kav
+      description: >-
+        Where live times and planned trips come from, and Kav's languages. Never a server's address.
+        / מאיפה מגיעים הזמנים בזמן אמת והמסלולים, והשפות של Kav. אף פעם לא כתובת של שרת.
+      placeholder: "Live: Kav's server. Trips: Kav's planner. Language: English, stop names in English."

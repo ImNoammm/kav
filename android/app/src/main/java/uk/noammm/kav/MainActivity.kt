@@ -1,5 +1,8 @@
 package uk.noammm.kav
 
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.animation.animateColorAsState
 import android.Manifest
 import android.app.PictureInPictureParams
 import android.content.Context
@@ -26,7 +29,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -46,7 +48,6 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Dp
@@ -80,21 +81,27 @@ import kotlinx.coroutines.withTimeoutOrNull
 import uk.noammm.kav.data.Backup
 import uk.noammm.kav.data.JourneyFile
 import uk.noammm.kav.data.KavLive
+import uk.noammm.kav.data.KavPlan
+import uk.noammm.kav.data.LineAlert
 import uk.noammm.kav.data.MapFile
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.MoovitLink
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.RecentRoutes
+import uk.noammm.kav.data.StopNames
 import uk.noammm.kav.data.nearestStops
+import uk.noammm.kav.data.stopOfKey
 import uk.noammm.kav.data.Updates
 import uk.noammm.kav.ui.*
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 
 enum class Tab {
     Directions, Stations, Lines, Live;
 
     val label: String get() = when (this) {
         Directions -> T("Home", "בית")
-        Stations -> T("Stations", "תחנות")
+        Stations -> T("Stops", "תחנות")
         Lines -> T("Lines", "קווים")
         Live -> T("Live", "בזמן אמת")
     }
@@ -114,10 +121,17 @@ object Loaded {
 object Pip {
     var active by mutableStateOf(false)
     var wanted by mutableStateOf(false)
+    // The rider's setting: navigation goes on in a small window when Kav is left, or doesn't.
+    var allowed by mutableStateOf(true)
 }
 
 object PendingLink {
     var plan by mutableStateOf<MoovitLink.Plan?>(null)
+}
+
+// A line alert's stop, opened on the Stations tab when the alert is tapped.
+object PendingStop {
+    var key by mutableStateOf<String?>(null)
 }
 
 object PendingBackup {
@@ -133,21 +147,30 @@ object PendingBackup {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Openings.count++
         enableEdgeToEdge()
         Prefs.upgrade(this)
         K.accent = Color(Prefs.accent(this))
         K.applyTheme(Prefs.look(this))
         K.liquid = Prefs.liquidGlass(this)
         Shown.co2 = Prefs.showCo2(this)
+        Shown.payments = Prefs.showPayments(this)
+        Pip.allowed = Prefs.pipNavigation(this)
+        StopPhotos.chosen = Prefs.moovitPhotos(this)
         Shown.twelveHour = Prefs.twelveHour(this)
         Moovit.shareLocation = !Prefs.privateSearch(this)
         KavLive.chosen = Prefs.liveFromKav(this)
+        KavLive.server = Prefs.kavServer(this)
+        KavLive.key = Prefs.kavServerKey(this)
+        StopNames.english = Prefs.stopNamesEnglish(this)
+        KavPlan.chosen = Prefs.planWithKav(this)
         MapFile.type = Prefs.mapType(this)
         MapFile.init(this)
         StopPhotos.init(this)
         Online.init(this)
+        KavPlan.init(this)
         Payer.init(this)
-        // The trip notification's PAY QUICK button follows the ride kept with Asshole mode.
+        // The trip notification's QUICK PAY button follows the ride kept with Asshole mode.
         lifecycleScope.launch {
             snapshotFlow { Triple(Payer.pending, Payer.payingLater, Payer.paidLater) }.collect { TripService.repost() }
         }
@@ -160,6 +183,9 @@ class MainActivity : ComponentActivity() {
         if (fresh && !PendingBackup.offer(this, intent?.data)) {
             MoovitLink.parse(intent?.dataString)?.let { PendingLink.plan = it }
         }
+        if (fresh) intent?.getStringExtra(LineAlerts.EXTRA_STOP)?.let { PendingStop.key = it }
+        // A force stop drops the line alerts' alarm.
+        LineAlerts.reschedule(this)
         setContent {
             val light = K.light
             val bg = K.bg
@@ -186,6 +212,12 @@ class MainActivity : ComponentActivity() {
         runCatching { setPictureInPictureParams(builder.build()) }
     }
 
+    // Back to the front from another app: an opening too (Home's "Where to?" types itself once per opening).
+    override fun onRestart() {
+        super.onRestart()
+        Openings.count++
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (Pip.wanted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
@@ -196,6 +228,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        intent.getStringExtra(LineAlerts.EXTRA_STOP)?.let { PendingStop.key = it; return }
         if (PendingBackup.offer(this, intent.data)) return
         MoovitLink.parse(intent.dataString)?.let { PendingLink.plan = it }
     }
@@ -210,7 +243,7 @@ data class ActiveJourney(
     // Per ride leg, the key of the ticket bought for it from its card.
     val paid: Map<Int, String> = emptyMap(),
 ) {
-    val paymentKey get() = "${trip.guid}:${trip.dep}"
+    val paymentKey get() = trip.paymentKey
 }
 
 // A search that found routes, like Moovit's Recent Journeys. The routes themselves are in RecentRoutes.
@@ -223,9 +256,6 @@ data class RecentTrip(
 
 // What Moovit is told about where the user is while private search is on.
 enum class Seen { NONE, CITY, PLACE }
-
-// Who plans trips: Moovit, or an OpenTripPlanner server of the user's choosing.
-enum class RoutingSource { MOOVIT, OPEN_TRIP_PLANNER }
 
 class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     var net by mutableStateOf(net)
@@ -260,6 +290,17 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         Prefs.saveFavourites(ctx, list)
     }
 
+    var savedStops by mutableStateOf(ctx?.let { Prefs.savedStops(it) } ?: emptyList())
+    fun saveStops(ctx: Context, keys: List<String>) { savedStops = keys; Prefs.setSavedStops(ctx, keys) }
+    var savedLines by mutableStateOf(ctx?.let { Prefs.savedLines(it) } ?: emptyList())
+    fun saveLines(ctx: Context, keys: List<String>) { savedLines = keys; Prefs.setSavedLines(ctx, keys) }
+    var lineAlerts by mutableStateOf(ctx?.let { Prefs.lineAlerts(it) } ?: emptyList())
+    fun saveAlerts(ctx: Context, alerts: List<LineAlert>) {
+        lineAlerts = alerts
+        Prefs.setLineAlerts(ctx, alerts)
+        LineAlerts.reschedule(ctx)
+    }
+
     var stationStop by mutableIntStateOf(-1)
     var lineRoute by mutableIntStateOf(-1)
     // The stop to open on the line shown, when it was opened from a trip.
@@ -290,18 +331,28 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     fun reloadPrefs(ctx: Context) {
         prefsVersion++
         favourites = Prefs.favourites(ctx)
+        savedStops = Prefs.savedStops(ctx)
+        savedLines = Prefs.savedLines(ctx)
+        lineAlerts = Prefs.lineAlerts(ctx)
+        LineAlerts.reschedule(ctx)
         filters = Prefs.filters(ctx)
         K.accent = Color(Prefs.accent(ctx))
         K.applyTheme(Prefs.look(ctx))
         K.liquid = Prefs.liquidGlass(ctx)
         Shown.co2 = Prefs.showCo2(ctx)
+        Shown.payments = Prefs.showPayments(ctx)
+        Pip.allowed = Prefs.pipNavigation(ctx)
+        StopPhotos.chosen = Prefs.moovitPhotos(ctx)
         Shown.twelveHour = Prefs.twelveHour(ctx)
         Moovit.shareLocation = !Prefs.privateSearch(ctx)
         KavLive.chosen = Prefs.liveFromKav(ctx)
+        KavLive.server = Prefs.kavServer(ctx)
+        KavLive.key = Prefs.kavServerKey(ctx)
+        StopNames.english = Prefs.stopNamesEnglish(ctx)
+        KavPlan.chosen = Prefs.planWithKav(ctx)
         MapFile.type = Prefs.mapType(ctx)
         seen = Prefs.seen(ctx)
         seenPlace = Prefs.seenPlace(ctx)
-        Online.applyRouting(ctx)
         Online.reset()
         T.switchTo(Prefs.lang(ctx))
     }
@@ -433,7 +484,9 @@ private val netLoadMutex = Mutex()
 suspend fun loadNet(ctx: Context): Net = withContext(Dispatchers.Default) {
     netLoadMutex.withLock {
         Loaded.net ?: run {
-            val n = ctx.assets.open("il.kav").use { Net.read(it) }
+            // The seven days from today from Kav's server when there's a copy, else the week Kav shipped with.
+            val n = runCatching { uk.noammm.kav.data.Timetable.load(ctx) }.getOrNull()
+                ?: ctx.assets.open("il.kav").use { Net.read(it) }
             Loaded.store(n)
             n
         }
@@ -451,17 +504,21 @@ private fun Root() {
         return
     }
     LaunchedEffect(model) { if (!model.updateChecked) model.checkForUpdate(app) }
-    // Kav's recipe and Vela's: fixes for Moovit or Google that need no update.
+    // Kav's recipe and Vela's: fixes for Moovit or Google that need no update. And the timetable for the seven days from
+    // today, taken in at the next start.
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             runCatching { uk.noammm.kav.data.KavRecipe.refresh(app) }
             runCatching { uk.noammm.kav.data.GoogleRecipe.refresh(app) }
+            runCatching { uk.noammm.kav.data.Timetable.refresh(app) }
         }
     }
     // Kav's server tells a bus on its way by the trip the timetable has it on, so the timetable loads with it.
     LaunchedEffect(KavLive.enabled) { if (KavLive.enabled) runCatching { loadNet(app) } }
     // Kav's server chosen but not answering: Moovit's live data meanwhile, said once when the app opens, and the
-    // server's again as soon as it answers. Without internet it isn't the server, and nothing changes.
+    // server's again as soon as it answers. Without internet it isn't the server, and nothing changes. The ministry can
+    // also stop answering the server about stations while its snapshot is fine: those screens take Moovit's live times,
+    // said once, until a station's answer comes again.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(KavLive.chosen) {
         if (!KavLive.chosen) { KavLive.up = true; return@LaunchedEffect }
@@ -472,15 +529,29 @@ private fun Root() {
                     val answering = withContext(Dispatchers.IO) { KavLive.answering() }
                     if (!answering && opening) android.widget.Toast.makeText(
                         app,
-                        T("Kav's server is offline · using Moovit", "השרת של Kav לא זמין · משתמשים ב-Moovit"),
+                        if (KavLive.own) T("Your server isn't answering · using Moovit", "השרת שלכם לא עונה · משתמשים ב-Moovit")
+                        else T("Kav's server is offline · using Moovit", "השרת של Kav לא זמין · משתמשים ב-Moovit"),
                         android.widget.Toast.LENGTH_LONG,
                     ).show()
                     KavLive.up = answering
+                    if (answering) KavPlan.offered = !KavLive.own || withContext(Dispatchers.IO) {
+                        (KavLive.check(KavLive.server, KavLive.key) as? KavLive.Check.Answers)?.planner != null
+                    }
                     opening = false
+                    if (answering && !KavLive.stopsUp) withContext(Dispatchers.IO) { KavLive.stopsAnswering() }
                 }
                 kotlinx.coroutines.withTimeoutOrNull(if (KavLive.up) 30_000L else 15_000L) { KavLive.recheck.receive() }
             }
         }
+    }
+    var toldStops by remember { mutableStateOf(false) }
+    LaunchedEffect(KavLive.stopsUp, KavLive.enabled) {
+        if (KavLive.stopsUp || !KavLive.enabled || toldStops) return@LaunchedEffect
+        toldStops = true
+        android.widget.Toast.makeText(
+            app, T("The ministry isn't answering · using Moovit", "משרד התחבורה לא עונה · משתמשים ב-Moovit"),
+            android.widget.Toast.LENGTH_LONG,
+        ).show()
     }
     var pickLook by remember { mutableStateOf(Prefs.pickLook(ctx)) }
     var pickSupport by remember { mutableStateOf(Prefs.pickSupport(ctx)) }
@@ -568,6 +639,17 @@ private fun Shell(model: KavModel) {
     }
 
     LaunchedEffect(model) {
+        snapshotFlow { PendingStop.key }.collect { key ->
+            if (key == null) return@collect
+            PendingStop.key = null
+            // Tapped before any screen has loaded the timetable.
+            val net = model.net ?: runCatching { withContext(Dispatchers.Default) { loadNet(ctx) } }.getOrNull() ?: return@collect
+            val stop = net.stopOfKey(key).takeIf { it >= 0 } ?: return@collect
+            model.settingsOpen = false; model.stationStop = stop; model.tab = Tab.Stations
+        }
+    }
+
+    LaunchedEffect(model) {
         snapshotFlow { PendingLink.plan }.collect { plan ->
             if (plan == null) return@collect
             PendingLink.plan = null
@@ -587,6 +669,17 @@ private fun Shell(model: KavModel) {
     LaunchedEffect(model, model.activeJourney?.trip) {
         while (true) {
             val journey = model.activeJourney ?: break
+            // A trip Kav planned has its names already, and its live times come from Kav's server: no Moovit at all.
+            if (KavPlan.owns(journey.trip)) {
+                delay(journey.resolved.pollSecs.coerceIn(15, 120) * 1000L)
+                val current = model.activeJourney?.takeIf { it.trip == journey.trip } ?: break
+                val refreshed = withContext(Dispatchers.IO) { KavPlan.live(listOf(current.trip), current.resolved, ending = true) }
+                val spots = withContext(Dispatchers.IO) { KavLive.tripSpots(current.trip, refreshed) }
+                model.activeJourney?.takeIf { it.trip == journey.trip }?.let {
+                    model.activeJourney = it.copy(resolved = refreshed.withLive(KavLive.fresher(refreshed.live, spots)))
+                }
+                continue
+            }
             val session = try {
                 Online.open(journey.trip.legs.firstOrNull { it.shape.isNotEmpty() }?.shape?.first() ?: model.here ?: (32.0759 to 34.7745))
             } catch (e: CancellationException) {
@@ -594,7 +687,6 @@ private fun Shell(model: KavModel) {
             } catch (e: Exception) {
                 null
             }
-            val rp = Online.openRoutingProvider()
             if (session == null) { delay(15_000L); continue }
             val needsNames = journey.trip.rides.flatMap { it.options }.any { ride ->
                 (ride.lineId > 0 && journey.resolved.line(ride.lineId) == null) ||
@@ -602,7 +694,7 @@ private fun Shell(model: KavModel) {
                     (ride.toStop > 0 && journey.resolved.stop(ride.toStop) == null)
             }
             if (needsNames) {
-                val names = withContext(Dispatchers.IO) { Moovit.hydrate(session,rp, listOf(journey.trip), ending = true) }
+                val names = withContext(Dispatchers.IO) { Moovit.hydrate(session, listOf(journey.trip), ending = true) }
                 model.activeJourney?.takeIf { it.trip == journey.trip }?.let { current ->
                     val previous = current.resolved
                     model.activeJourney = current.copy(resolved = Moovit.Resolved(
@@ -616,7 +708,7 @@ private fun Shell(model: KavModel) {
             delay(journey.resolved.pollSecs.coerceIn(15, 120) * 1000L)
             val current = model.activeJourney?.takeIf { it.trip == journey.trip } ?: break
             val refreshed = withContext(Dispatchers.IO) {
-                Moovit.refreshLive(session,rp, listOf(current.trip), current.resolved, ending = true)
+                Moovit.refreshLive(session, listOf(current.trip), current.resolved, ending = true)
             }
             // With the same refresh, so the notification and the floating window move with the server's positions too.
             val spots = withContext(Dispatchers.IO) { KavLive.tripSpots(current.trip, refreshed) }
@@ -630,6 +722,7 @@ private fun Shell(model: KavModel) {
             }
         }
     }
+
 
     val journeyActive = model.activeJourney != null
     LaunchedEffect(journeyActive, lifecycle) {
@@ -687,8 +780,8 @@ private fun Shell(model: KavModel) {
             TripBridge.paid = null
         }
     }
-    LaunchedEffect(model.navigating, lifecycle) {
-        Pip.wanted = model.navigating
+    LaunchedEffect(model.navigating, Pip.allowed, lifecycle) {
+        Pip.wanted = model.navigating && Pip.allowed
         (ctx as? MainActivity)?.updatePipParams()
         if (!model.navigating) { model.heading = null; return@LaunchedEffect }
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -725,8 +818,17 @@ private fun Shell(model: KavModel) {
             Spacer(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.safeDrawing).background(K.bg))
         },
         bottomBar = {
-            if (model.navigating) Spacer(Modifier.fillMaxWidth().windowInsetsBottomHeight(WindowInsets.safeDrawing))
-            else TabBar(model)
+            // The tab bar slides away while navigating and back up after, instead of popping in.
+            Box {
+                if (model.navigating) Spacer(Modifier.fillMaxWidth().windowInsetsBottomHeight(WindowInsets.safeDrawing))
+                androidx.compose.animation.AnimatedVisibility(
+                    !model.navigating,
+                    enter = androidx.compose.animation.slideInVertically(spring(dampingRatio = 1f, stiffness = 400f)) { it } +
+                        androidx.compose.animation.fadeIn(tween(200)),
+                    exit = androidx.compose.animation.slideOutVertically(tween(200)) { it } +
+                        androidx.compose.animation.fadeOut(tween(150)),
+                ) { TabBar(model) }
+            }
         },
     ) { pad ->
         val direction = LocalLayoutDirection.current
@@ -735,7 +837,8 @@ private fun Shell(model: KavModel) {
             start = pad.calculateStartPadding(direction), top = pad.calculateTopPadding(),
             end = pad.calculateEndPadding(direction),
         ).fillMaxSize().clipToBounds()
-            .then(if (K.liquid && liquid != null) Modifier.liquidSource(liquid) else Modifier)) {
+            // Not while Street View is open: the bar is away, and glass must never record Google's moving frame.
+            .then(if (K.liquid && liquid != null && StreetViewer.open == null) Modifier.liquidSource(liquid) else Modifier)) {
         CompositionLocalProvider(LocalLiquidBackdrop provides null) {
             androidx.compose.animation.Crossfade(model.tab, label = "tab") { tab ->
                 when (tab) {
@@ -747,28 +850,19 @@ private fun Shell(model: KavModel) {
             }
             androidx.compose.animation.AnimatedVisibility(
                 model.settingsOpen,
-                enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)) +
-                    androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(240)) { it / 10 },
-                exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)) +
-                    androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it / 10 },
+                enter = uk.noammm.kav.ui.modalIn(), exit = uk.noammm.kav.ui.modalOut(),
             ) {
                 SettingsScreen(model) { model.settingsOpen = false }
             }
             androidx.compose.animation.AnimatedVisibility(
                 model.payOpen,
-                enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)) +
-                    androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(240)) { it / 10 },
-                exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)) +
-                    androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it / 10 },
+                enter = uk.noammm.kav.ui.modalIn(), exit = uk.noammm.kav.ui.modalOut(),
             ) {
                 PayScreen(model) { model.payOpen = false }
             }
             androidx.compose.animation.AnimatedVisibility(
                 model.payHistoryOpen,
-                enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)) +
-                    androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(240)) { it / 10 },
-                exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)) +
-                    androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it / 10 },
+                enter = uk.noammm.kav.ui.modalIn(), exit = uk.noammm.kav.ui.modalOut(),
             ) {
                 PayHistoryScreen(onClose = { model.payHistoryOpen = false }, onTicket = { key ->
                     Payer.showRef = key
@@ -780,13 +874,12 @@ private fun Shell(model: KavModel) {
             model.report?.let { lastReport = it }
             androidx.compose.animation.AnimatedVisibility(
                 model.report != null,
-                enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)) +
-                    androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(240)) { it / 10 },
-                exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)) +
-                    androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it / 10 },
+                enter = uk.noammm.kav.ui.modalIn(), exit = uk.noammm.kav.ui.modalOut(),
             ) {
                 lastReport?.let { key(it) { ReportScreen(it) { model.report = null } } }
             }
+            // A stop in Street View or on the map, over whatever screen opened it.
+            StreetViewHost()
         }
         }
         }
@@ -811,7 +904,7 @@ private fun ImportPrompt(model: KavModel) {
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
             verticalArrangement = Arrangement.spacedBy(K.gap4),
         ) {
-            Text(T("Import this backup?", "לייבא את הגיבוי הזה?"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Import this backup?", "לייבא את הגיבוי הזה?"), style = K.type.title)
             Text(
                 failed ?: T(
                     "Your saved places, trip history and settings are replaced by what this file holds. " +
@@ -822,34 +915,31 @@ private fun ImportPrompt(model: KavModel) {
                 fontSize = 14.sp, color = if (failed != null) K.critical else K.dim, lineHeight = 20.sp,
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                Box(
-                    Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill)).background(K.plateStrong)
-                        .clickable(role = Role.Button) { if (!busy) PendingBackup.uri = null },
-                    contentAlignment = Alignment.Center,
-                ) { Text(T("Cancel", "ביטול"), fontSize = 15.sp, color = K.text) }
-                Box(
-                    Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill)).background(K.accent)
-                        .clickable(role = Role.Button) {
-                            if (busy) return@clickable
-                            busy = true
-                            scope.launch {
-                                Backup.read(ctx, uri)
-                                    .onSuccess { r ->
-                                        model.reloadPrefs(ctx)
-                                        if (PendingBackup.uri == uri) PendingBackup.uri = null
-                                        android.widget.Toast.makeText(
-                                            ctx,
-                                            T("Imported: ${r.favourites} places, ${r.trips} trips, ${r.recents} searches",
-                                              "יובא: ${r.favourites} מקומות, ${r.trips} נסיעות, ${r.recents} חיפושים"),
-                                            android.widget.Toast.LENGTH_LONG,
-                                        ).show()
-                                    }
-                                    .onFailure { e -> failed = importError(e) }
-                                busy = false
+                KavButton(
+                    T("Cancel", "ביטול"), { if (!busy) PendingBackup.uri = null }, Modifier.weight(1f).heightIn(min = 52.dp),
+                    style = ButtonStyle.Secondary,
+                )
+                KavButton(T("Import", "ייבוא"), {
+                    busy = true
+                    scope.launch {
+                        Backup.read(ctx, uri)
+                            .onSuccess { r ->
+                                model.reloadPrefs(ctx)
+                                if (PendingBackup.uri == uri) PendingBackup.uri = null
+                                android.widget.Toast.makeText(
+                                    ctx,
+                                    T("Imported: ", "יובא: ") + listOf(
+                                        T.count(r.favourites, "1 place", "מקום אחד", "places", "מקומות"),
+                                        T.count(r.trips, "1 trip", "נסיעה אחת", "trips", "נסיעות"),
+                                        T.count(r.recents, "1 search", "חיפוש אחד", "searches", "חיפושים"),
+                                    ).joinToString(", "),
+                                    android.widget.Toast.LENGTH_LONG,
+                                ).show()
                             }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) { Text(T("Import", "ייבוא"), fontSize = 15.sp, color = K.onAccent, fontWeight = FontWeight.Medium) }
+                            .onFailure { e -> failed = importError(e) }
+                        busy = false
+                    }
+                }, Modifier.weight(1f), busy = busy)
             }
         }
     }
@@ -861,7 +951,7 @@ private fun LookPrompt(onDone: () -> Unit) {
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
         ) {
-            Text(T("Pick a look", "בחרו מראה"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Pick a look", "בחרו מראה"), style = K.type.title)
             Text(
                 T(
                     "Kav 2.0 comes in OLED black, light and dark, with liquid glass or solid on top. " +
@@ -871,12 +961,8 @@ private fun LookPrompt(onDone: () -> Unit) {
                 ),
                 fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
             )
-            LookChoices { Text(it, style = DisplayItalic, fontSize = 12.sp, color = K.dim, modifier = Modifier.padding(top = K.gap4, bottom = K.gap2)) }
-            Box(
-                Modifier.padding(top = K.gap5).fillMaxWidth().heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill))
-                    .background(K.accent).clickable(role = Role.Button, onClick = onDone),
-                contentAlignment = Alignment.Center,
-            ) { Text(T("Done", "סיום"), fontSize = 15.sp, color = K.onAccent, fontWeight = FontWeight.Medium) }
+            LookChoices { Text(it, style = K.type.caption, modifier = Modifier.padding(top = K.gap4, bottom = K.gap2)) }
+            KavButton(T("Done", "סיום"), onDone, Modifier.padding(top = K.gap5), wide = true)
         }
     }
 }
@@ -889,7 +975,7 @@ private fun SupportPrompt(onDone: () -> Unit) {
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
         ) {
-            Text(T("Enjoying Kav?", "נהנים מקו?"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Enjoying Kav?", "נהנים מקו?"), style = K.type.title)
             Text(
                 T(
                     "Kav is made to protect every user's privacy and to make riding the bus a little more " +
@@ -907,7 +993,7 @@ private fun SupportPrompt(onDone: () -> Unit) {
                         "אם תרצו לתרום להמשך הפיתוח של האפליקציה, אתם מוזמנים ללחוץ על הכפתור למטה. " +
                             "אם אין לכם אפשרות, אתם מוזמנים להביע תמיכה דרך ",
                     ))
-                    withLink(LinkAnnotation.Url(REPO_URL, TextLinkStyles(SpanStyle(color = K.accent)))) {
+                    withLink(LinkAnnotation.Url(REPO_URL, TextLinkStyles(SpanStyle(color = K.accentInk)))) {
                         append(T("a star on GitHub", "כוכב בגיטהאב"))
                     }
                     append(".")
@@ -919,18 +1005,15 @@ private fun SupportPrompt(onDone: () -> Unit) {
                     "*Donating is just a thank-you and 100% optional. You won't lose any features if you can't :)",
                     "*תרומה היא אות הערכה בלבד, והיא אופציונלית לגמרי. לא תאבדו אף פיצ'ר אם אין ביכולתכם לתרום :)",
                 ),
-                fontSize = 11.sp, color = K.dim, lineHeight = 16.sp, modifier = Modifier.padding(top = K.gap3),
+                style = K.type.caption, modifier = Modifier.padding(top = K.gap3),
             )
-            Box(
-                Modifier.padding(top = K.gap5).fillMaxWidth().heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill))
-                    .background(K.accent).clickable(role = Role.Button) { openLink(ctx, COFFEE_URL); onDone() },
-                contentAlignment = Alignment.Center,
-            ) { Text(T("Buy me a coffee", "קנו לי קפה"), fontSize = 15.sp, color = K.onAccent, fontWeight = FontWeight.Medium) }
-            Box(
-                Modifier.padding(top = K.gap2).fillMaxWidth().heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill))
-                    .background(K.plateStrong).clickable(role = Role.Button, onClick = onDone),
-                contentAlignment = Alignment.Center,
-            ) { Text(T("Have you seen the economy??", "ראית את מצב האקונומיה??"), fontSize = 15.sp, color = K.text) }
+            KavButton(
+                T("Buy me a coffee", "קנו לי קפה"), { openLink(ctx, COFFEE_URL); onDone() }, Modifier.padding(top = K.gap5), wide = true,
+            )
+            KavButton(
+                T("Have you seen the economy??", "ראית את מצב האקונומיה??"), onDone, Modifier.padding(top = K.gap2),
+                style = ButtonStyle.Secondary, wide = true,
+            )
         }
     }
 }
@@ -942,19 +1025,13 @@ private fun ExitPrompt(onStay: () -> Unit, onExit: () -> Unit) {
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
             verticalArrangement = Arrangement.spacedBy(K.gap4),
         ) {
-            Text(T("Exit Kav?", "לצאת מ־Kav?"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Exit Kav?", "לצאת מ־Kav?"), style = K.type.title)
             Text(T("A trip in progress is kept until you end it.", "נסיעה שמתבצעת נשמרת עד שתסיימו אותה."), fontSize = 14.sp, color = K.dim, lineHeight = 20.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                Box(
-                    Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill)).background(K.plateStrong)
-                        .clickable(role = Role.Button, onClick = onStay),
-                    contentAlignment = Alignment.Center,
-                ) { Text(T("Stay", "השארות"), fontSize = 15.sp, color = K.text) }
-                Box(
-                    Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill)).background(K.accent)
-                        .clickable(role = Role.Button, onClick = onExit),
-                    contentAlignment = Alignment.Center,
-                ) { Text(T("Exit", "יציאה"), fontSize = 15.sp, color = K.onAccent, fontWeight = FontWeight.Medium) }
+                KavButton(
+                    T("Stay", "השארות"), onStay, Modifier.weight(1f).heightIn(min = 52.dp), style = ButtonStyle.Secondary,
+                )
+                KavButton(T("Exit", "יציאה"), onExit, Modifier.weight(1f))
             }
         }
     }
@@ -962,28 +1039,53 @@ private fun ExitPrompt(onStay: () -> Unit, onExit: () -> Unit) {
 
 @Composable
 private fun TabBar(model: KavModel) {
-    NavigationBar(modifier = Modifier.padding(horizontal = K.gap3, vertical = K.gap2).glassSurface(28.dp),
-        containerColor = Color.Transparent, contentColor = K.muted, tonalElevation = 0.dp) {
-        Tab.entries.forEach { t ->
-            val on = model.tab == t
-            NavigationBarItem(
-                selected = on,
-                onClick = {
-                    model.settingsOpen = false
-                    if (on) { model.stationStop = -1; model.lineRoute = -1; model.moovitLine = null }
-                    if (t == Tab.Directions) model.returnHome = true
-                    model.tab = t
-                },
-                icon = { TabGlyph(t, if (on) K.text else K.dim) },
-                label = { Text(t.label, fontSize = 11.sp, color = if (on) K.text else K.dim) },
-                colors = NavigationBarItemDefaults.colors(
-                    indicatorColor = K.plateStrong,
-                    selectedIconColor = K.text, unselectedIconColor = K.dim,
-                    selectedTextColor = K.text, unselectedTextColor = K.dim,
-                ),
-            )
+    // A glass capsule floating above the gesture area, which stays outside it. The chosen tab sits on the accent, as a
+    // segmented control's choice does, and that one highlight slides from tab to tab; no ripple, so nothing flashes.
+    val tabs = Tab.entries
+    // Street View is a full-screen view of its own: the bar steps down while it's open, and no glass refracts the
+    // moving picture.
+    androidx.compose.animation.AnimatedVisibility(
+        StreetViewer.open == null,
+        enter = androidx.compose.animation.slideInVertically { it } + androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.slideOutVertically { it } + androidx.compose.animation.fadeOut(),
+    ) {
+    BoxWithConstraints(
+        Modifier.navigationBarsPadding().padding(horizontal = K.gap4, vertical = K.gap2)
+            .fillMaxWidth().height(64.dp).glassSurface(32.dp).padding(4.dp),
+    ) {
+        val each = maxWidth / tabs.size
+        val at by androidx.compose.animation.core.animateDpAsState(
+            each * tabs.indexOf(model.tab).coerceAtLeast(0),
+            androidx.compose.animation.core.spring(dampingRatio = 1f, stiffness = 500f), label = "tabThumb",
+        )
+        Box(Modifier.offset(x = at).width(each).fillMaxHeight().clip(K.capsule).background(K.accent))
+        Row(Modifier.fillMaxSize().selectableGroup(), verticalAlignment = Alignment.CenterVertically) {
+            tabs.forEach { t ->
+                val on = model.tab == t
+                val ink by animateColorAsState(
+                    if (on) K.onAccent else K.textSecondary, androidx.compose.animation.core.tween(150), label = "tabInk",
+                )
+                Column(
+                    Modifier.weight(1f).fillMaxHeight().clip(K.capsule).selectable(
+                        on, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null, role = Role.Tab,
+                    ) {
+                        model.settingsOpen = false
+                        if (on) { model.stationStop = -1; model.lineRoute = -1; model.moovitLine = null }
+                        if (t == Tab.Directions) model.returnHome = true
+                        model.tab = t
+                    },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    TabGlyph(t, ink, 22.dp)
+                    Spacer(Modifier.height(2.dp))
+                    Text(t.label, style = K.type.caption, color = ink, maxLines = 1)
+                }
+            }
         }
     }
+}
 }
 
 @Composable
@@ -1318,6 +1420,34 @@ object Prefs {
         store(ctx).edit().putString(RECENT_LINES, org.json.JSONArray(kept).toString()).apply()
     }
 
+    // Stops (Net.stopKey) and lines (lineKey) the rider saved, and their line alerts.
+    private fun strings(ctx: Context, key: String): List<String> = try {
+        val arr = org.json.JSONArray(store(ctx).getString(key, "[]"))
+        (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+    } catch (e: Exception) { emptyList() }
+
+    fun savedStops(ctx: Context): List<String> = strings(ctx, "savedStops")
+    fun setSavedStops(ctx: Context, keys: List<String>) =
+        store(ctx).edit().putString("savedStops", org.json.JSONArray(keys).toString()).apply()
+
+    fun savedLines(ctx: Context): List<String> = strings(ctx, "savedLines")
+    fun setSavedLines(ctx: Context, keys: List<String>) =
+        store(ctx).edit().putString("savedLines", org.json.JSONArray(keys).toString()).apply()
+
+    fun lineAlerts(ctx: Context): List<LineAlert> = LineAlert.list(store(ctx).getString("lineAlerts", null))
+    fun setLineAlerts(ctx: Context, alerts: List<LineAlert>) =
+        store(ctx).edit().putString("lineAlerts", LineAlert.json(alerts)).apply()
+
+    // An alert swiped away stays quiet until its window ends.
+    fun alertQuietUntil(ctx: Context, id: Long): Long =
+        runCatching { org.json.JSONObject(store(ctx).getString("alertsQuiet", "{}")!!).optLong(id.toString()) }.getOrDefault(0L)
+    fun quietAlert(ctx: Context, id: Long, until: Long) {
+        val o = runCatching { org.json.JSONObject(store(ctx).getString("alertsQuiet", "{}")!!) }.getOrDefault(org.json.JSONObject())
+        val now = System.currentTimeMillis() / 1000
+        o.keys().asSequence().toList().forEach { if (o.optLong(it) < now) o.remove(it) }
+        store(ctx).edit().putString("alertsQuiet", o.put(id.toString(), until).toString()).apply()
+    }
+
     fun accent(ctx: Context): Int = store(ctx).getInt("accent", android.graphics.Color.rgb(0x9A, 0xBE, 0xFF))
     fun setAccent(ctx: Context, argb: Int) = store(ctx).edit().putInt("accent", argb).apply()
 
@@ -1325,8 +1455,21 @@ object Prefs {
         Lang.entries.firstOrNull { it.code == store(ctx).getString("lang", null) } ?: Lang.EN
     fun setLang(ctx: Context, lang: Lang) = store(ctx).edit().putString("lang", lang.code).apply()
 
+    // Stops', stations' and towns' names in English rather than the ministry's Hebrew (StopNames), Hebrew until chosen.
+    fun stopNamesEnglish(ctx: Context): Boolean = store(ctx).getString("stopNames", null) == "en"
+    fun setStopNamesEnglish(ctx: Context, on: Boolean) = store(ctx).edit().putString("stopNames", if (on) "en" else "he").apply()
+
     fun showCo2(ctx: Context): Boolean = store(ctx).getBoolean("showCo2", false)
     fun setShowCo2(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showCo2", on).apply()
+
+    // Navigation in a small window when Kav is left, paying for rides shown, and stop photos from Moovit, which are
+    // on until the rider turns them off (StopPhotos.enabled).
+    fun pipNavigation(ctx: Context): Boolean = store(ctx).getBoolean("pipNavigation", true)
+    fun setPipNavigation(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("pipNavigation", on).apply()
+    fun showPayments(ctx: Context): Boolean = store(ctx).getBoolean("showPayments", true)
+    fun setShowPayments(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showPayments", on).apply()
+    fun moovitPhotos(ctx: Context): Boolean? = store(ctx).takeIf { it.contains("moovitPhotos") }?.getBoolean("moovitPhotos", true)
+    fun setMoovitPhotos(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("moovitPhotos", on).apply()
 
     fun spokenAlerts(ctx: Context): Boolean = store(ctx).getBoolean("spokenAlerts", false)
     fun setSpokenAlerts(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("spokenAlerts", on).apply()
@@ -1349,22 +1492,23 @@ object Prefs {
     fun liveFromKav(ctx: Context): Boolean = store(ctx).getBoolean("liveFromKav", false)
     fun setLiveFromKav(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("liveFromKav", on).apply()
 
-    const val DEFAULT_OTP_ENDPOINT = "https://otp.example.com/otp/transmodel/v3"
+    // Kav's own planner rather than Moovit's, while Kav's server is chosen.
+    fun planWithKav(ctx: Context): Boolean = store(ctx).getBoolean("planWithKav", false)
+    fun setPlanWithKav(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("planWithKav", on).apply()
 
-    fun routingSource(ctx: Context): RoutingSource =
-        RoutingSource.entries.firstOrNull { it.name == store(ctx).getString("routingSource", null) }
-            ?: RoutingSource.OPEN_TRIP_PLANNER
-    fun setRoutingSource(ctx: Context, source: RoutingSource) =
-        store(ctx).edit().putString("routingSource", source.name).apply()
+    // The timetable for the seven days from today from Kav's server, rather than the week Kav shipped with.
+    fun timetableUpdates(ctx: Context): Boolean = store(ctx).getBoolean("timetableUpdates", false)
+    fun setTimetableUpdates(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("timetableUpdates", on).apply()
 
-    fun routingEndpoint(ctx: Context): String =
-        store(ctx).getString("routingEndpoint", null)?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_OTP_ENDPOINT
-    fun setRoutingEndpoint(ctx: Context, endpoint: String) {
-        val e = store(ctx).edit()
-        val trimmed = endpoint.trim()
-        if (trimmed.isEmpty()) e.remove("routingEndpoint") else e.putString("routingEndpoint", trimmed)
-        e.apply()
-    }
+    // The rider's own copy of Kav's server, else Kav's; the key it takes requests signed with (its KAV_APP_KEY), and the
+    // public half of the key its timetable is signed with, as it gave it.
+    fun kavServer(ctx: Context): String =
+        store(ctx).getString("kavServer", null)?.let(KavLive::serverAddress) ?: KavLive.KAV_SERVER
+    fun kavServerKey(ctx: Context): String = store(ctx).getString("kavServerKey", null).orEmpty()
+    fun setKavServer(ctx: Context, address: String, key: String, bundleKey: String) = store(ctx).edit()
+        .putString("kavServer", address).putString("kavServerKey", key).putString("kavServerBundleKey", bundleKey).apply()
+    fun kavServerBundleKey(ctx: Context): String = store(ctx).getString("kavServerBundleKey", null).orEmpty()
+    fun setKavServerBundleKey(ctx: Context, key: String) = store(ctx).edit().putString("kavServerBundleKey", key).apply()
 
     private val mapTypes = MapFile.Type.entries.map { it.name.lowercase() }
     fun mapType(ctx: Context): MapFile.Type =
@@ -1398,20 +1542,26 @@ object Prefs {
     fun pickSupport(ctx: Context): Boolean = store(ctx).getBoolean("pickSupport", false)
     fun supportShown(ctx: Context) = store(ctx).edit().remove("pickSupport").apply()
 
-    // Runs once, the first time 2.0 opens on an install that had an older version.
+    // Runs once, the first time 2.0 and then 3.0 open on an install that had an older version.
     fun upgrade(ctx: Context) {
         val s = store(ctx)
-        if (s.getInt("prefsVersion", 0) >= 2) return
+        val version = s.getInt("prefsVersion", 0)
+        if (version >= 3) return
         val e = s.edit()
-        s.getStringSet("filtersOff", null)?.let { off ->
-            val cable = if ("CARMELIT" in off && "RAKAVLIT" in off) setOf("CARMELIT_RAKAVLIT") else emptySet()
-            e.putStringSet("filtersOff", off - setOf("CARMELIT", "RAKAVLIT", "SHARE_TAXI") + cable)
+        if (version < 2) {
+            s.getStringSet("filtersOff", null)?.let { off ->
+                val cable = if ("CARMELIT" in off && "RAKAVLIT" in off) setOf("CARMELIT_RAKAVLIT") else emptySet()
+                e.putStringSet("filtersOff", off - setOf("CARMELIT", "RAKAVLIT", "SHARE_TAXI") + cable)
+            }
+            if (s.getBoolean("onboarded", false)) {
+                e.putBoolean("privateSearch", true).putBoolean("pickLook", true).putBoolean("pickSupport", true)
+            }
         }
-        if (s.getBoolean("onboarded", false)) {
-            e.putBoolean("privateSearch", true).putBoolean("pickLook", true).putBoolean("pickSupport", true)
-        }
-        e.putInt("prefsVersion", 2).apply()
-        java.io.File(ctx.filesDir, "moovit-stops.bin").delete()
+        // Stop names have a language of their own, Hebrew unless chosen. A rider who had Kav in English keeps English
+        // names; after this the two settings never move each other.
+        if (s.getBoolean("onboarded", false) && !s.contains("stopNames")) e.putString("stopNames", if (lang(ctx) == Lang.EN) "en" else "he")
+        e.putInt("prefsVersion", 3).apply()
+        if (version < 2) java.io.File(ctx.filesDir, "moovit-stops.bin").delete()
     }
 
     fun filters(ctx: Context): Set<ResultFilter> {
@@ -1442,20 +1592,29 @@ object Prefs {
             .put("trips", arr("trips"))
             .put("recents", arr("recents"))
             .put("recentLines", arr(RECENT_LINES))
+            .put("savedStops", arr("savedStops"))
+            .put("savedLines", arr("savedLines"))
+            .put("lineAlerts", arr("lineAlerts"))
             .put("lang", lang(ctx).code)
+            .put("stopNames", if (stopNamesEnglish(ctx)) "en" else "he")
             .put("accent", accent(ctx))
             .put("look", look(ctx).name.lowercase())
             .put("liquidGlass", s.getBoolean("liquidGlass", true))
             .put("privateSearch", privateSearch(ctx))
             .put("liveFromKav", liveFromKav(ctx))
-            .put("routingSource", routingSource(ctx).name)
-            .put("routingEndpoint", routingEndpoint(ctx))
+            .put("planWithKav", planWithKav(ctx))
+            .put("timetableUpdates", timetableUpdates(ctx))
+            .put("kavServer", kavServer(ctx))
+            .put("kavServerKey", kavServerKey(ctx))
             .put("mapType", mapType(ctx).name.lowercase())
             .put("seen", seen(ctx).name)
             .apply { seenPlace(ctx)?.let { put("seenPlace", json(it)) } }
             .put("filters", org.json.JSONObject().apply { ResultFilter.entries.forEach { put(it.name, it in on) } })
             .put("filtersOff", org.json.JSONArray(off))
             .put("showCo2", showCo2(ctx))
+            .put("pipNavigation", pipNavigation(ctx))
+            .put("showPayments", showPayments(ctx))
+            .apply { moovitPhotos(ctx)?.let { put("moovitPhotos", it) } }
             .put("spokenAlerts", spokenAlerts(ctx))
             .put("twelveHour", twelveHour(ctx))
     }
@@ -1464,25 +1623,29 @@ object Prefs {
     fun restoreBackup(ctx: Context, o: org.json.JSONObject) {
         val on = filters(ctx)
         val e = store(ctx).edit()
-        for (key in listOf("favourites", "trips", "recents", RECENT_LINES)) {
+        for (key in listOf("favourites", "trips", "recents", RECENT_LINES, "savedStops", "savedLines", "lineAlerts")) {
             o.optJSONArray(key)?.let { e.putString(key, it.toString()) }
         }
         if (o.has("lang")) e.putString("lang", o.optString("lang"))
+        o.optString("stopNames").takeIf { it == "en" || it == "he" }?.let { e.putString("stopNames", it) }
         if (o.has("accent")) e.putInt("accent", o.optInt("accent"))
         o.optString("look").takeIf { it in looks }?.let { e.putString("look", it) }
         if (o.has("liquidGlass")) e.putBoolean("liquidGlass", o.optBoolean("liquidGlass"))
         if (o.has("privateSearch")) e.putBoolean("privateSearch", o.optBoolean("privateSearch"))
         if (o.has("liveFromKav")) e.putBoolean("liveFromKav", o.optBoolean("liveFromKav"))
-        o.optString("routingSource").takeIf { n -> RoutingSource.entries.any { it.name == n } }
-            ?.let { e.putString("routingSource", it) }
-        if (o.has("routingEndpoint")) {
-            val endpoint = o.optString("routingEndpoint").trim()
-            if (endpoint.isEmpty()) e.remove("routingEndpoint") else e.putString("routingEndpoint", endpoint)
+        if (o.has("planWithKav")) e.putBoolean("planWithKav", o.optBoolean("planWithKav"))
+        if (o.has("timetableUpdates")) e.putBoolean("timetableUpdates", o.optBoolean("timetableUpdates"))
+        KavLive.serverAddress(o.optString("kavServer"))?.let {
+            // The server's timetable key is asked of it again (Timetable.refresh).
+            if (it != kavServer(ctx)) e.remove("kavServerBundleKey")
+            e.putString("kavServer", it)
         }
+        if (o.has("kavServerKey")) e.putString("kavServerKey", o.optString("kavServerKey"))
         o.optString("mapType").takeIf { it in mapTypes }?.let { e.putString("mapType", it) }
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }
         if (o.has("showCo2")) e.putBoolean("showCo2", o.optBoolean("showCo2"))
+        for (key in listOf("pipNavigation", "showPayments", "moovitPhotos")) if (o.has(key)) e.putBoolean(key, o.optBoolean(key))
         if (o.has("spokenAlerts")) e.putBoolean("spokenAlerts", o.optBoolean("spokenAlerts"))
         if (o.has("twelveHour")) e.putBoolean("twelveHour", o.optBoolean("twelveHour"))
         val chosen = o.optJSONObject("filters")

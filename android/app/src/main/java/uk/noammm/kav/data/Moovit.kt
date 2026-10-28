@@ -2,7 +2,6 @@ package uk.noammm.kav.data
 
 import android.os.Build
 import org.json.JSONObject
-import uk.noammm.kav.ui.Online
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
@@ -480,11 +479,17 @@ object Moovit {
         )
     }
 
-    fun agencyRouteType(s: MoovitSession, agencyId: Int): Int {
+    // The kind of line an operator runs, a bus when Moovit's list of operators hasn't it; null while that list couldn't be
+    // loaded, so it's asked again rather than taken for a bus.
+    fun agencyRouteType(s: MoovitSession, agencyId: Int): Int? {
         agencyMode[agencyId]?.let { return it }
         loadAgencies(s)
-        return agencyMode[agencyId] ?: 3
+        return agencyMode[agencyId] ?: 3.takeIf { agenciesLoadedRev == metroRev }
     }
+
+    // The kinds of line these operators run, of those that could be loaded.
+    fun agencyRouteTypes(s: MoovitSession, agencyIds: Collection<Int>): Map<Int, Int> =
+        agencyIds.mapNotNull { a -> runCatching { agencyRouteType(s, a) }.getOrNull()?.let { a to it } }.toMap()
 
     private val agencyLock = Any()
     @Volatile
@@ -505,10 +510,23 @@ object Moovit {
                 (m[2] as? String)?.takeIf { it.isNotBlank() }?.let { agencyNames[id] = it }
             }
             agenciesLoadedRev = metroRev
+            agencyStore?.edit()?.putString("names", JSONObject(agencyNames.mapKeys { it.key.toString() }).toString())?.apply()
         }
     }
 
     fun agencyName(agencyId: Int): String? = agencyNames[agencyId]
+
+    // The names kept on the phone too, so a trip reopened after a restart knows who runs its lines, and their colours,
+    // before Moovit is asked again.
+    @Volatile private var agencyStore: android.content.SharedPreferences? = null
+
+    fun keepAgencyNames(ctx: android.content.Context) {
+        val s = ctx.getSharedPreferences("moovit-agencies", android.content.Context.MODE_PRIVATE)
+        runCatching { JSONObject(s.getString("names", "{}") ?: "{}") }.getOrNull()?.let { o ->
+            for (k in o.keys()) k.toIntOrNull()?.let { agencyNames.putIfAbsent(it, o.optString(k)) }
+        }
+        agencyStore = s
+    }
 
     class LineGroup(
         val id: Int,
@@ -751,13 +769,17 @@ object Moovit {
         val taxiDropoff: Pair<Double, Double>? = null,
         val alternatives: List<Leg> = emptyList(),
         val alternativeLineIds: List<Int> = emptyList(),
+        // A shared vehicle picked up in the street (Moovit's dockless leg): Moovit's vehicle type, 1 bike, 2 e-bike,
+        // 3 e-scooter, 4 kick scooter, 5 moped or -1 car, and who runs it. 0 for every other leg.
+        val shared: Int = 0,
+        val sharedBy: String = "",
     ) {
         val options get() = alternatives.ifEmpty { listOf(this) }
         val lineChoices get() = (options.map { it.lineId } + alternativeLineIds).distinct()
         val minutes get() = (((arr - dep) / 60).toInt()).coerceAtLeast(0)
     }
 
-    data class Itinerary(
+    class Itinerary(
         val guid: String,
         val group: Int,
         val legs: List<Leg>,
@@ -966,8 +988,28 @@ object Moovit {
                 )
             }
             11, 12 -> Leg(LegKind.BIKE, dep = dep, arr = arr)
+            15 -> dockless(inner, dep, arr)
             else -> Leg(LegKind.OTHER, dep = dep, arr = arr)
         }
+    }
+
+    // Moovit's "Shared Mobility" routes ride a dockless leg: a shared bike, scooter, moped or car, ridden like a bike.
+    private fun dockless(inner: JSONObject, dep: Long, arr: Long): Leg {
+        val info = jRec(inner, "5")
+        val car = info?.let { jRec(it, "1") }
+        val vehicle = info?.let { jRec(it, "2") }
+        val shape = jRec(inner, "3")
+        return Leg(
+            LegKind.BIKE, dep = dep, arr = arr,
+            meters = (shape?.let { jDbl(it, "1") } ?: 0.0).toInt(),
+            shape = decodePolyline(shape?.let { jStr(it, "2") }),
+            shared = when {
+                car != null -> -1
+                vehicle != null -> (jInt(vehicle, "1") ?: 1L).toInt()
+                else -> 1
+            },
+            sharedBy = (car ?: vehicle)?.let { jStr(it, "7") }.orEmpty(),
+        )
     }
 
     private fun parseItinerary(it: JSONObject): Itinerary? {
@@ -1161,22 +1203,30 @@ object Moovit {
 
         fun withLive(live: Map<ArrivalKey, Arrival>) = Resolved(lines, stops, routeTypes, live, shapes, pollSecs, patterns, delays)
 
+        // After live times that couldn't be refreshed: only those a vehicle reported in the last two minutes stay live.
+        // Kept as they were, a minutes-old time went on showing as live. The timetable's times, of buses not out yet,
+        // stay as they are, as Moovit shows them beside the live ones.
+        fun aged(now: Long = System.currentTimeMillis() / 1000) =
+            withLive(live.filterValues { it.rtUtc <= 0 || it.sampleUtc > 0 && now - it.sampleUtc <= STALE_LIVE_S })
+
         // Moovit's live time for the ride at the rider's stop. It doesn't time a line's last stop.
         fun alightLiveAt(ride: Leg): Long? = live[ArrivalKey(ride.toStop, ride.tripId)]?.rtUtc?.takeIf { it > 0 }
 
         // When the ride gets to the rider's stop: the live time, or the plan moved by how far the ride runs from it.
         fun alightAt(ride: Leg): Long = alightLiveAt(ride) ?: (ride.arr + (delays[ride.tripId] ?: 0L))
 
+        // Each bus once, the ride's own first: two rides of a line from the stop can both be found to take one bus.
         fun liveFor(ride: Leg): List<Arrival> = live.values.filter { a ->
             a.stopId == ride.fromStop && a.lineId == ride.lineId &&
                 patterns[a.patternId]?.contains(ride.toStop) == true
-        }.sortedBy { it.departure().timeUtc }
+        }.sortedBy { if (it.tripId == ride.tripId) 0 else 1 }.distinctBy { it.vehicleId.ifEmpty { it.tripId.toString() } }
+            .sortedBy { it.departure().timeUtc }
 
         // The live platform; else the one the plan gives this very train, which Moovit's plans name well ahead (a live
         // time without a platform mustn't hide it); else a bus station's from the timetable.
         fun platform(ride: Leg, wait: Leg? = null): String =
             arrival(ride)?.platform?.ifBlank { null }
-                ?: departures(ride, wait).firstOrNull { it.platform.isNotBlank() }?.platform
+                ?: departures(ride, wait).firstOrNull { it.tripId == ride.tripId && it.platform.isNotBlank() }?.platform
                 ?: wait?.options?.firstOrNull { it.lineId == ride.lineId }?.nextDeps
                     ?.firstOrNull { it.tripId == ride.tripId && it.platform.isNotBlank() }?.platform
                 ?: plannedPlatform(ride, ride.fromStop)
@@ -1194,7 +1244,14 @@ object Moovit {
 
         fun isTrain(ride: Leg): Boolean = routeType(line(ride.lineId)?.agencyId ?: -1) == 2
 
-        fun departures(ride: Leg, wait: Leg?): List<Departure> {
+        // A route card's departures: every way of taking its first ride (its line and the others from the same stop to
+        // the same stop), each line's from where the ride's own start, as Moovit's card lists them.
+        fun cardDepartures(ride: Leg, wait: Leg?, now: Long = System.currentTimeMillis() / 1000): List<Departure> {
+            val since = if (ride.dep - now <= 3600) now - 60 else ride.dep - 10 * 60
+            return boardingOptions(ride, wait).flatMap { (option, boarding) -> departures(option, boarding, now, since) }
+        }
+
+        fun departures(ride: Leg, wait: Leg?, now: Long = System.currentTimeMillis() / 1000, since: Long? = null): List<Departure> {
             val boarding = wait?.options?.firstOrNull { it.lineId == ride.lineId }
             val future = boarding?.nextDeps.orEmpty().filter { it.tripId != 0L }
             val selected = future.firstOrNull { it.tripId == ride.tripId }
@@ -1204,20 +1261,49 @@ object Moovit {
             val alert = boarding?.alertCategory ?: 0
             val planned = (listOf(selected.copy(alert = alert)) + future.filter { it.tripId != ride.tripId })
                 .distinctBy { it.tripId to if (it.tripId == 0L) it.timeUtc else 0L }
-            // Live arrivals cover the next hour or so. Buses well before the planned one are left
-            // out, and a trip planned past what they cover keeps its own times.
+            // Live arrivals cover the next hour or so. For a trip leaving within it they count from now, catchable or
+            // not, as Moovit's card lists them; one planned later keeps the buses from shortly before its own, and past
+            // what they cover its own times. A card's other lines start where its ride's own do (since).
             val mine = { d: Departure -> selected.tripId != 0L && d.tripId == selected.tripId }
-            val current = liveFor(ride).map { it.departure(alert) }
-                .filter { mine(it) || it.timeUtc >= selected.timeUtc - 10 * 60 }
-            if (current.any { mine(it) || it.timeUtc >= selected.timeUtc }) return current
-            return planned.sortedBy { it.timeUtc }
+            val from = since ?: if (selected.timeUtc - now <= 3600) now - 60 else selected.timeUtc - 10 * 60
+            val arrivals = liveFor(ride).filter { a -> a.departure(alert).let { mine(it) || it.timeUtc >= from } }
+            val current = arrivals.map { it.departure(alert) }
+            // Each train run is a route of its own in the ministry's timetable, so the live times are the train's own
+            // alone: its line's trains before and after it come from the plan, as Moovit's card lists them.
+            if (isTrain(ride) && current.any { mine(it) }) {
+                val known = current.map { it.tripId }.toSet()
+                return (current + planned.filter { it.tripId !in known && it.timeUtc >= from }).sortedBy { it.timeUtc }
+            }
+            if (current.any { mine(it) || it.timeUtc >= selected.timeUtc }) {
+                // Past what the stop's live times cover, the plan's own later ones. Kav's own timetable rows on a stop's
+                // board, no bus in their key, cover nothing: beside them come the plan's, but one at the same time as a
+                // row, both being Kav's planner's.
+                val known = current.map { it.tripId }.toSet()
+                val covered = arrivals.filter { !it.vehicleId.endsWith("_") }.maxOfOrNull { it.departure(alert).timeUtc }
+                    ?.let { maxOf(now + LIVE_AHEAD_S, it) }
+                val times = current.map { it.timeUtc }
+                return (current + planned.filter { p ->
+                    p.tripId !in known && times.none { kotlin.math.abs(it - p.timeUtc) <= 60 } &&
+                        (if (covered != null) p.timeUtc > covered else mine(p) || p.timeUtc >= from)
+                }).sortedBy { it.timeUtc }
+            }
+            // A line's departures before its ride's stay off for a ride over an hour away, as Moovit's plans list a later
+            // route's from its own.
+            return planned.filter { mine(it) || it.timeUtc >= from }.sortedBy { it.timeUtc }
         }
 
         fun line(id: Int): LineInfo? = lines[id]
         fun stop(id: Int): StopInfo? = stops[id]
-        fun stopName(id: Int): String? = stops[id]?.name
+        // As shown (StopNames): Kav's server and the timetable name stops in Hebrew. A name Kav doesn't know (Moovit's
+        // "רכבת ..." for a train station, in either language) is the timetable's stop with the same code, as named there.
+        fun stopName(id: Int): String? = stops[id]?.let { s ->
+            val shown = shownName(s.name)
+            if (shown != s.name) return@let shown
+            val net = uk.noammm.kav.Loaded.net ?: return@let shown
+            s.code.toIntOrNull()?.let { KavLive.stopOfCode(net, it) }?.takeIf { it >= 0 }?.let(net::stopName) ?: shown
+        }
         fun routeType(agencyId: Int): Int = routeTypes[agencyId] ?: 3
-        fun agencyName(agencyId: Int): String? = if (Online.routeWithMoovit) Moovit.agencyName(agencyId) else Online.routingProvider.agencyName(agencyId)
+        fun agencyName(agencyId: Int): String? = KavPlan.agencyName(agencyId) ?: Moovit.agencyName(agencyId)
 
     }
 
@@ -1234,8 +1320,8 @@ object Moovit {
         return lineIds to stopIds
     }
 
-    // Line and stop details, several at a time. One that fails stays out of the maps.
-    fun loadDetails(
+    // Line and stop details, and the kinds of the lines' operators, several at a time. One that fails stays out of the maps.
+    private fun loadDetails(
         pool: java.util.concurrent.ExecutorService, s: MoovitSession, lineIds: Collection<Int>, stopIds: Collection<Int>,
         lines: MutableMap<Int, LineInfo>, stops: MutableMap<Int, StopInfo>, types: MutableMap<Int, Int>,
     ) {
@@ -1244,8 +1330,23 @@ object Moovit {
         for ((id, f) in lineJobs) runCatching { f.get() }.getOrNull()?.let { lines[id] = it }
         for ((id, f) in stopJobs) runCatching { f.get() }.getOrNull()?.let { stops[id] = it }
         val agencies = lines.values.map { it.agencyId }.distinct().filter { it !in types }
-        val typeJobs = agencies.map { a -> a to pool.submit<Int> { agencyRouteType(s, a) } }
-        for ((a, f) in typeJobs) types[a] = runCatching { f.get() }.getOrNull() ?: 3
+        val typeJobs = agencies.map { a -> a to pool.submit<Int?> { agencyRouteType(s, a) } }
+        for ((a, f) in typeJobs) runCatching { f.get() }.getOrNull()?.let { types[a] = it }
+    }
+
+    // Details that didn't load with the results, on a weak connection, asked for again: those of a list of trips that
+    // prev hasn't, added to its own.
+    private fun withDetails(s: MoovitSession, list: List<Itinerary>, prev: Resolved): Resolved {
+        val (lineIds, stopIds) = detailIds(list)
+        val lines = LinkedHashMap(prev.lines)
+        val stops = LinkedHashMap(prev.stops)
+        val types = LinkedHashMap(prev.routeTypes)
+        val missingLines = lineIds.filter { it !in lines }
+        val missingStops = stopIds.filter { it !in stops }
+        if (missingLines.isEmpty() && missingStops.isEmpty() && lines.values.all { it.agencyId in types }) return prev
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(maxOf(1, minOf(8, missingLines.size + missingStops.size)))
+        try { loadDetails(pool, s, missingLines, missingStops, lines, stops, types) } finally { pool.shutdown() }
+        return Resolved(lines, stops, types, prev.live, prev.shapes, prev.pollSecs, prev.patterns, prev.delays)
     }
 
     // The stops whose live times a list of trips needs: where each ride boards, and on the trip being taken (ending)
@@ -1272,7 +1373,7 @@ object Moovit {
         return out
     }
 
-    fun hydrate(s: MoovitSession, rp: RoutingProvider, list: List<Itinerary>, ending: Boolean = false): Resolved {
+    fun hydrate(s: MoovitSession, list: List<Itinerary>, ending: Boolean = false): Resolved {
         val (lineIds, stopIds) = detailIds(list)
         val lines = LinkedHashMap<Int, LineInfo>()
         val stops = LinkedHashMap<Int, StopInfo>()
@@ -1280,11 +1381,11 @@ object Moovit {
         val boarding = timedStops(list, ending)
         val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
         // From Kav's server the live layer needs the stops' codes first; from Moovit both load at once.
-        val liveJob = if (KavLive.enabled) null else pool.submit<Pair<Map<ArrivalKey, Arrival>, Int>> {
+        val liveJob = if (KavLive.stopsEnabled) null else pool.submit<Pair<Map<ArrivalKey, Arrival>, Int>> {
             try { stopArrivals(s, boarding) } catch (e: Exception) { emptyMap<ArrivalKey, Arrival>() to 20 }
         }
         val (live, poll) = try {
-            rp.loadDetails(pool, lineIds, stopIds, lines, stops, types)
+            loadDetails(pool, s, lineIds, stopIds, lines, stops, types)
             if (liveJob == null) {
                 val rides = serverLive(list, stops, lines, ending)
                 return Resolved(lines, stops, types, rides.live, emptyMap(), SERVER_POLL, rides.patterns, delaysOf(list, rides.live))
@@ -1411,29 +1512,27 @@ object Moovit {
         return stops
     }
 
-    fun refreshLive(s: MoovitSession,rp: RoutingProvider, list: List<Itinerary>, prev: Resolved, ending: Boolean = false): Resolved {
-        if (KavLive.enabled) {
-            val rides = try { KavLive.rideArrivals(list, prev.stops, prev.lines, ending, uk.noammm.kav.Loaded.net) } catch (e: Exception) { return prev }
-            return Resolved(prev.lines, prev.stops, prev.routeTypes, rides.live, prev.shapes, SERVER_POLL,
+    fun refreshLive(s: MoovitSession, list: List<Itinerary>, prev: Resolved, ending: Boolean = false): Resolved {
+        if (KavLive.stopsEnabled) {
+            // The stops' codes are what the server's live times are found by.
+            val named = withDetails(s, list, prev)
+            val rides = try { KavLive.rideArrivals(list, named.stops, named.lines, ending, uk.noammm.kav.Loaded.net) } catch (e: Exception) { return named.aged() }
+            return Resolved(named.lines, named.stops, named.routeTypes, rides.live, prev.shapes, SERVER_POLL,
                 prev.patterns + rides.patterns, prev.delays + delaysOf(list, rides.live))
         }
-        val (live, poll) = try { stopArrivals(s, timedStops(list, ending)) } catch (e: Exception) { return prev }
-        // Details that didn't load with the results, on a weak connection, are asked for again on every refresh.
-        val (lineIds, stopIds) = detailIds(list)
-        val lines = LinkedHashMap(prev.lines)
-        val stops = LinkedHashMap(prev.stops)
-        val types = LinkedHashMap(prev.routeTypes)
-        val missingLines = lineIds.filter { it !in lines }
-        val missingStops = stopIds.filter { it !in stops }
-        if (missingLines.isNotEmpty() || missingStops.isNotEmpty()) {
-            val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, missingLines.size + missingStops.size))
-            try { rp.loadDetails(pool, missingLines, missingStops, lines, stops, types) } finally { pool.shutdown() }
-        }
-        return Resolved(lines, stops, types, live, shapesFor(s, list, live, prev.shapes), poll,
+        val (live, poll) = try { stopArrivals(s, timedStops(list, ending)) } catch (e: Exception) { return prev.aged() }
+        val named = withDetails(s, list, prev)
+        return Resolved(named.lines, named.stops, named.routeTypes, live, shapesFor(s, list, live, prev.shapes), poll,
             patternsFor(s, list, live, prev.patterns), prev.delays + delaysOf(list, live))
     }
 
     val ALL_ROUTE_TYPES = listOf(0, 1, 2, 3, 4, 5, 6, 7)
+
+    // How old a vehicle's report can be for its time to stay live when a refresh fails.
+    const val STALE_LIVE_S = 120L
+
+    // How far ahead a stop's live times go: Kav's server asks the ministry for its next hour and a half.
+    const val LIVE_AHEAD_S = 5400L
 
     private fun tripPlanRequest(
         from: Pair<Double, Double>,

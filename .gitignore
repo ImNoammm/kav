@@ -23,11 +23,20 @@ tools/recover_thrift.sh
 tools/serve.py
 tools/server_build.sh
 tools/thrift_from_jadx.py
+server/eta/score.py
 
 # Tests
 android/app/src/androidTest/
 android/app/src/test/
 server/test_*.py
+server/*/test_*.py
 
 # The private key that signs recipe/kav.json
 .signing/
+# The address and key of the Worker that fetches Tel Aviv's weekend lines (otp/naim-worker.js), kept on the server only
+server/otp/naim-worker
+# A copy of the server's settings and everything it keeps (server/selfhost)
+server/selfhost/.env
+server/selfhost/data/
+# The self-hosted server ships in a later release.
+server/selfhost/

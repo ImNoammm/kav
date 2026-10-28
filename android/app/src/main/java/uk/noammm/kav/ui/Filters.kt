@@ -1,18 +1,12 @@
 package uk.noammm.kav.ui
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -94,21 +88,21 @@ fun SwitchRow(
     onToggle: (Boolean) -> Unit,
     leading: @Composable () -> Unit,
 ) {
+    // The whole row toggles; what it's for reads the same whether on or off, and the switch says which.
     Row(
-        Modifier.fillMaxWidth().panel(14.dp)
-            .then(if (on) Modifier.border(1.dp, K.borderStrong, RoundedCornerShape(14.dp)) else Modifier)
+        Modifier.fillMaxWidth().panel(K.rCard)
             .semantics { contentDescription = label; toggleableState = if (on) ToggleableState.On else ToggleableState.Off }
             .clickable(role = Role.Switch) { onToggle(!on) }
-            .padding(horizontal = K.gap3, vertical = 10.dp),
+            .padding(horizontal = K.gap4, vertical = K.gap3),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
-        Box(Modifier.width(22.dp), contentAlignment = Alignment.Center) { leading() }
+        Box(Modifier.width(24.dp), contentAlignment = Alignment.Center) { leading() }
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 14.sp, color = if (on) K.text else K.muted)
-            Text(desc, fontSize = 11.sp, color = K.dim, lineHeight = 15.sp, modifier = Modifier.padding(top = 2.dp))
+            Text(label, style = K.type.body)
+            Text(desc, style = K.type.subhead, color = K.textTertiary, modifier = Modifier.padding(top = 2.dp))
         }
-        Switch(on)
+        KavSwitch(on)
     }
 }
 
@@ -130,17 +124,5 @@ fun FilterRows(enabled: Set<ResultFilter>, onToggle: (ResultFilter, Boolean) -> 
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun Switch(on: Boolean) {
-    val track by animateColorAsState(if (on) K.accent else K.surface4, label = "track")
-    val knob by animateDpAsState(if (on) 20.dp else 2.dp, label = "knob")
-    Box(Modifier.width(40.dp).height(22.dp).clip(RoundedCornerShape(999.dp)).background(track)) {
-        Box(
-            Modifier.padding(start = knob, top = 2.dp).size(18.dp).clip(RoundedCornerShape(999.dp))
-                .background(if (on) K.bg else K.muted),
-        )
     }
 }

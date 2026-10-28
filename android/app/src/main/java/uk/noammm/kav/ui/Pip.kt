@@ -4,7 +4,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,7 +21,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.TripNotice
 import uk.noammm.kav.plateIcon
@@ -44,7 +42,7 @@ fun PipOverlay(model: KavModel) {
             tripNotice(it, model.journeyStep, model.fix, now, accent)
         } }
         if (n == null) {
-            Text(T("Trip ended", "הנסיעה הסתיימה"), fontSize = 15.sp, color = K.dim, modifier = Modifier.padding(K.gap4))
+            Text(T("Trip ended", "הנסיעה הסתיימה"), style = K.type.body, color = K.dim, modifier = Modifier.padding(K.gap4))
             return@Box
         }
         Column(
@@ -56,17 +54,17 @@ fun PipOverlay(model: KavModel) {
                 Image(plate, contentDescription = null, modifier = Modifier.size(30.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        n.title, fontSize = 13.sp, lineHeight = 16.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+                        n.title, style = K.type.subhead, color = K.text, fontWeight = FontWeight.SemiBold,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         listOf(n.text, n.arrive).filter { it.isNotBlank() }.joinToString(" · "),
-                        fontSize = 11.sp, lineHeight = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = K.type.caption, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
                 if (n.chip.isNotBlank()) Text(
-                    n.chip, fontSize = 11.sp, color = K.text, fontWeight = FontWeight.Medium, maxLines = 1,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(K.plate).padding(horizontal = 7.dp, vertical = 2.dp),
+                    n.chip, style = K.type.caption, color = K.text, maxLines = 1,
+                    modifier = Modifier.clip(K.capsule).background(K.plate).padding(horizontal = 7.dp, vertical = 2.dp),
                 )
             }
             TripBar(n)

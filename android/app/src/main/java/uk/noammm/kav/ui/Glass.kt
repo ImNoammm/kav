@@ -17,7 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -42,30 +42,27 @@ fun rememberLiquidBackdrop(): LiquidBackdrop? =
 fun Modifier.glassBackdrop(liquid: LiquidBackdrop?): Modifier =
     if (K.liquid && liquid != null) liquidSource(liquid) else this
 
-private fun liquidRim(floating: Boolean) =
-    if (K.light) K.text.copy(alpha = if (floating) .16f else .1f)
-    else Color.White
+// A floating pane's edge in glass: light catching its top and fading down its sides, never a full white ring.
+private fun glassEdge(): Brush =
+    if (K.light) SolidColor(K.text.copy(alpha = .14f))
+    else Brush.verticalGradient(listOf(Color.White.copy(alpha = .28f), K.separator, K.separator))
 
-// OLED's white rims are thinner, so the black screen isn't boxed in.
-private val rimWidth get() = if (K.look == Look.OLED) 0.6.dp else 1.dp
+private val paneFill get() = K.surfaceRaised.copy(alpha = .62f)
 
-private val paneFill get() = K.surface1.copy(alpha = .62f)
-
+// The floating layer: the tab bar, buttons over a map or a list, a field that stays on top. Glass where it's chosen.
 @Composable
 fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier {
-    if (!K.liquid) return panel(radius, solid = true)
     val shape = RoundedCornerShape(radius)
+    if (!K.liquid) return clip(shape).background(K.surfaceRaised).border(0.5.dp, K.separator, shape)
     val liquid = LocalLiquidBackdrop.current
     val pane = if (liquid != null) liquidPane(liquid, radius) else clip(shape).background(paneFill)
-    return pane.border(rimWidth, liquidRim(floating = true), shape)
+    return pane.border(1.dp, glassEdge(), shape)
 }
 
+// A card on the page: its own shade and a hairline. solid: one that floats over others, a sheet or a menu.
 fun Modifier.panel(radius: Dp = K.rCard, solid: Boolean = false): Modifier {
     val shape = RoundedCornerShape(radius)
-    val body = clip(shape).background(if (solid) paneFill.compositeOver(K.bg) else paneFill)
-    return if (K.liquid) body.border(rimWidth, liquidRim(floating = solid), shape)
-        else if (K.light) body.border(0.5.dp, K.text.copy(alpha = .14f), shape)
-        else body.border(rimWidth, Color.White, shape)
+    return clip(shape).background(if (solid) K.surfaceRaised else K.surface).border(0.5.dp, K.separator, shape)
 }
 
 @Composable

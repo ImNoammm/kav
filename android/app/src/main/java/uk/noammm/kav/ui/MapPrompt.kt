@@ -1,17 +1,12 @@
 package uk.noammm.kav.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -30,7 +25,7 @@ fun MapPrompt() {
             Modifier.fillMaxWidth().panel(K.rCard, solid = true).padding(K.gap5),
             verticalArrangement = Arrangement.spacedBy(K.gap4),
         ) {
-            Text(T("Download the map", "הורדת המפה"), fontSize = 20.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Download the map", "הורדת המפה"), style = K.type.title)
             Text(
                 T(
                     "Kav keeps its map on your phone instead of loading tiles from a server as " +
@@ -44,7 +39,7 @@ fun MapPrompt() {
             )
             when (state) {
                 is MapFile.State.Downloading -> Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)).background(K.surface4)) {
+                    Box(Modifier.fillMaxWidth().height(6.dp).clip(K.capsule).background(K.surface4)) {
                         Box(Modifier.fillMaxWidth(state.progress.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
                     }
                     Text(T("Downloading… ${(state.progress * 100).toInt()}%", "מורידים… ${(state.progress * 100).toInt()}%"), fontSize = 12.sp, color = K.dim)
@@ -54,27 +49,19 @@ fun MapPrompt() {
                 else -> {}
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                Box(
-                    Modifier.weight(1f).heightIn(min = 46.dp).panel(K.rPill)
-                        .clickable(role = Role.Button) { dismissed = true },
-                    contentAlignment = Alignment.Center,
-                ) { Text(T("Later", "אחר כך"), fontSize = 15.sp, color = K.text) }
+                KavButton(
+                    T("Later", "אחר כך"), { dismissed = true }, Modifier.weight(1f).heightIn(min = 52.dp),
+                    style = ButtonStyle.Secondary,
+                )
                 val busy = state is MapFile.State.Downloading
-                Box(
-                    Modifier.weight(1f).heightIn(min = 46.dp).clip(RoundedCornerShape(K.rPill))
-                        .background(if (busy) K.surface4 else K.accent)
-                        .clickable(enabled = !busy, role = Role.Button) { MapFile.startDownload(ctx) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        when {
-                            busy -> T("Downloading…", "מורידים…")
-                            state is MapFile.State.Failed -> T("Try again", "נסו שוב")
-                            else -> T("Download", "הורדה")
-                        },
-                        fontSize = 15.sp, color = if (busy) K.muted else K.onAccent, fontWeight = FontWeight.Medium,
-                    )
-                }
+                KavButton(
+                    when {
+                        busy -> T("Downloading…", "מורידים…")
+                        state is MapFile.State.Failed -> T("Try again", "נסו שוב")
+                        else -> T("Download", "הורדה")
+                    },
+                    { MapFile.startDownload(ctx) }, Modifier.weight(1f), enabled = !busy,
+                )
             }
         }
     }

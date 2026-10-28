@@ -54,6 +54,9 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.foundation.shape.CircleShape
 
 @Composable
 fun WhenSheet(
@@ -86,13 +89,13 @@ fun WhenSheet(
                     Moovit.TIME_DEPARTURE -> T("Depart at", "יציאה בשעה")
                     else -> T("When", "מתי")
                 },
-                fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+                style = K.type.headline,
                 modifier = Modifier.weight(1f),
             )
             Text(
                 if (chosen == null) T("Close", "סגירה") else T("Back", "חזרה"),
-                fontSize = 14.sp, color = K.accent,
-                modifier = Modifier.clip(RoundedCornerShape(K.rPill))
+                fontSize = 14.sp, color = K.accentInk,
+                modifier = Modifier.clip(K.capsule)
                     .clickable(role = Role.Button) { if (chosen == null) close(onDismiss) else mode = null }
                     .padding(horizontal = K.gap2, vertical = K.gap1),
             )
@@ -104,45 +107,38 @@ fun WhenSheet(
             WhenRow(T("Set desired arrival time", "קביעת שעת הגעה רצויה")) { mode = Moovit.TIME_ARRIVAL }
             WhenRow(T("Latest departure", "היציאה האחרונה")) { close { onPick(0L, Moovit.TIME_LAST) } }
             val resettable = departAt > 0L || timeType == Moovit.TIME_LAST
-            WhenRow(T("+15 min", "${T.ltr("+15")} דק'"), last = !resettable) {
+            WhenRow(T("+15 min", "${T.ltr("+15")} דק׳"), last = !resettable) {
                 close { onPick(System.currentTimeMillis() + 15 * 60_000L, Moovit.TIME_DEPARTURE) }
             }
-            if (resettable) WhenRow(T("Leave now", "צאו עכשיו"), tint = K.accent, last = true) { close(onNow) }
+            if (resettable) WhenRow(T("Leave now", "צאו עכשיו"), tint = K.accentInk, last = true) { close(onNow) }
         } else {
             TimeEntry(hour, minute) { h, m -> hour = h; minute = m }
             Spacer(Modifier.height(K.gap2))
             Row(
-                Modifier.fillMaxWidth().panel(K.rControl),
+                Modifier.fillMaxWidth().clip(K.capsule).background(K.fill),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Step(T.backward, day > 0, T("Previous day", "היום הקודם")) { day-- }
+                Step(true, day > 0, T("Previous day", "היום הקודם")) { day-- }
                 Text(
                     dayLabel(today, day),
-                    fontSize = 15.sp, color = K.text,
+                    style = K.type.body,
                     modifier = Modifier.weight(1f),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
-                Step(T.onward, day < 14, T("Next day", "היום הבא")) { day++ }
+                Step(false, day < 14, T("Next day", "היום הבא")) { day++ }
             }
             Spacer(Modifier.height(K.gap3))
             val pickedToday = chosenMillis(today, day, hour, minute)
             val rolled = day == 0 && pickedToday < openedMinute
             val picked = if (rolled) chosenMillis(today, day + 1, hour, minute) else pickedToday
             if (rolled) {
-                Text(T("That time has passed today, this will be for tomorrow.", "השעה הזו כבר עברה היום, הנסיעה תתוכנן למחר."), fontSize = 13.sp, color = K.dim)
+                Text(T("That time has passed today, this will be for tomorrow.", "השעה הזו כבר עברה היום, הנסיעה תתוכנן למחר."), style = K.type.subhead)
                 Spacer(Modifier.height(K.gap2))
             }
-            Box(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                    .panel(K.rControl)
-                    .clickable(role = Role.Button) {
-                        val (ms, type) = clampDepart(picked, chosen, System.currentTimeMillis())
-                        close { onPick(ms, type) }
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(T("Done", "סיום"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium)
-            }
+            KavButton(T("Done", "סיום"), {
+                val (ms, type) = clampDepart(picked, chosen, System.currentTimeMillis())
+                close { onPick(ms, type) }
+            }, wide = true)
         }
     }
 }
@@ -168,7 +164,7 @@ internal fun TimeEntry(hour: Int, minute: Int, onChange: (hour: Int, minute: Int
         if (twelve) {
             Spacer(Modifier.width(K.gap3))
             Column(
-                Modifier.clip(RoundedCornerShape(K.rControl)).border(1.dp, K.borderStrong, RoundedCornerShape(K.rControl)),
+                Modifier.clip(RoundedCornerShape(K.rTile)).border(1.dp, K.borderStrong, RoundedCornerShape(K.rTile)),
             ) {
                 Period("AM", !pm) { if (pm) onChange(hour - 12, minute) }
                 Box(Modifier.width(64.dp).height(1.dp).background(K.borderStrong))
@@ -207,7 +203,7 @@ private fun TimeField(
                 if (digits.length == 2 || v * 10 > range.last) onFilled()
             },
             modifier = modifier.width(96.dp).height(72.dp)
-                .border(if (focused) 2.dp else 1.dp, if (focused) K.accent else K.borderStrong, RoundedCornerShape(12.dp))
+                .border(if (focused) 2.dp else 1.dp, if (focused) K.accent else K.borderStrong, RoundedCornerShape(K.rTile))
                 .onFocusChanged { focused = it.isFocused; typed = null },
             textStyle = TextStyle(fontSize = 44.sp, color = if (valid) K.text else K.critical, textAlign = TextAlign.Center),
             singleLine = true,
@@ -222,7 +218,7 @@ private fun TimeField(
                 }
             },
         )
-        Text(label, fontSize = 13.sp, color = K.dim, modifier = Modifier.padding(top = K.gap1))
+        Text(label, style = K.type.subhead, modifier = Modifier.padding(top = K.gap1))
     }
 }
 
@@ -242,17 +238,17 @@ private fun Period(text: String, on: Boolean, onClick: () -> Unit) {
 fun ChoiceSheet(title: String, choices: List<String>, selected: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
     BottomSheet(onDismiss, scrolls = true) { close ->
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text(title, style = K.type.headline, modifier = Modifier.weight(1f))
             Text(
-                T("Close", "סגירה"), fontSize = 14.sp, color = K.accent,
-                modifier = Modifier.clip(RoundedCornerShape(K.rPill))
+                T("Close", "סגירה"), fontSize = 14.sp, color = K.accentInk,
+                modifier = Modifier.clip(K.capsule)
                     .clickable(role = Role.Button) { close(onDismiss) }
                     .padding(horizontal = K.gap2, vertical = K.gap1),
             )
         }
         Spacer(Modifier.height(K.gap3))
         choices.forEachIndexed { i, label ->
-            WhenRow(label, tint = if (i == selected) K.accent else K.text, last = i == choices.lastIndex, checked = i == selected) {
+            WhenRow(label, tint = if (i == selected) K.accentInk else K.text, last = i == choices.lastIndex, checked = i == selected) {
                 close { onPick(i) }
             }
         }
@@ -267,22 +263,25 @@ private fun WhenRow(label: String, tint: Color = K.text, last: Boolean = false, 
                 .clickable(role = Role.Button, onClick = onClick),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(label, fontSize = 15.sp, color = tint, modifier = Modifier.weight(1f))
-            if (checked) Icon(Icons.Rounded.Check, contentDescription = null, tint = K.accent, modifier = Modifier.size(18.dp))
+            Text(label, style = K.type.body, color = tint, modifier = Modifier.weight(1f))
+            if (checked) Icon(Icons.Rounded.Check, contentDescription = null, tint = K.accentInk, modifier = Modifier.size(18.dp))
         }
         if (!last) Box(Modifier.fillMaxWidth().height(1.dp).background(K.border))
     }
 }
 
 @Composable
-private fun Step(glyph: String, enabled: Boolean, description: String, onClick: () -> Unit) {
+private fun Step(back: Boolean, enabled: Boolean, description: String, onClick: () -> Unit) {
     Box(
-        Modifier.size(48.dp).clip(RoundedCornerShape(K.rControl))
+        Modifier.size(48.dp).clip(CircleShape)
             .semantics { contentDescription = description }
             .clickable(role = Role.Button, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(glyph, fontSize = 22.sp, color = if (enabled) K.text else K.border)
+        Icon(
+            if (back) Icons.AutoMirrored.Rounded.KeyboardArrowLeft else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null, tint = if (enabled) K.text else K.textTertiary, modifier = Modifier.size(24.dp),
+        )
     }
 }
 

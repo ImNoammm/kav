@@ -16,6 +16,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import uk.noammm.kav.data.Moovit
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
 
 internal fun gettUri(leg: Moovit.Leg): Uri? {
     if (leg.kind != Moovit.LegKind.TAXI) return null
@@ -32,25 +37,40 @@ internal fun gettUri(leg: Moovit.Leg): Uri? {
         .build()
 }
 
+private fun openGett(context: android.content.Context, uri: Uri) {
+    try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri).setPackage("com.gettaxi.android"))
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, T("Install Gett to open this taxi journey.", "יש להתקין את Gett כדי לפתוח את נסיעת המונית."), Toast.LENGTH_LONG).show()
+    }
+}
+
+// The step a navigation card is about: the whole button.
 @Composable
 fun GettButton(leg: Moovit.Leg, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val uri = gettUri(leg)
+    KavButton(
+        if (uri == null) T("Taxi details unavailable", "פרטי המונית לא זמינים") else T("Open Gett", "פתחו ב-Gett"),
+        onClick = { uri?.let { openGett(context, it) } },
+        modifier = modifier, style = ButtonStyle.Secondary, icon = Icons.Rounded.OpenInNew, enabled = uri != null,
+    )
+}
+
+// Gett where a route names it: the taxi and its name as one small pill that opens the ride in Gett.
+@Composable
+fun GettPill(leg: Moovit.Leg) {
+    val context = LocalContext.current
+    val uri = gettUri(leg)
     Row(
-        modifier.heightIn(min = 48.dp).glassSurface(K.rControl)
-            .clickable(enabled = uri != null, role = Role.Button) {
-                try {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, uri).setPackage("com.gettaxi.android"))
-                } catch (_: ActivityNotFoundException) {
-                    Toast.makeText(context, T("Install Gett to open this taxi journey.", "יש להתקין את Gett כדי לפתוח את נסיעת המונית."), Toast.LENGTH_LONG).show()
-                }
-            }.padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.height(28.dp).clip(K.capsule).background(K.fill)
+            .then(if (uri != null) Modifier.clickable(role = Role.Button, onClickLabel = T("Open Gett", "פתחו ב-Gett")) { openGett(context, uri) } else Modifier)
+            .padding(horizontal = K.gap2),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(K.gap1),
     ) {
-        ModeGlyph(Mode.TAXI, K.muted, 18.dp)
-        Text(if (uri == null) T("Taxi details unavailable", "פרטי המונית לא זמינים") else T("Open Gett", "פתחו ב-Gett"), fontSize = 13.sp,
-            color = if (uri == null) K.dim else K.text, fontWeight = FontWeight.Medium)
-        if (uri != null) Text("↗", fontSize = 16.sp, color = K.muted)
+        ModeGlyph(Mode.TAXI, K.textSecondary, 18.dp)
+        Text("Gett", style = K.type.subhead, color = K.text, fontWeight = FontWeight.Medium)
+        if (uri != null) Icon(Icons.Rounded.OpenInNew, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(14.dp))
     }
 }

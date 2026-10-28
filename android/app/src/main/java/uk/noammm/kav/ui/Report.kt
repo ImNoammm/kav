@@ -65,7 +65,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -100,6 +99,13 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 
 // Reporting a driver, a bus or an inspector to the National Public Transport Authority, on its own online form, which
 // takes every bus company's lines. Kav walks the rider through it a step at a time from what it knows about the ride,
@@ -815,7 +821,7 @@ private fun YouStep(d: Draft) {
         Field(T("Town you live in", "יישוב מגורים"), d.town, { d.town = it.take(40) }, error = d.errors["town"], ime = ImeAction.Done)
         Check(d.consent, T("The authority may keep my details to handle this report",
             "אני מסכים/ה שהרשות תשמור את פרטיי לצורך הטיפול בפנייה"), d.errors["consent"]) { d.consent = it }
-        if (d.kept) Text(T("Forget my details", "מחיקת הפרטים שלי"), fontSize = 14.sp, color = K.accent,
+        if (d.kept) Text(T("Forget my details", "מחיקת הפרטים שלי"), fontSize = 14.sp, color = K.accentInk,
             modifier = Modifier.clickable(role = Role.Button) {
                 Reporter.forget(ctx)
                 d.kept = false
@@ -885,8 +891,8 @@ private fun StepPage(
                 .padding(horizontal = K.gap4).padding(top = K.gap2, bottom = if (action == null) inset + K.gap5 else K.gap5),
             verticalArrangement = Arrangement.spacedBy(K.gap3),
         ) {
-            Text(title, style = Display, fontSize = 24.sp)
-            note?.let { Text(it, fontSize = 14.sp, lineHeight = 20.sp, color = K.dim) }
+            Text(title, style = K.type.title)
+            note?.let { Text(it, style = K.type.subhead) }
             Spacer(Modifier.height(K.gap1))
             content()
         }
@@ -895,16 +901,9 @@ private fun StepPage(
             verticalArrangement = Arrangement.spacedBy(K.gap2),
         ) {
             AnimatedVisibility(errors.isNotEmpty(), enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                Text(T("Fix what's marked above.", "תקנו את מה שמסומן למעלה."), fontSize = 13.sp, color = K.critical)
+                Text(T("Fix what's marked above.", "תקנו את מה שמסומן למעלה."), style = K.type.subhead, color = K.critical)
             }
-            Box(
-                Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(K.rPill)).background(K.accent)
-                    .clickable(role = Role.Button, onClick = onAction),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(action, fontSize = 16.sp, color = K.onAccent, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2))
-            }
+            KavButton(action, onAction, wide = true)
         }
     }
 }
@@ -926,12 +925,12 @@ private fun StepBar(step: ReportStep) {
 // The bus being reported, as Kav knows it.
 @Composable
 private fun BusCard(r: ReportFor) {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rControl)).background(K.plateStrong)
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.plateStrong)
         .padding(horizontal = K.gap4, vertical = K.gap3), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(listOf(T("Line ${r.line}", "קו ${r.line}"), formOperator(r.agency)).filter { it.isNotBlank() }.joinToString(" · "),
             fontSize = 16.sp, color = K.text, fontWeight = FontWeight.Medium)
-        r.destination.ifBlank { null }?.let { Text(T("to $it", "לכיוון $it"), fontSize = 13.sp, color = K.muted) }
-        r.plate?.let { Text(T("Number plate $it", "מספר רישוי $it"), fontSize = 13.sp, color = K.muted) }
+        r.destination.ifBlank { null }?.let { Text(T("to $it", "לכיוון $it"), style = K.type.subhead) }
+        r.plate?.let { Text(T("Number plate $it", "מספר רישוי $it"), style = K.type.subhead) }
     }
 }
 
@@ -947,20 +946,23 @@ private fun Choice(title: String, detail: String, picked: Boolean, onClick: () -
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, fontSize = 16.sp, color = K.text, fontWeight = FontWeight.Medium)
-            Text(detail, fontSize = 13.sp, lineHeight = 18.sp, color = K.dim)
+            Text(detail, style = K.type.subhead)
         }
-        Text(T.onward, fontSize = 22.sp, color = if (picked) K.accent else K.dim)
+        Icon(
+            Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null,
+            tint = if (picked) K.accentInk else K.textTertiary, modifier = Modifier.size(20.dp),
+        )
     }
 }
 
 @Composable
 private fun Heading(text: String) {
-    Text(text, style = DisplayItalic, fontSize = 12.sp, color = K.dim, modifier = Modifier.padding(top = K.gap2))
+    Text(text, style = K.type.caption, modifier = Modifier.padding(top = K.gap2))
 }
 
 @Composable
 private fun Label(text: String, error: Boolean) {
-    Text(text, fontSize = 13.sp, color = if (error) K.critical else K.muted)
+    Text(text, style = K.type.subhead, color = if (error) K.critical else K.muted)
 }
 
 // Under a field: what's wrong with it, else a word on what goes there.
@@ -979,7 +981,7 @@ private fun Field(
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Label(label, error != null)
         KavField(value, onValue, placeholder,
-            if (error != null) Modifier.border(1.dp, K.critical, RoundedCornerShape(K.rControl)) else Modifier,
+            if (error != null) Modifier.border(1.dp, K.critical, K.capsule) else Modifier,
             keyboard = keyboard, ime = ime)
         Under(error, helper)
     }
@@ -1007,13 +1009,13 @@ private fun <V> Dropdown(
         Label(label, error != null)
         Box {
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp).onSizeChanged { width = it.width }.glassSurface(K.rControl)
-                    .then(if (error != null) Modifier.border(1.dp, K.critical, RoundedCornerShape(K.rControl)) else Modifier)
+                Modifier.fillMaxWidth().heightIn(min = 52.dp).onSizeChanged { width = it.width }.clip(K.capsule).background(K.fill)
+                    .then(if (error != null) Modifier.border(1.dp, K.critical, K.capsule) else Modifier)
                     .clickable(role = Role.DropdownList) { open = true }.padding(horizontal = K.gap4, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(K.gap3),
             ) {
-                Text(value ?: placeholder, fontSize = 15.sp, color = if (value == null) K.dim else K.text,
+                Text(value ?: placeholder, style = K.type.body, color = if (value == null) K.dim else K.text,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Chevron(open)
             }
@@ -1021,12 +1023,12 @@ private fun <V> Dropdown(
                 open, onDismissRequest = { open = false },
                 modifier = Modifier.width(with(LocalDensity.current) { width.toDp() }).heightIn(max = 360.dp).background(K.bg),
                 containerColor = K.bg, tonalElevation = 0.dp, shadowElevation = 8.dp,
-                shape = RoundedCornerShape(K.rControl),
-                border = BorderStroke(1.dp, if (K.light) K.borderStrong else Color.White),
+                shape = RoundedCornerShape(K.rTile),
+                border = BorderStroke(0.5.dp, K.separator),
             ) {
                 options.forEach { (v, text) ->
                     DropdownMenuItem(
-                        text = { Text(text, fontSize = 15.sp, color = if (text == value) K.accent else K.text) },
+                        text = { Text(text, style = K.type.body, color = if (text == value) K.accentInk else K.text) },
                         onClick = { open = false; onPick(v) },
                     )
                 }
@@ -1056,9 +1058,9 @@ private fun StopField(
 @Composable
 private fun YesNo(question: String, value: String, error: String?, onPick: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
-        Text(question, fontSize = 15.sp, color = if (error != null) K.critical else K.text)
+        Text(question, style = K.type.body, color = if (error != null) K.critical else K.text)
         Row(
-            Modifier.fillMaxWidth().height(48.dp).glassSurface(K.rControl).padding(4.dp),
+            Modifier.fillMaxWidth().height(48.dp).clip(K.capsule).background(K.fill).padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             listOf("1" to T("Yes", "כן"), "2" to T("No", "לא")).forEach { (code, text) ->
@@ -1066,10 +1068,10 @@ private fun YesNo(question: String, value: String, error: String?, onPick: (Stri
                 val fill by animateColorAsState(if (on) K.accent else Color.Transparent, tween(180), label = "yesNo")
                 val ink by animateColorAsState(if (on) K.onAccent else K.text, tween(180), label = "yesNoText")
                 Box(
-                    Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(K.rControl - 4.dp)).background(fill)
+                    Modifier.weight(1f).fillMaxHeight().clip(K.capsule).background(fill)
                         .clickable(role = Role.RadioButton) { onPick(code) },
                     contentAlignment = Alignment.Center,
-                ) { Text(text, fontSize = 15.sp, color = ink, fontWeight = FontWeight.Medium) }
+                ) { Text(text, style = K.type.bodyStrong, color = ink) }
             }
         }
         error?.let { Under(it, null) }
@@ -1079,8 +1081,8 @@ private fun YesNo(question: String, value: String, error: String?, onPick: (Stri
 @Composable
 private fun Hint(shown: Boolean, text: String) {
     AnimatedVisibility(shown, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-        Text(text, fontSize = 13.sp, lineHeight = 18.sp, color = K.muted,
-            modifier = Modifier.fillMaxWidth().panel(12.dp).padding(K.gap3))
+        Text(text, style = K.type.subhead,
+            modifier = Modifier.fillMaxWidth().panel(K.rTile).padding(K.gap3))
     }
 }
 
@@ -1096,7 +1098,7 @@ private fun Check(checked: Boolean, text: String, error: String? = null, onChang
                 Modifier.padding(top = 1.dp).size(22.dp).clip(RoundedCornerShape(6.dp)).background(fill)
                     .border(1.dp, if (checked) K.accent else if (error != null) K.critical else K.border, RoundedCornerShape(6.dp)),
                 contentAlignment = Alignment.Center,
-            ) { if (checked) Text("✓", fontSize = 14.sp, color = K.onAccent, fontWeight = FontWeight.SemiBold) }
+            ) { if (checked) Icon(Icons.Rounded.Check, contentDescription = null, tint = K.onAccent, modifier = Modifier.size(16.dp)) }
             Text(text, fontSize = 14.sp, lineHeight = 20.sp, color = K.text, modifier = Modifier.weight(1f))
         }
         error?.let { Under(it, null) }
@@ -1110,10 +1112,10 @@ private fun Words(label: String, value: String, room: Int, onValue: (String) -> 
         BasicTextField(
             value = value,
             onValueChange = { onValue(it.take(room)) },
-            textStyle = TextStyle(color = K.text, fontSize = 15.sp, lineHeight = 21.sp),
+            textStyle = K.type.body,
             cursorBrush = SolidColor(K.text),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-            modifier = Modifier.fillMaxWidth().heightIn(min = 112.dp).glassSurface(K.rControl)
+            modifier = Modifier.fillMaxWidth().heightIn(min = 112.dp).clip(RoundedCornerShape(K.rTile)).background(K.fill)
                 .semantics { contentDescription = label }.padding(horizontal = K.gap4, vertical = 12.dp),
         )
         Under(null, T("${room - value.length} characters left", "נותרו ${room - value.length} תווים"))
@@ -1125,12 +1127,12 @@ private fun WhenField(label: String, value: String, onOpen: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Label(label, false)
         Row(
-            Modifier.fillMaxWidth().heightIn(min = 48.dp).glassSurface(K.rControl)
+            Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(K.capsule).background(K.fill)
                 .clickable(role = Role.Button, onClick = onOpen).padding(horizontal = K.gap4, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(value, fontSize = 15.sp, color = K.text, modifier = Modifier.weight(1f))
-            Text(T("Change", "שינוי"), fontSize = 14.sp, color = K.accent)
+            Text(value, style = K.type.body, modifier = Modifier.weight(1f))
+            Text(T("Change", "שינוי"), fontSize = 14.sp, color = K.accentInk)
         }
     }
 }
@@ -1148,43 +1150,42 @@ private fun MomentSheet(
     val now = remember { System.currentTimeMillis() / 1000 }
     BottomSheet(onDismiss, scrolls = true) { close ->
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            Text(T("Close", "סגירה"), fontSize = 14.sp, color = K.accent,
-                modifier = Modifier.clip(RoundedCornerShape(K.rPill)).clickable(role = Role.Button) { close(onDismiss) }
+            Text(title, style = K.type.headline, modifier = Modifier.weight(1f))
+            Text(T("Close", "סגירה"), fontSize = 14.sp, color = K.accentInk,
+                modifier = Modifier.clip(K.capsule).clickable(role = Role.Button) { close(onDismiss) }
                     .padding(horizontal = K.gap2, vertical = K.gap1))
         }
         Spacer(Modifier.height(K.gap3))
         TimeEntry(hour, minute) { h, m -> hour = h; minute = m }
         Spacer(Modifier.height(K.gap2))
         val picked = momentOf(back, hour, minute)
-        if (withDay) Row(Modifier.fillMaxWidth().panel(K.rControl), verticalAlignment = Alignment.CenterVertically) {
-            DayArrow(T.backward, back < MAX_DAYS_BACK, T("Earlier day", "יום קודם")) { back++ }
-            Text(dayName(back, picked), fontSize = 15.sp, color = K.text, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
-            DayArrow(T.onward, back > 0, T("Later day", "יום אחרי")) { back-- }
+        if (withDay) Row(Modifier.fillMaxWidth().clip(K.capsule).background(K.fill), verticalAlignment = Alignment.CenterVertically) {
+            DayArrow(true, back < MAX_DAYS_BACK, T("Earlier day", "יום קודם")) { back++ }
+            Text(dayName(back, picked), style = K.type.body, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+            DayArrow(false, back > 0, T("Later day", "יום אחרי")) { back-- }
         }
         val future = picked > now
         AnimatedVisibility(future) {
-            Text(T("That's later than now.", "זה מאוחר מעכשיו."), fontSize = 13.sp, color = K.critical,
+            Text(T("That's later than now.", "זה מאוחר מעכשיו."), style = K.type.subhead, color = K.critical,
                 modifier = Modifier.padding(top = K.gap2))
         }
         Spacer(Modifier.height(K.gap3))
-        Box(
-            Modifier.fillMaxWidth().heightIn(min = 48.dp).panel(K.rControl)
-                .clickable(enabled = !future, role = Role.Button) { close { onPick(picked); onDismiss() } },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(T("Done", "סיום"), fontSize = 15.sp, color = if (future) K.dim else K.text, fontWeight = FontWeight.Medium)
-        }
+        KavButton(T("Done", "סיום"), { close { onPick(picked); onDismiss() } }, enabled = !future, wide = true)
     }
 }
 
 @Composable
-private fun DayArrow(glyph: String, enabled: Boolean, description: String, onClick: () -> Unit) {
+private fun DayArrow(back: Boolean, enabled: Boolean, description: String, onClick: () -> Unit) {
     Box(
-        Modifier.size(48.dp).clip(RoundedCornerShape(K.rControl)).semantics { contentDescription = description }
+        Modifier.size(48.dp).clip(CircleShape).semantics { contentDescription = description }
             .clickable(role = Role.Button, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
-    ) { Text(glyph, fontSize = 22.sp, color = if (enabled) K.text else K.border) }
+    ) {
+        Icon(
+            if (back) Icons.AutoMirrored.Rounded.KeyboardArrowLeft else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null, tint = if (enabled) K.text else K.textTertiary, modifier = Modifier.size(24.dp),
+        )
+    }
 }
 
 // The rider's photos, made ready for the form as they're picked, with room for four.
@@ -1209,16 +1210,16 @@ private fun Photos(d: Draft) {
             d.photos.forEach { p ->
                 Box(Modifier.size(76.dp)) {
                     Image(p.thumb, contentDescription = T("Photo", "תמונה"), contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)))
+                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(K.rTile)))
                     Box(
                         Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp).clip(CircleShape).background(K.bg.copy(alpha = .8f))
                             .clickable(role = Role.Button, onClickLabel = T("Remove", "הסרה")) { d.photos = d.photos - p; p.file.delete() },
                         contentAlignment = Alignment.Center,
-                    ) { Text("✕", fontSize = 11.sp, color = K.text) }
+                    ) { Icon(Icons.Rounded.Close, contentDescription = null, tint = K.text, modifier = Modifier.size(16.dp)) }
                 }
             }
             repeat(working) {
-                Box(Modifier.size(76.dp).panel(12.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(76.dp).panel(K.rTile), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.size(20.dp), color = K.muted, strokeWidth = 2.dp)
                 }
             }
@@ -1228,7 +1229,7 @@ private fun Photos(d: Draft) {
                         pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
                 contentAlignment = Alignment.Center,
-            ) { Text("+", fontSize = 28.sp, color = K.muted) }
+            ) { Icon(Icons.Rounded.Add, contentDescription = null, tint = K.textSecondary, modifier = Modifier.size(28.dp)) }
         }
         Under(null, T("Up to 4. The ministry's form takes photos, not video or sound.", "עד 4. הטופס של משרד התחבורה מקבל תמונות, לא וידאו או הקלטות."))
     }
@@ -1238,16 +1239,16 @@ private fun Photos(d: Draft) {
 @Composable
 private fun Summary(title: String, lines: List<String>, onChange: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().panel(K.rControl).clickable(role = Role.Button, onClick = onChange)
+        Modifier.fillMaxWidth().panel(K.rCard).clickable(role = Role.Button, onClick = onChange)
             .padding(horizontal = K.gap4, vertical = K.gap3),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, fontSize = 12.sp, color = K.dim)
-            lines.forEach { Text(it, fontSize = 15.sp, lineHeight = 20.sp, color = K.text, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+            lines.forEach { Text(it, style = K.type.body, maxLines = 3, overflow = TextOverflow.Ellipsis) }
         }
-        Text(T("Change", "שינוי"), fontSize = 14.sp, color = K.accent)
+        Text(T("Change", "שינוי"), fontSize = 14.sp, color = K.accentInk)
     }
 }
 
@@ -1408,19 +1409,19 @@ private fun MinistryForm(filling: Filling, onBack: () -> Unit, onDone: () -> Uni
         Column(Modifier.fillMaxSize().background(K.bg).windowInsetsPadding(WindowInsets.safeDrawing)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = K.gap4, vertical = K.gap2), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(T("Ministry of Transport", "משרד התחבורה"), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                    Text(T("Ministry of Transport", "משרד התחבורה"), style = K.type.headline)
                     Crossfade(status to tint, label = "formStatus") { (text, colour) ->
-                        Text(text, fontSize = 13.sp, lineHeight = 18.sp, color = colour)
+                        Text(text, style = K.type.subhead, color = colour)
                     }
                 }
-                if (failed) Text(T("Try again", "ניסיון חוזר"), fontSize = 15.sp, color = K.accent,
+                if (failed) Text(T("Try again", "ניסיון חוזר"), style = K.type.body, color = K.accentInk,
                     modifier = Modifier.clickable(role = Role.Button) {
                         failed = false
                         progress = Progress()
                         page.loadUrl(FORM)
                     }.padding(K.gap2))
-                Text(if (progress.sent) T("Done", "סיום") else T("Cancel", "ביטול"), fontSize = 15.sp,
-                    color = if (progress.sent) K.accent else K.muted,
+                Text(if (progress.sent) T("Done", "סיום") else T("Cancel", "ביטול"), style = K.type.body,
+                    color = if (progress.sent) K.accentInk else K.muted,
                     modifier = Modifier.clickable(role = Role.Button) { if (progress.sent) onDone() else onBack() }.padding(K.gap2))
             }
             AndroidView(

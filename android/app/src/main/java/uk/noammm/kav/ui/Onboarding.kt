@@ -2,26 +2,20 @@ package uk.noammm.kav.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.Prefs
-import uk.noammm.kav.Seen
 import uk.noammm.kav.data.MapFile
 
 @Composable
@@ -31,25 +25,9 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
     var filters by remember { mutableStateOf(Prefs.filters(ctx)) }
     // A custom spot for Moovit to see is picked on the whole screen, as in Settings.
     var choosing by remember { mutableStateOf(false) }
-    if (choosing) {
-        var q by remember { mutableStateOf("") }
-        PlacePicker(
-            title = T("a place for Moovit to see…", "מקום ש-Moovit יראה…"),
-            here = null,
-            allowMyLocation = false,
-            onMyLocation = {},
-            onPick = { p -> model.setSeen(ctx, Seen.PLACE, p); choosing = false },
-            onDismiss = { choosing = false },
-            favourites = model.favourites,
-            onSaveFavourites = { model.saveFavourites(ctx, it) },
-            query = q,
-            onQuery = { q = it },
-            net = model.net,
-        )
-        return
-    }
     androidx.activity.compose.BackHandler(enabled = page > 0) { page-- }
 
+    Box(Modifier.fillMaxSize()) {
     AnimatedContent(
         page, transitionSpec = { if (targetState > initialState) forward() else backward() }, label = "onboarding",
         modifier = Modifier.fillMaxSize().background(K.bg),
@@ -60,23 +38,30 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
         ) {
             Spacer(Modifier.height(K.gap6))
             if (p == 0) {
-                Text("בחרו הגדרות אזוריות", style = Display, fontSize = 26.sp)
-                Text("Choose a locale", style = Display, fontSize = 26.sp, color = K.dim)
+                Text("בחרו הגדרות אזוריות", style = K.type.largeTitle)
+                Text("Choose a locale", style = K.type.largeTitle, color = K.textTertiary)
                 Spacer(Modifier.height(K.gap6))
-                for (l in Lang.entries) {
-                    OnboardingButton(l.label, lit = T.lang == l) { T.switchTo(l); Prefs.setLang(ctx, l) }
-                    Spacer(Modifier.height(K.gap3))
-                }
+                KavSegmented(
+                    Lang.entries.map { it.label }, selected = Lang.entries.indexOf(T.lang),
+                    onSelect = { i -> val l = Lang.entries[i]; T.switchTo(l); Prefs.setLang(ctx, l) },
+                )
+                // A question of its own: the names of stops, apart from Kav's language.
                 Text(
-                    T("time format", "תבנית שעה"),
-                    style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+                    T("Stop names", "שמות תחנות"),
+                    style = K.type.caption,
+                    modifier = Modifier.padding(start = K.gap3, top = K.gap3, bottom = K.gap2),
+                )
+                StopNamesRow(ctx, Modifier)
+                Text(
+                    T("Time format", "תבנית שעה"),
+                    style = K.type.caption,
                     modifier = Modifier.padding(start = K.gap3, top = K.gap3, bottom = K.gap2),
                 )
                 ClockChoice(ctx, Modifier)
                 Spacer(Modifier.height(K.gap6))
                 OnboardingButton(T("Next", "הבא")) { page = 1 }
             } else if (p == 1) {
-                Text(T("Pick a look", "בחרו מראה"), style = Display, fontSize = 26.sp)
+                Text(T("Pick a look", "בחרו מראה"), style = K.type.largeTitle)
                 Text(
                     T(
                         "OLED black, light or dark, with liquid glass or solid on top. " +
@@ -90,13 +75,13 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                 AccentPreview()
                 Spacer(Modifier.height(K.gap2))
                 LookChoices {
-                    Text(it, style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+                    Text(it, style = K.type.caption,
                         modifier = Modifier.padding(start = K.gap3, top = K.gap4, bottom = K.gap2))
                 }
                 Spacer(Modifier.height(K.gap8))
                 OnboardingButton(T("Next", "הבא")) { Prefs.lookPicked(ctx); page = 2 }
             } else if (p == 2) {
-                Text(T("Pick a colour", "בחרו צבע"), style = Display, fontSize = 26.sp)
+                Text(T("Pick a colour", "בחרו צבע"), style = K.type.largeTitle)
                 Text(
                     T(
                         "Kav is grey with one colour on top. Drag the dot, or take a preset; " +
@@ -113,7 +98,7 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                 Spacer(Modifier.height(K.gap8))
                 OnboardingButton(T("Next", "הבא")) { page = 3 }
             } else if (p == 3) {
-                Text(T("What should a plan show?", "מה מסלול יכול לכלול?"), style = Display, fontSize = 26.sp)
+                Text(T("What should a plan show?", "מה מסלול יכול לכלול?"), style = K.type.largeTitle)
                 Text(
                     T(
                         "Everything is on. Switch off what you never take and the planner " +
@@ -132,8 +117,8 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                 }
                 Spacer(Modifier.height(K.gap5))
                 Text(
-                    T("what a card shows", "מה מוצג בכרטיס"),
-                    style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+                    T("What a card shows", "מה מוצג בכרטיס"),
+                    style = K.type.caption,
                     modifier = Modifier.padding(start = K.gap3, bottom = K.gap2),
                 )
                 Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
@@ -151,7 +136,7 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                 OnboardingButton(T("Next", "הבא")) { page = 4 }
             } else if (p == 4) {
                 val state = MapFile.state
-                Text(T("Download the map", "הורדת המפה"), style = Display, fontSize = 26.sp)
+                Text(T("Download the map", "הורדת המפה"), style = K.type.largeTitle)
                 Text(
                     T(
                         "Kav keeps its map on your phone instead of loading tiles from a server as " +
@@ -168,15 +153,15 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                 Spacer(Modifier.height(K.gap5))
                 when (state) {
                     is MapFile.State.Downloading -> Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-                        Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)).background(K.surface4)) {
+                        Box(Modifier.fillMaxWidth().height(6.dp).clip(K.capsule).background(K.surface4)) {
                             Box(Modifier.fillMaxWidth(state.progress.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
                         }
-                        Text(T("Downloading… ${(state.progress * 100).toInt()}%", "מורידים… ${(state.progress * 100).toInt()}%"), fontSize = 12.sp, color = K.dim)
+                        Text(T("Downloading… ${(state.progress * 100).toInt()}%", "מורידים… ${(state.progress * 100).toInt()}%"), style = K.type.caption)
                     }
                     is MapFile.State.Failed ->
                         Text(T("Couldn't download it. ${state.why}", "ההורדה לא הצליחה. ${state.why}"), fontSize = 12.sp, color = K.critical, lineHeight = 17.sp)
                     is MapFile.State.Ready ->
-                        Text(T("Got it. The map stays on your phone from now on.", "מוכן. מעכשיו המפה נשארת בטלפון שלכם."), fontSize = 13.sp, color = K.muted)
+                        Text(T("Got it. The map stays on your phone from now on.", "מוכן. מעכשיו המפה נשארת בטלפון שלכם."), style = K.type.subhead)
                     else -> {}
                 }
                 Spacer(Modifier.height(K.gap8))
@@ -187,7 +172,7 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                     else -> OnboardingButton(T("Download", "הורדה")) { MapFile.startDownload(ctx) }
                 }
             } else {
-                Text(T("Privacy", "פרטיות"), style = Display, fontSize = 26.sp)
+                Text(T("Privacy", "פרטיות"), style = K.type.largeTitle)
                 Text(
                     T(
                         "What Kav shares, and with whom. Settings has all of this again later.",
@@ -197,15 +182,15 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                 )
                 Spacer(Modifier.height(K.gap5))
                 Text(
-                    T("live locations", "מיקום בזמן אמת"),
-                    style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+                    T("Live locations", "מיקום בזמן אמת"),
+                    style = K.type.caption,
                     modifier = Modifier.padding(start = K.gap3, bottom = K.gap2),
                 )
                 Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LiveSourceRow() }
                 Spacer(Modifier.height(K.gap5))
                 Text(
-                    T("search", "חיפוש"),
-                    style = DisplayItalic, fontSize = 12.sp, color = K.dim,
+                    T("Search", "חיפוש"),
+                    style = K.type.caption,
                     modifier = Modifier.padding(start = K.gap3, bottom = K.gap2),
                 )
                 Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { PrivacyRows(model) { choosing = true } }
@@ -215,20 +200,9 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
             Spacer(Modifier.height(K.gap6))
         }
     }
+    SeenPlacePicker(model, choosing) { choosing = false }
+    }
 }
 
 @Composable
-private fun OnboardingButton(label: String, lit: Boolean = true, onClick: () -> Unit) {
-    Box(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp)
-            .then(
-                // A choice not taken is drawn as the rest of Kav draws its controls in the look picked.
-                if (lit) Modifier.clip(RoundedCornerShape(K.rPill)).background(K.accent)
-                else Modifier.panel(K.rPill, solid = true)
-            )
-            .clickable(role = Role.Button, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(label, fontSize = 16.sp, color = if (lit) K.onAccent else K.text, fontWeight = FontWeight.Medium)
-    }
-}
+private fun OnboardingButton(label: String, onClick: () -> Unit) = KavButton(label, onClick, wide = true)

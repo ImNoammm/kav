@@ -80,14 +80,25 @@ private fun stationKey(name: String): String = name.replace("״", "''").replace(
 
 // What a live source says of a station's trains today: the timetable's trains it has running, where those end early,
 // and from Moovit, which it has cancelled, until when (seconds from the board's midnight) it would list any other,
-// -1 when it can't say, and around when it lists trains that fit no row, where nothing is said.
+// -1 when it can't say, and around when it lists trains that fit no row, where nothing is said. named: from Kav's
+// server, the number and platform of each train not yet out, which the timetable keeps without either.
 class TrainsToday(
     val running: Set<Int> = emptySet(), val cancelled: Set<Int> = emptySet(), val until: Int = -1,
     val unsure: List<IntRange> = emptyList(), val ends: Map<Int, String> = emptyMap(),
+    val named: Map<Int, TrainName> = emptyMap(),
 ) {
     // A train row it has cancelled, or would list but doesn't: not running today, as works or a holiday can have it.
     fun missing(net: Net, trip: Int, dep: Int) = net.rType[net.tripRoute[trip]] == 2 && trip !in running &&
         (trip in cancelled || dep <= until && unsure.none { dep in it })
+}
+
+// A train's number and the platform it leaves a station from, as Moovit's boards show both. Blank where the live
+// source hasn't given one.
+class TrainName(val number: String, val platform: String) {
+    companion object {
+        // A live row's, when it names the train: Kav's server gives its number, Moovit names its line instead.
+        fun of(number: String, platform: String) = TrainName(number, platform).takeIf { number.isNotEmpty() && number.all(Char::isDigit) }
+    }
 }
 
 // A train as Moovit lists it at a station: when it's timetabled there and expected (seconds from the board's

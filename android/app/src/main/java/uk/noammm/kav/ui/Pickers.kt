@@ -8,9 +8,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -28,13 +26,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -48,7 +48,10 @@ import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.stopsMatching
 import kotlinx.coroutines.async
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.rounded.MyLocation
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.Map
 
 @Composable
 fun KavField(
@@ -60,14 +63,27 @@ fun KavField(
     keyboard: KeyboardType = KeyboardType.Text,
     secret: Boolean = false,
     ime: ImeAction? = null,
+    search: Boolean = false,
+    floating: Boolean = false,
+    // flat: no capsule of its own, for a field that is the first row of a card.
+    flat: Boolean = false,
 ) {
     val focus = remember { FocusRequester() }
-    LaunchedEffect(autoFocus) { if (autoFocus) runCatching { focus.requestFocus() } }
+    var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    LaunchedEffect(autoFocus) {
+        if (autoFocus) {
+            // Opened again on an earlier search: all of it is selected, so what's typed replaces it.
+            field = TextFieldValue(value, TextRange(0, value.length))
+            runCatching { focus.requestFocus() }
+        }
+    }
+    // Changed from outside (the clear button, a pick): the cursor goes to the end.
+    val shown = if (field.text == value) field else TextFieldValue(value, TextRange(value.length))
     BasicTextField(
-        value = value,
-        onValueChange = onValue,
+        value = shown,
+        onValueChange = { field = it; if (it.text != value) onValue(it.text) },
         singleLine = true,
-        textStyle = TextStyle(color = K.text, fontSize = 15.sp),
+        textStyle = K.type.body,
         cursorBrush = SolidColor(K.text),
         visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(
@@ -76,15 +92,20 @@ fun KavField(
         ),
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .glassSurface(K.rControl)
+            .heightIn(min = 52.dp)
+            // A capsule with a quiet fill; glass where it floats over a list.
+            .then(if (flat) Modifier else if (floating) Modifier.glassSurface(26.dp) else Modifier.clip(K.capsule).background(K.fill))
             .focusRequester(focus)
             .semantics { contentDescription = placeholder }
-            .padding(horizontal = K.gap4, vertical = 12.dp),
+            .padding(horizontal = K.gap4, vertical = 14.dp),
         decorationBox = { innerTextField ->
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (search) {
+                    SearchGlyph(K.textTertiary, 20.dp)
+                    Spacer(Modifier.width(K.gap2))
+                }
                 Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                    if (value.isEmpty()) Text(placeholder, fontSize = 15.sp, color = K.dim)
+                    if (value.isEmpty()) Text(placeholder, style = K.type.body, color = K.textTertiary)
                     innerTextField()
                 }
                 // The same pop as the favourites' remove badge.
@@ -105,43 +126,21 @@ fun KavField(
     )
 }
 
+// The line under a stop's name: its platform first, which tells a station's platforms apart, then its code, as on
+// its sign, and its town. "Platform 4 · Stop 32052 · Rosh Ha'ayin".
+internal fun stopDetail(net: Net, stop: Int, town: Boolean = true): String = listOfNotNull(
+    net.platform.getOrElse(stop) { "" }.takeIf { it.isNotEmpty() }?.let { T("Platform $it", "רציף $it") },
+    net.code.getOrElse(stop) { 0 }.takeIf { it > 0 }?.let { T("Stop $it", "תחנה $it") },
+    net.cityName(stop).takeIf { town && it.isNotBlank() },
+).joinToString(" · ")
+
+// A search field's magnifier, the shape of Home's.
 @Composable
-fun StopRow(net: Net, stop: Int, trailing: String? = null, leading: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = K.gap1)
-            .heightIn(min = 48.dp)
-            .panel(K.rControl)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = K.gap3, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (leading != null) {
-            leading()
-            Spacer(Modifier.width(K.gap3))
-        }
-        Column(Modifier.weight(1f)) {
-            Text(
-                net.name[stop], fontSize = 15.sp, color = K.text,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-            val city = net.cityOf(stop)
-            val code = net.code.getOrElse(stop) { 0 }
-            // A bus station's platforms share its name and code: the platform tells them apart.
-            val platform = net.platform.getOrElse(stop) { "" }
-            val second = listOf(
-                city.takeIf { it.isNotBlank() }, code.takeIf { it > 0 }?.toString(),
-                platform.takeIf { it.isNotEmpty() }?.let { T("platform $it", "רציף $it") },
-            ).filterNotNull().joinToString(" · ")
-            if (second.isNotBlank()) {
-                Text(second, fontSize = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        if (trailing != null) {
-            Spacer(Modifier.width(K.gap2))
-            Text(trailing, fontSize = 14.sp, color = K.dim)
-        }
+internal fun SearchGlyph(tint: Color, size: androidx.compose.ui.unit.Dp = 18.dp) {
+    Canvas(Modifier.size(size)) {
+        val w = this.size.width
+        drawCircle(tint, w * .29f, Offset(w * .40f, w * .40f), style = Stroke(w * .09f))
+        drawLine(tint, Offset(w * .63f, w * .63f), Offset(w * .88f, w * .88f), w * .09f, StrokeCap.Round)
     }
 }
 
@@ -208,6 +207,12 @@ fun PlacePicker(
         error = null
         if (q.isBlank()) {
             places = emptyList(); stations = emptyList(); busy = false
+            return@LaunchedEffect
+        }
+        // A point copied from a map is that very place.
+        uk.noammm.kav.data.MoovitLink.coordinates(q)?.let { (lat, lon) ->
+            places = listOf(Moovit.Place("%.5f, %.5f".format(java.util.Locale.US, lat, lon), T("Coordinates", "קואורדינטות"), lat, lon))
+            stations = emptyList(); busy = false
             return@LaunchedEffect
         }
         busy = true
@@ -327,7 +332,7 @@ fun PlacePicker(
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2),
         ) {
             BackButton(leave)
-            KavField(q, onQuery, setting?.let { T("where is ${it.label}?", "היכן נמצא ${it.label}?") } ?: title, Modifier.weight(1f), autoFocus = true)
+            KavField(q, onQuery, setting?.let { T("where is ${it.label}?", "היכן נמצא ${it.label}?") } ?: title, Modifier.weight(1f), autoFocus = true, floating = true)
         }
     }, estimate = 72.dp) { topSpace, backdrop ->
     LazyColumn(
@@ -353,33 +358,35 @@ fun PlacePicker(
                 )
             }
         }
-        item(key = "map") { SelectOnMapRow { cancelLocation(); onMap = true } }
+        // Select on map and My location: two ways to place a point, on one card.
+        item(key = "map") {
+            Box(Modifier.padding(horizontal = K.gap4).groupItem(first = true, last = !allowMyLocation)) {
+                SelectOnMapRow(sides = 0.dp, framed = false) { cancelLocation(); onMap = true }
+            }
+        }
         if (allowMyLocation) item(key = "here") {
             val ready = here != null && !locating && !locateFailed
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = K.gap3, vertical = K.gap2).heightIn(min = 48.dp)
-                    .glassSurface(K.rControl)
+                Modifier.fillMaxWidth().padding(horizontal = K.gap4).groupItem(first = false, last = true).heightIn(min = 48.dp)
                     .clickable(enabled = !locating, role = Role.Button) {
                         if (hasLocationPermission(ctx)) startLocating()
                         else askHere.launch(LOCATION_PERMISSIONS)
                     }
                     .padding(horizontal = K.gap4, vertical = K.gap3),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3),
             ) {
-                Box(
-                    Modifier.size(8.dp).clip(RoundedCornerShape(999.dp))
-                        .background(if (ready) K.live else K.dim),
-                )
+                Icon(Icons.Rounded.MyLocation, contentDescription = null, tint = if (ready) K.textSecondary else K.textTertiary,
+                    modifier = Modifier.size(20.dp))
                 Text(
                     if (locating) T("Finding you…", "מאתרים אתכם…")
                     else if (locateFailed) T("Couldn't get an accurate location. Tap to retry", "לא התקבל מיקום מדויק. לחצו לנסות שוב")
                     else if (ready) T("My location", "המיקום שלי")
                     else T("Use my location", "השתמשו במיקום שלי"),
-                    fontSize = 15.sp, color = if (ready) K.live else K.muted,
+                    style = K.type.body, color = if (ready) K.text else K.textSecondary,
                 )
                 if (!ready && !locating && !locateFailed && !hasLocationPermission(ctx)) Text(
-                    T("location is off", "המיקום כבוי"),
-                    fontSize = 12.sp, color = K.dim, modifier = Modifier.padding(start = K.gap1),
+                    T("Location is off", "המיקום כבוי"),
+                    style = K.type.caption, modifier = Modifier.padding(start = K.gap1),
                 )
             }
         }
@@ -400,22 +407,15 @@ fun PlacePicker(
         }
         if (showRecents) {
             item(key = "recentHead") {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = K.gap4, end = K.gap3, top = K.gap2, bottom = K.gap1),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(T("Recent", "אחרונים"), fontSize = 14.sp, color = K.dim, modifier = Modifier.weight(1f))
-                    Chip(T("Clear", "ניקוי"), false) {
-                        uk.noammm.kav.Prefs.clearRecents(ctx); recents = emptyList()
-                    }
-                }
+                SectionHeader(T("Recent", "אחרונים"), Modifier.padding(horizontal = K.gap4), action = T("Clear", "ניקוי"),
+                    onAction = { uk.noammm.kav.Prefs.clearRecents(ctx); recents = emptyList() })
             }
-            items(recents) { p -> Box(Modifier.padding(horizontal = K.gap2)) { PlaceRow(p, here) { pick(p) } } }
+            itemsIndexed(recents) { i, p -> PlaceRow(p, here, i == 0, i == recents.lastIndex) { pick(p) } }
         } else if (found) {
-            if (places.isNotEmpty()) item { Box(Modifier.padding(horizontal = K.gap2)) { SectionTitle(T("Places", "מקומות")) } }
-            items(places) { p -> Box(Modifier.padding(horizontal = K.gap2)) { PlaceRow(p, here) { pick(p) } } }
-            if (stations.isNotEmpty()) item { Box(Modifier.padding(horizontal = K.gap2)) { SectionTitle(T("Stations", "תחנות")) } }
-            items(stations) { p -> Box(Modifier.padding(horizontal = K.gap2)) { PlaceRow(p, here) { pick(p) } } }
+            if (places.isNotEmpty()) item { SectionTitle(T("Places", "מקומות")) }
+            itemsIndexed(places) { i, p -> Box(Modifier.popIn(i, places)) { PlaceRow(p, here, i == 0, i == places.lastIndex) { pick(p) } } }
+            if (stations.isNotEmpty()) item { SectionTitle(T("Stops", "תחנות")) }
+            itemsIndexed(stations) { i, p -> Box(Modifier.popIn(places.size + i, stations)) { PlaceRow(p, here, i == 0, i == stations.lastIndex) { pick(p) } } }
         }
     }
     }
@@ -446,21 +446,21 @@ fun PlacePicker(
     }
 }
 
+// Under a search field, an action rather than a second field: no frame, its pin in the accent, its words in the
+// text colour, lined up with the field's magnifier and words.
 @Composable
-internal fun SelectOnMapRow(sides: androidx.compose.ui.unit.Dp = K.gap3, onClick: () -> Unit) {
+// framed: a card of its own, as under the Stops field; off where it is a row of a card already.
+internal fun SelectOnMapRow(sides: androidx.compose.ui.unit.Dp = K.gap3, framed: Boolean = true, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = sides)
-            .heightIn(min = 48.dp).glassSurface(K.rControl)
+            .then(if (framed) Modifier.padding(top = K.gap2).heightIn(min = 52.dp).panel(K.rCard) else Modifier.heightIn(min = 48.dp))
             .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = K.gap4, vertical = K.gap3),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2),
+            .padding(horizontal = K.gap4, vertical = K.gap2),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
-        Canvas(Modifier.size(14.dp)) {
-            val w = size.width
-            drawCircle(K.muted, w * .30f, Offset(w * .5f, w * .38f), style = Stroke(w * .13f))
-            drawLine(K.muted, Offset(w * .5f, w * .68f), Offset(w * .5f, w * .98f), w * .13f, StrokeCap.Round)
-        }
-        Text(T("Select on map", "בחירה על המפה"), fontSize = 15.sp, color = K.muted)
+        Icon(Icons.Rounded.Map, contentDescription = null, tint = K.textSecondary, modifier = Modifier.size(20.dp))
+        Text(T("Select on map", "בחירה על המפה"), style = K.type.body, modifier = Modifier.weight(1f))
+        Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(20.dp))
     }
 }
 
@@ -535,12 +535,12 @@ private fun StopMapHeader(pin: Boolean, onDismiss: () -> Unit) {
     ) {
         BackButton(onDismiss)
         Box(
-            Modifier.heightIn(min = 48.dp).glassSurface(K.rControl).padding(horizontal = K.gap4),
+            Modifier.heightIn(min = 48.dp).glassSurface(24.dp).padding(horizontal = K.gap4),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 if (pin) T("Tap a stop, or anywhere", "הקישו על תחנה, או על כל מקום") else T("Tap a stop", "הקישו על תחנה"),
-                fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+                style = K.type.headline,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
@@ -554,7 +554,7 @@ private sealed class MapPick {
 
 private fun nearestLabel(net: Net, lat: Double, lon: Double): String =
     net.nearestStops(lat, lon, k = 1, radius = 400.0).firstOrNull()?.let { (i, d) ->
-        T("near ", "ליד ") + net.name.getOrElse(i) { "" } + " · " + distanceLabel(d)
+        T("near ", "ליד ") + net.stopName(i) + " · " + distanceLabel(d)
     } ?: ""
 
 @Composable
@@ -633,7 +633,7 @@ private fun StopMapBody(
                 last?.let { pick ->
                 val stopAt = (pick as? MapPick.Stop)?.index
                 val detail = if (stopAt != null) listOfNotNull(
-                    net.cityOf(stopAt).takeIf { it.isNotBlank() },
+                    net.cityName(stopAt).takeIf { it.isNotBlank() },
                     net.code.getOrElse(stopAt) { 0 }.takeIf { it > 0 }?.toString(),
                 ).joinToString(" · ")
                 else (pick as MapPick.Point).let { nearestLabel(net, it.lat, it.lon) }
@@ -645,41 +645,28 @@ private fun StopMapBody(
                     verticalArrangement = Arrangement.spacedBy(K.gap2),
                 ) {
                     Text(
-                        if (stopAt != null) net.name.getOrElse(stopAt) { T("Stop", "תחנה") }
+                        if (stopAt != null) (if (stopAt in net.name.indices) net.stopName(stopAt) else T("Stop", "תחנה"))
                         else T("Pinned location", "מיקום מסומן"),
-                        fontSize = 17.sp, color = K.text,
-                        fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        style = K.type.headline, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     )
                     if (detail.isNotBlank()) Text(detail, fontSize = 14.sp, color = K.dim, maxLines = 1)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                        Box(
-                            Modifier.heightIn(min = 44.dp).panel(K.rPill)
-                                .clickable(role = Role.Button) { chosen = null }
-                                .padding(horizontal = K.gap4),
-                            contentAlignment = Alignment.Center,
-                        ) { Text(T("Not this one", "לא זו"), fontSize = 14.sp, color = K.text) }
+                        KavButton(
+                            T("Not this one", "לא זו"), { chosen = null }, Modifier.heightIn(min = 52.dp),
+                            style = ButtonStyle.Secondary,
+                        )
                         Spacer(Modifier.weight(1f))
-                        Box(
-                            Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(K.rPill))
-                                .background(K.accent).clickable(role = Role.Button) {
-                                    when (pick) {
-                                        is MapPick.Stop ->
-                                            if (onStop != null) onStop(pick.index) else onPick(placeOf(net, pick.index))
-                                        is MapPick.Point ->
-                                            onPick(Moovit.Place(
-                                                T("Pinned location", "מיקום מסומן"),
-                                                nearestLabel(net, pick.lat, pick.lon), pick.lat, pick.lon,
-                                            ))
-                                    }
-                                }
-                                .padding(horizontal = K.gap5),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                if (stopAt != null) T("Choose this stop", "בחירת התחנה") else T("Go here", "לכאן"),
-                                fontSize = 14.sp, color = K.onAccent, fontWeight = FontWeight.Medium,
-                            )
-                        }
+                        KavButton(if (stopAt != null) T("Choose this stop", "בחירת התחנה") else T("Go here", "לכאן"), {
+                            when (pick) {
+                                is MapPick.Stop ->
+                                    if (onStop != null) onStop(pick.index) else onPick(placeOf(net, pick.index))
+                                is MapPick.Point ->
+                                    onPick(Moovit.Place(
+                                        T("Pinned location", "מיקום מסומן"),
+                                        nearestLabel(net, pick.lat, pick.lon), pick.lat, pick.lon,
+                                    ))
+                            }
+                        })
                     }
                 }
                 }
@@ -689,40 +676,21 @@ private fun StopMapBody(
 }
 
 @Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text, fontSize = 14.sp, color = K.dim,
-        modifier = Modifier.padding(start = K.gap2, end = K.gap1, top = K.gap2, bottom = K.gap1),
-    )
-}
+private fun SectionTitle(text: String) = SectionHeader(text, Modifier.padding(horizontal = K.gap4))
 
 @Composable
-private fun PlaceRow(p: Moovit.Place, here: Pair<Double, Double>?, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = K.gap1).heightIn(min = 48.dp).panel(K.rControl)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = K.gap3, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(
-            Modifier.width(56.dp), horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            PlaceGlyph(p.type, p.mode)
-            // Measured on the phone: Moovit's own figure is from wherever it was told you are.
-            val away = here?.let { metres(it.first, it.second, p.lat, p.lon) }?.takeIf { !it.isNaN() }
-            if (away != null) Text(
-                distanceLabel(away), fontSize = 14.sp, color = K.dim,
-                modifier = Modifier.padding(top = 2.dp),
-            )
-        }
-        Spacer(Modifier.width(K.gap2))
-        Column(Modifier.weight(1f)) {
-            Text(p.name, fontSize = 15.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (p.detail.isNotBlank()) Text(
-                p.detail, fontSize = 14.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
+private fun PlaceRow(p: Moovit.Place, here: Pair<Double, Double>?, first: Boolean, last: Boolean, onClick: () -> Unit) {
+    // Measured on the phone: Moovit's own figure is from wherever it was told you are.
+    val away = here?.let { metres(it.first, it.second, p.lat, p.lon) }?.takeIf { !it.isNaN() }
+    ListRow(
+        p.name,
+        Modifier.padding(horizontal = K.gap4).groupItem(first, last, inset = K.gap4 + 24.dp + K.gap3),
+        subtitle = p.detail.takeIf { it.isNotBlank() },
+        value = away?.let { distanceLabel(it) },
+        leading = { Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) { PlaceGlyph(p.type, p.mode) } },
+        onClick = onClick,
+        chevron = false,
+    )
 }
 
 @Composable

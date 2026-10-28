@@ -1,8 +1,22 @@
 package uk.noammm.kav.data
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.util.zip.GZIPInputStream
+
+// The language stops', stations', towns' and lines' ends' names are shown in, a setting of its own that changes nothing
+// else (Settings, Language and time): English where the timetable has a name's English one (the ministry's), else the
+// Hebrew. Kav keeps working in the ministry's Hebrew names, which its server matches on, and changes them only where a
+// name is shown; Moovit answers in Kav's own language, so its names are changed there the other way too.
+object StopNames {
+    var english by mutableStateOf(false)
+}
+
+// A name as shown, for a name from the timetable, Kav's server, Moovit or a stop Kav keeps.
+fun shownName(name: String): String = uk.noammm.kav.Loaded.net?.shown(name) ?: name
 
 private class IntVec(cap: Int = 1 shl 16) {
     var a = IntArray(cap)
@@ -25,6 +39,11 @@ class Net private constructor() {
     // A stop's platform (רציף) where the ministry numbers one, else blank: a bus station's platforms are stops of their
     // own that share its code. Bundles before KAV6 have none.
     lateinit var platform: Array<String>; private set
+    // Each stop's and town's English name, blank where the ministry has none; empty arrays in bundles without an "en" section.
+    var nameEn: Array<String> = emptyArray(); private set
+    var cityEn: Array<String> = emptyArray(); private set
+    // The names lines end at that are no stop's (the ministry's long names give some another way), in English.
+    private var moreEn: Map<String, String> = emptyMap()
 
     lateinit var rShort: Array<String>; private set
     lateinit var rLong: Array<String>; private set
@@ -46,11 +65,35 @@ class Net private constructor() {
     lateinit var dConn: IntArray; private set
 
     lateinit var hay: Array<String>; private set
+    var hayEn: Array<String> = emptyArray(); private set
 
     val nStops get() = lat.size
     val nRoutes get() = rShort.size
 
     fun cityOf(s: Int): String = city.getOrElse(cityOf[s]) { "" }
+
+    // A stop's and its town's names as shown (StopNames).
+    fun stopName(s: Int): String = name[s].let { if (StopNames.english) nameEn.getOrNull(s)?.ifEmpty { null } ?: it else it }
+    fun cityName(s: Int): String =
+        cityOf(s).let { if (StopNames.english) cityEn.getOrNull(cityOf[s])?.ifEmpty { null } ?: it else it }
+
+    // Any name the timetable has, a stop's, a town's or a line's end, as shown: the ministry's Hebrew (Kav's server, a
+    // stop Kav kept) in English, or Moovit's English, when Kav is in English, back in Hebrew. Others stay as they are.
+    fun shown(name: String): String = when {
+        name.isEmpty() -> name
+        StopNames.english -> english[name.trim()] ?: name
+        else -> hebrew[name.trim()] ?: name
+    }
+
+    private val english: Map<String, String> by lazy {
+        val m = HashMap<String, String>(nameEn.size + cityEn.size + moreEn.size)
+        for (i in nameEn.indices) if (nameEn[i].isNotEmpty()) m.putIfAbsent(name[i], nameEn[i])
+        for (i in cityEn.indices) if (cityEn[i].isNotEmpty()) m.putIfAbsent(city[i], cityEn[i])
+        for ((he, en) in moreEn) m.putIfAbsent(he, en)
+        m
+    }
+
+    private val hebrew: Map<String, String> by lazy { HashMap<String, String>().apply { for ((he, en) in english) putIfAbsent(en, he) } }
     fun agencyOf(r: Int): String = agency.getOrElse(rAgency.getOrElse(r) { -1 }) { "" }
     fun tripLast(t: Int): Int = stStop[tripStart[t + 1] - 1]
     fun runsOn(t: Int, day: Int): Boolean = tripDays[t] and (1 shl day) != 0
@@ -112,7 +155,10 @@ class Net private constructor() {
     }
 
     val stopWords: Array<String> by lazy {
-        Array(nStops) { spacedWords(if (code[it] > 0) name[it] + " " + code[it] else name[it]) }
+        Array(nStops) {
+            val named = name[it] + nameEn.getOrNull(it)?.takeIf { e -> e.isNotEmpty() }?.let { e -> " $e" }.orEmpty()
+            spacedWords(if (code[it] > 0) named + " " + code[it] else named)
+        }
     }
     val stopType: IntArray by lazy {
         val out = IntArray(nStops) { -1 }
@@ -215,9 +261,24 @@ class Net private constructor() {
         if (magic == "KAV6") {
             var s = 0
             repeat(vi()) { s += vi(); platform[s] = vs() }
+            // Named sections after it, each its name and length, so one this version doesn't know is skipped.
+            while (p < b.size) {
+                val section = vs()
+                val end = vi().let { p + it }
+                if (section == "en") {
+                    cityEn = Array(vi()) { vs() }
+                    nameEn = Array(vi()) { vs() }
+                    moreEn = HashMap<String, String>().apply { repeat(vi()) { put(vs(), vs()) } }
+                    if (nameEn.size != nS || cityEn.size != nC) { nameEn = emptyArray(); cityEn = emptyArray(); moreEn = emptyMap() }
+                }
+                p = end
+            }
         }
 
         hay = Array(nS) { (name[it] + " " + cityOf(it)).lowercase() }
+        // Found by its English name too, whichever the rider reads.
+        hayEn = if (nameEn.isEmpty()) emptyArray()
+            else Array(nS) { (nameEn[it] + " " + cityEn.getOrElse(cityOf[it]) { "" }).trim().lowercase() }
         b = ByteArray(0)
         buildConnections()
     }

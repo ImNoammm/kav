@@ -14,17 +14,14 @@ fun Net.searchStops(q: String, limit: Int = 60): IntArray {
     val idx = ArrayList<Int>(limit * 4)
     val score = ArrayList<Double>(limit * 4)
     val types = stopType
+    // A typed code finds its own stop first, before the stops whose codes only start with it (4156 before 41560-41569).
+    val number = need.singleOrNull()?.takeIf { it.all { c -> c.isDigit() } }?.toIntOrNull()
     for (i in name.indices) {
         if (types[i] < 0) continue
-        val h = hay[i]
-        var ok = true
-        var sc = 0.0
-        for (t in need) {
-            val at = forms(t).map { h.indexOf(if (it == "ת") "ת." else it) }.filter { it >= 0 }.minOrNull() ?: -1
-            if (at < 0) { ok = false; break }
-            sc += if (at == 0) 0.0 else minOf(at, 40) / 100.0
-        }
-        if (ok) { idx.add(i); score.add(sc); continue }
+        if (code[i] == number) { idx.add(i); score.add(-1.0); continue }
+        // In Hebrew, else by its English name.
+        val sc = matched(hay[i], need) ?: hayEn.getOrNull(i)?.let { matched(it, need) }
+        if (sc != null) { idx.add(i); score.add(sc); continue }
         if (need.size == 1 && code[i].toString().startsWith(need[0])) { idx.add(i); score.add(0.5) }
     }
     val ranked = idx.indices.sortedBy { score[it] }.take(limit).map { idx[it] }
@@ -35,6 +32,16 @@ fun Net.searchStops(q: String, limit: Int = 60): IntArray {
     return ranked.sortedWith(compareBy<Int>(
         { first.getValue(group(it)) }, { platform[it].toIntOrNull() ?: Int.MAX_VALUE }, { platform[it] },
     )).toIntArray()
+}
+
+// How well every word is found in a stop's name and town, the earlier the better; null when one isn't.
+private fun matched(h: String, need: List<String>): Double? {
+    var sc = 0.0
+    for (t in need) {
+        val at = forms(t).map { h.indexOf(if (it == "ת") "ת." else it) }.filter { it >= 0 }.minOrNull() ?: return null
+        sc += if (at == 0) 0.0 else minOf(at, 40) / 100.0
+    }
+    return sc
 }
 
 internal fun searchWords(s: String): List<String> {
@@ -69,6 +76,11 @@ fun Net.stopsMatching(q: String, at: Pair<Double, Double>?, modeName: (Int) -> S
         .sortedWith(compareBy({ Math.round(uk.noammm.kav.ui.metres(la, lo, lat[it], lon[it])) }, { name[it] }))
 }
 
+// Tel Aviv's weekend lines' operator as the timetable names it (tools/export_web_bundle.py), and what riders type for
+// them, which finds their lines too.
+const val NAIM_NAME = "נעים בסופ״ש"
+const val NAIM_WORDS = "na'im naim basofash נעים בסופ״ש בסופ\"ש בסופש"
+
 fun Net.searchRoutes(q: String, types: IntArray = intArrayOf()): IntArray {
     val need = q.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
     val out = ArrayList<Int>(256)
@@ -77,7 +89,7 @@ fun Net.searchRoutes(q: String, types: IntArray = intArrayOf()): IntArray {
         if (types.isNotEmpty() && rType[r] !in types) continue
         if (need.isNotEmpty()) {
             // A number is a line number: the long names carry codes like "-10" that would match half the country.
-            val h = (rShort[r] + " " + rLong[r]).lowercase()
+            val h = (rShort[r] + " " + rLong[r] + if (agencyOf(r) == NAIM_NAME) " $NAIM_WORDS" else "").lowercase()
             val number = rShort[r].lowercase()
             if (!need.all { if (it.all(Char::isDigit)) number.startsWith(it) else h.contains(it) }) continue
         }

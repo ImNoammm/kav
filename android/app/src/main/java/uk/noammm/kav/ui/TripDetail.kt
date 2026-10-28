@@ -129,7 +129,7 @@ fun TripDetailScreen(
                 onTrack = { leg, stopId -> tracking = leg to stopId },
                 onStart = { navigating = true; planFromNavigation = false; onStart() },
                 onReport = { model.report = it },
-                pay = { leg, ride -> TripPay(model, leg, ride, r, trip) })
+                pay = { leg, ride -> if (Shown.payments) TripPay(model, leg, ride, r, trip) })
         }
     }
     alert?.let { (group, label) ->

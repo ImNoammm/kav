@@ -69,6 +69,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 // Kav's controls, one of each: buttons, icon buttons, chips, a segmented control, grouped lists and their rows, section
 // and screen headers, cards, a sheet's header, one switch and a line's plate. Their sizes, shapes, type and colours all
@@ -458,24 +459,67 @@ fun LinePlateBadge(
 ) {
     val shape = RoundedCornerShape(K.rBadge)
     val ink = plate?.ink ?: K.text
-    Row(
-        modifier
-            .widthIn(min = 44.dp)
-            .height(if (dense) 24.dp else 28.dp)
-            .clip(shape)
-            .background(plate?.fill ?: K.fill)
-            .then(if (plate != null) Modifier.border(1.dp, plate.edge, shape) else Modifier)
-            .padding(horizontal = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
-    ) {
-        val mark = if (dense) 12.dp else 14.dp
-        if (glyph != null) glyph(plate?.ink ?: K.textSecondary, mark) else ModeGlyph(mode, plate?.ink ?: K.textSecondary, mark)
-        if (!number.isNullOrBlank()) {
-            Text(
-                number, style = (if (dense) K.type.subhead else K.type.bodyStrong).tabular, color = ink,
-                fontWeight = FontWeight.Medium, maxLines = 1,
+    val mark = if (dense) 12.dp else 14.dp
+
+    if (K.lineBadgeAppearance== LineBadgeAppearance.KAV || mode!=Mode.BUS) {
+        Row(
+            modifier
+                .widthIn(min = 44.dp)
+                .height(if (dense) 24.dp else 28.dp)
+                .clip(shape)
+                .background(plate?.fill ?: K.fill)
+                .then(if (plate != null) Modifier.border(1.dp, plate.edge, shape) else Modifier)
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+        ) {
+            if (glyph != null) glyph(plate?.ink ?: K.textSecondary, mark) else ModeGlyph(
+                mode,
+                plate?.ink ?: K.textSecondary,
+                mark
             )
+            if (!number.isNullOrBlank()) {
+                Text(
+                    number,
+                    style = (if (dense) K.type.subhead else K.type.bodyStrong).tabular,
+                    color = ink,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+    else {
+        Box(
+            Modifier.clip(RoundedCornerShape(6.dp))
+                .background(plate?.fill ?: K.fill)
+                .border(1.dp, K.borderStrong, RoundedCornerShape(6.dp))
+
+            ,
+        ) {
+            Row(
+                Modifier.padding(bottom = 4.dp)
+                    .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                    .background(K.badgePlate),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Row(Modifier.padding(start = 5.dp, end = if (number == null) 5.dp else 6.dp, top = 2.dp, bottom = 0.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (glyph != null) glyph(plate?.ink ?: K.textSecondary, mark) else ModeGlyph(
+                        mode,
+                        plate?.ink ?: K.textSecondary,
+                        mark
+                    )
+                    if (number != null) {
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            number, fontSize = 15.sp, color = K.text, fontWeight = FontWeight.Medium,
+                            maxLines = 3, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
         }
     }
 }

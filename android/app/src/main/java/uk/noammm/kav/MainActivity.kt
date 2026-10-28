@@ -70,7 +70,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -153,6 +152,7 @@ class MainActivity : ComponentActivity() {
         K.accent = Color(Prefs.accent(this))
         K.applyTheme(Prefs.look(this))
         K.liquid = Prefs.liquidGlass(this)
+        K.lineBadgeAppearance = Prefs.getLineBadgeAppearance(this)
         Shown.co2 = Prefs.showCo2(this)
         Shown.payments = Prefs.showPayments(this)
         Pip.allowed = Prefs.pipNavigation(this)
@@ -339,6 +339,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         K.accent = Color(Prefs.accent(ctx))
         K.applyTheme(Prefs.look(ctx))
         K.liquid = Prefs.liquidGlass(ctx)
+        K.lineBadgeAppearance = Prefs.getLineBadgeAppearance(ctx)
         Shown.co2 = Prefs.showCo2(ctx)
         Shown.payments = Prefs.showPayments(ctx)
         Pip.allowed = Prefs.pipNavigation(ctx)
@@ -1682,6 +1683,13 @@ object Prefs {
             )
         }
         store(ctx).edit().putString("favourites", arr.toString()).apply()
+    }
+    fun setLineBadgeAppearance(ctx: Context, lineBadgeAppearance: LineBadgeAppearance) {
+        store(ctx).edit().putString("lineBadgeAppearance",lineBadgeAppearance.s).apply()
+    }
+    fun getLineBadgeAppearance(ctx: Context): LineBadgeAppearance {
+        val s = store(ctx).getString("lineBadgeAppearance", LineBadgeAppearance.KAV.s) ?: LineBadgeAppearance.KAV.s
+        return LineBadgeAppearance.valueOf(s ) ?: LineBadgeAppearance.KAV
     }
 }
 

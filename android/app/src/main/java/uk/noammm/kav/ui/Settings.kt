@@ -242,10 +242,19 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
                     "המפה הרגילה עובדת בלי אינטרנט. תמונות הלוויין מגיעות מ-Esri בזמן הצפייה, ולכן Esri רואה איזה אזור אתם צופים בו."),
             )
             MapChoices()
-            Sub(T("Colour", "צבע"))
             AccentPreview()
+            Sub(T("Colour", "צבע"))
             Spacer(Modifier.height(K.gap4))
             AccentPicker(wheel = 200.dp) { Prefs.setAccent(ctx, it.toArgb()) }
+            InfoHeader(
+                T("Line badges", "סמלי קווים"),
+                T("How line badges should look.", "איך על סמלי הקווים להיראות.")
+            )
+            val options = listOf(LineBadgeAppearance.KAV, LineBadgeAppearance.MOOVIT)
+            KavSegmented(
+                listOf(T("Kav", "קו"), T("Moovit Inspired", "בהשראת מוביט")), selected =options.indexOf(K.lineBadgeAppearance),
+                onSelect = {i -> K.lineBadgeAppearance = options[i]; Prefs.setLineBadgeAppearance(ctx, options[i]) },
+            )
         }
     }
 

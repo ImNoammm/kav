@@ -506,9 +506,9 @@ fun LinePlateBadge(
                 Row(Modifier.padding(start = 5.dp, end = if (number == null) 5.dp else 6.dp, top = 2.dp, bottom = 0.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (glyph != null) glyph(plate?.ink ?: K.textSecondary, mark) else ModeGlyph(
+                   ModeGlyph(
                         mode,
-                        plate?.ink ?: K.textSecondary,
+                        K.textSecondary,
                         mark
                     )
                     if (number != null) {

@@ -247,7 +247,7 @@ private fun Style.setKavLive(g: MapGeometry) {
     getSourceAs<GeoJsonSource>(SRC_LIVE_MARKS)?.setGeoJson(FeatureCollection.fromFeatures(markFeatures(g.markers)))
 }
 
-private fun arrowBitmap(dp: Float): android.graphics.Bitmap {
+fun arrowBitmap(dp: Float): android.graphics.Bitmap {
     val s = 11f * dp
     val half = (s * 1.35f + 3f * dp).toInt() + 1
     val bmp = android.graphics.Bitmap.createBitmap(2 * half, 2 * half, android.graphics.Bitmap.Config.ARGB_8888)

@@ -738,7 +738,7 @@ private fun Shell(model: KavModel) {
         val steps = buildSteps(journey.trip, journey.fromLabel, journey.toLabel)
         while (true) {
             val current = model.activeJourney?.takeIf { it.trip === journey.trip } ?: break
-            val next = journeyProgress(
+            val next = journeyProgress(ctx,
                 steps, model.journeyStep, current.resolved, current.chosen,
                 System.currentTimeMillis() / 1000, model.fix, canLocate(ctx),
             )
@@ -1474,6 +1474,9 @@ object Prefs {
     fun spokenAlerts(ctx: Context): Boolean = store(ctx).getBoolean("spokenAlerts", false)
     fun setSpokenAlerts(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("spokenAlerts", on).apply()
 
+    fun beginTripsImmediately(ctx: Context): Boolean = store(ctx).getBoolean("beginTripsImmediately", false)
+    fun setBeginTripsImmediately(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("beginTripsImmediately", on).apply()
+
     fun twelveHour(ctx: Context): Boolean = store(ctx).getBoolean("twelveHour", false)
     fun setTwelveHour(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("twelveHour", on).apply()
 
@@ -1617,6 +1620,7 @@ object Prefs {
             .apply { moovitPhotos(ctx)?.let { put("moovitPhotos", it) } }
             .put("spokenAlerts", spokenAlerts(ctx))
             .put("twelveHour", twelveHour(ctx))
+            .put("beginTripsImmediately", beginTripsImmediately(ctx))
     }
 
     // Only what the file holds is restored, so settings an older backup lacks stay as they are.
@@ -1648,6 +1652,7 @@ object Prefs {
         for (key in listOf("pipNavigation", "showPayments", "moovitPhotos")) if (o.has(key)) e.putBoolean(key, o.optBoolean(key))
         if (o.has("spokenAlerts")) e.putBoolean("spokenAlerts", o.optBoolean("spokenAlerts"))
         if (o.has("twelveHour")) e.putBoolean("twelveHour", o.optBoolean("twelveHour"))
+        if (o.has("beginTripsImmediately")) e.putBoolean("beginTripsImmediately", o.optBoolean("beginTripsImmediately"))
         val chosen = o.optJSONObject("filters")
         val oldOff = o.optJSONArray("filtersOff")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }
         val off = ResultFilter.entries.filter { f ->

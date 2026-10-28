@@ -1,5 +1,6 @@
 package uk.noammm.kav.ui
 
+import android.content.Context
 import uk.noammm.kav.data.Moovit
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -150,13 +151,17 @@ private fun onStep(step: Step, r: Moovit.Resolved, chosen: Map<Int, Int>, fix: F
 // A phone that stops reporting hasn't moved, so where you were last seen beats the timetable.
 // `seen` is that place, or null once a ride has been assumed since; `waitForFix` holds the
 // timetable back while a first fix is still to come.
-private fun done(
-    step: Step, r: Moovit.Resolved, chosen: Map<Int, Int>, now: Long, live: Fix?, seen: Fix?, waitForFix: Boolean,
-    walks: List<List<Pair<Double, Double>>>,
+private fun done(ctx: Context,
+                 step: Step, r: Moovit.Resolved, chosen: Map<Int, Int>, now: Long, live: Fix?, seen: Fix?, waitForFix: Boolean,
+                 walks: List<List<Pair<Double, Double>>>,
 ): Boolean {
     val target = stepTarget(step, r, chosen)
     return when (step) {
-        is Step.Start -> now >= step.time || (live != null && target != null && live.distanceTo(target) > 60)
+        is Step.Start -> uk.noammm.kav.Prefs.beginTripsImmediately(ctx) ||  (
+            now >= step.time || (live != null && target != null && live.distanceTo(
+                target
+            ) > 60)
+        )
         is Step.Walk -> when {
             target == null -> now >= step.leg.arr
             live != null -> live.distanceTo(target) < 40
@@ -291,6 +296,7 @@ internal fun pathLength(path: List<Pair<Double, Double>>): Double {
 }
 
 internal fun journeyProgress(
+    ctx: Context,
     steps: List<Step>,
     current: Int,
     r: Moovit.Resolved,
@@ -308,7 +314,7 @@ internal fun journeyProgress(
         for (k in steps.lastIndex downTo i + 1) {
             if (!onStep(steps[k], r, chosen, live, walks)) continue
             if ((i until k).any { j ->
-                    steps[j] is Step.Ride && !done(steps[j], r, chosen, now, live, fix, false, walks) &&
+                    steps[j] is Step.Ride && !done(ctx,steps[j], r, chosen, now, live, fix, false, walks) &&
                         !(j == i && rideLeftBehind(steps[j] as Step.Ride, chosen, live))
                 }
             ) continue
@@ -321,7 +327,7 @@ internal fun journeyProgress(
         val seen = fix?.takeIf { f ->
             (0 until i).none { j -> (steps[j] as? Step.Ride)?.let { f.at < rideOf(it, chosen).arr - 300 } == true }
         }
-        if (!done(steps[i], r, chosen, now, live, seen, waitForFix, walks)) break
+        if (!done(ctx,steps[i], r, chosen, now, live, seen, waitForFix, walks)) break
         i++
     }
     return i

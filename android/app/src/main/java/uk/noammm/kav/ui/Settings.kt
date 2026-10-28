@@ -143,6 +143,7 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     }
 
     var spoken by remember { mutableStateOf(Prefs.spokenAlerts(ctx)) }
+    var beginTripsImmediately by remember { mutableStateOf(Prefs.beginTripsImmediately(ctx)) }
     part(
         "trip",
         T("On the way", "בדרך"),
@@ -150,7 +151,8 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
             if (spoken) T("Alerts said out loud", "התראות בקול") else T("Alerts on the screen", "התראות על המסך"),
             if (Pip.allowed) T("small window when you leave Kav", "חלון קטן כשיוצאים מ-Kav")
             else T("no small window", "בלי חלון קטן"),
-        ).joinToString(" · "),
+            if (beginTripsImmediately) T("Begin trips immediately", "התחל נסיעות מיד") else null,
+        ).filterNotNull().joinToString(" · "),
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
             InfoHeader(T("Alerts", "התראות"), T(
@@ -167,6 +169,19 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
                 row {
                     ToggleRow(T("Small window", "חלון קטן"), Pip.allowed, { PipGlyph(if (Pip.allowed) K.text else K.dim) }) { on ->
                         Pip.allowed = on; Prefs.setPipNavigation(ctx, on)
+                    }
+                }
+            }
+        }
+        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
+            InfoHeader(T("Navigation behaviour", "התנהגות ניווט"), T(
+                "ׁHow Kav behaves during navigation.",
+                "איך קו מתנהגת במהלך ניווט.",
+            ))
+            ListGroup {
+                row {
+                    ToggleRow(T("Begin trips immediately", "התחל נסיעות מיד"), beginTripsImmediately, { RouteGlyph(if (beginTripsImmediately) K.text else K.dim) }) { on ->
+                        beginTripsImmediately = on; Prefs.setBeginTripsImmediately(ctx, on)
                     }
                 }
             }

@@ -181,6 +181,7 @@ class TripService : Service() {
         val (journey, step) = journey() ?: return
         val steps = buildSteps(journey.trip, journey.fromLabel, journey.toLabel)
         val moved = journeyProgress(
+            applicationContext,
             steps, step, journey.resolved, journey.chosen, System.currentTimeMillis() / 1000, fix, canLocate(this),
         )
         if (moved == step) return

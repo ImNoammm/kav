@@ -710,22 +710,32 @@ private fun LineRow(ride: Moovit.Leg, r: Moovit.Resolved) {
     val rt = if (info != null) r.routeType(agency) else 3
     val plate = linePlate(rt, agency) { Operators.of(r, agency) }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(
-            Modifier.width(IntrinsicSize.Min).clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.plate)
-                .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),
-        ) {
-            Row(
-                Modifier.padding(start = 6.dp, end = 8.dp, top = 3.dp, bottom = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        if (modeOf(rt)!= Mode.BUS || K.lineBadgeAppearance== LineBadgeAppearance.KAV) {
+            Column(
+                Modifier.width(IntrinsicSize.Min).clip(RoundedCornerShape(K.rBadge))
+                    .background(plate?.fill ?: K.plate)
+                    .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),
             ) {
-                AgencyMark(rt, agency, plate?.ink ?: K.muted, 15.dp)
-                Spacer(Modifier.width(5.dp))
-                Text(
-                    ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…",
-                    fontSize = 16.sp, color = plate?.ink ?: K.text, fontWeight = FontWeight.Medium,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp),
-                )
+                Row(
+                    Modifier.padding(start = 6.dp, end = 8.dp, top = 3.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AgencyMark(rt, agency, plate?.ink ?: K.muted, 15.dp)
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…",
+                        fontSize = 16.sp,
+                        color = plate?.ink ?: K.text,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 120.dp),
+                    )
+                }
             }
+        }
+        else {
+            LinePlateBadge(info?.number, mode=modeOf(rt), plate=plate )
         }
         Spacer(Modifier.width(K.gap3))
         Text(

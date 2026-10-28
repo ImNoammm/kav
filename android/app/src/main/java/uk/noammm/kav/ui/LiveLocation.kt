@@ -55,11 +55,11 @@ fun rememberStopNames(ids: List<Int>): Map<Int, Moovit.StopInfo> {
         while (true) {
             val missing = wanted.filter { it !in out }
             if (missing.isEmpty()) break
-            onlineSession()?.let { s ->
+            Online.openRoutingProvider().let { s ->
                 for (batch in missing.chunked(6)) {
                     val resolved = coroutineScope {
                         batch.map { id -> async(Dispatchers.IO) {
-                            runCatching { Moovit.stopInfo(s, id) }.getOrNull()?.let { id to it }
+                            runCatching { s.stopInfo( id) }.getOrNull()?.let { id to it }
                         } }.awaitAll().filterNotNull().toMap()
                     }
                     out = out + resolved

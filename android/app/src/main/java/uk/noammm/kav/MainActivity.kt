@@ -153,6 +153,7 @@ class MainActivity : ComponentActivity() {
         K.accent = Color(Prefs.accent(this))
         K.applyTheme(Prefs.look(this))
         K.liquid = Prefs.liquidGlass(this)
+        K.lineBadgeAppearance = Prefs.lineBadges(this)
         Shown.co2 = Prefs.showCo2(this)
         Shown.payments = Prefs.showPayments(this)
         Pip.allowed = Prefs.pipNavigation(this)
@@ -339,6 +340,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         K.accent = Color(Prefs.accent(ctx))
         K.applyTheme(Prefs.look(ctx))
         K.liquid = Prefs.liquidGlass(ctx)
+        K.lineBadgeAppearance = Prefs.lineBadges(ctx)
         Shown.co2 = Prefs.showCo2(ctx)
         Shown.payments = Prefs.showPayments(ctx)
         Pip.allowed = Prefs.pipNavigation(ctx)
@@ -1697,6 +1699,9 @@ object Prefs {
         }
         store(ctx).edit().putString("favourites", arr.toString()).apply()
     }
+    fun lineBadges(ctx: Context): LineBadgeAppearance =
+        LineBadgeAppearance.entries.firstOrNull { it.name == store(ctx).getString("lineBadgeAppearance", null) } ?: LineBadgeAppearance.KAV
+    fun setLineBadges(ctx: Context, a: LineBadgeAppearance) = store(ctx).edit().putString("lineBadgeAppearance", a.name).apply()
 }
 
 // A Moovit line link opens that line's page; a stop link opens the stop's board, found by its public code.

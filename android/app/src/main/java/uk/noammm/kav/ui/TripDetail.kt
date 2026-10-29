@@ -571,7 +571,10 @@ private fun BoardOption(
     val now = System.currentTimeMillis() / 1000
     Column(Modifier.fillMaxWidth().padding(vertical = K.gap2)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Row(
+            // Moovit's look for buses, when chosen in Settings.
+            if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && modeOf(rt) == Mode.BUS) {
+                LinePlateBadge(ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…", Mode.BUS, plate)
+            } else Row(
                 Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.surface2)
                     .padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,

@@ -728,7 +728,10 @@ private fun LineRow(ride: Moovit.Leg, r: Moovit.Resolved) {
     val rt = if (info != null) r.routeType(agency) else 3
     val plate = linePlate(rt, agency) { Operators.of(r, agency) }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(
+        // Moovit's look for buses, when chosen in Settings.
+        if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && modeOf(rt) == Mode.BUS) {
+            LinePlateBadge(ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…", Mode.BUS, plate)
+        } else Column(
             Modifier.width(IntrinsicSize.Min).clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.plate)
                 .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),
         ) {

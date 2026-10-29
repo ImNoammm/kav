@@ -651,7 +651,7 @@ fun LiveScreen(model: KavModel) {
         var about by rememberSaveable { mutableStateOf(false) }
         ScreenHeader(T("Live", "בזמן אמת")) {
             KavIconButton(Icons.Rounded.Info, T("Where live data comes from", "מאיפה המידע בזמן אמת"), { about = !about },
-                tint = if (about) K.accentInk else K.textSecondary)
+                floating = true, tint = if (about) K.accentInk else K.textSecondary)
         }
         androidx.compose.animation.AnimatedVisibility(
             about,
@@ -973,7 +973,6 @@ private fun LiveMap(
         geometry = geometry,
         onLook = onLook,
         moved = !following,
-        reveal = show,
         live = vehicleGeometry(shown.map { it.arrival to modeOf(it.routeType) }, LocalDensity.current) { a ->
             if (a.tripId == (chosen ?: look?.tripId)) 1f else 1f - step
         },

@@ -39,6 +39,7 @@ import androidx.compose.ui.window.Dialog
 import uk.noammm.kav.data.Moovit
 import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 
 class Favourite(val id: String, val name: String, val icon: String, val place: Moovit.Place?) {
     fun copy(name: String = this.name, icon: String = this.icon, place: Moovit.Place? = this.place) =
@@ -115,6 +116,10 @@ fun favouriteIcon(key: String): ImageVector =
     FavouriteIcons.firstOrNull { it.first == key }?.second ?: Icons.Rounded.Place
 
 val Favourite.label: String get() = if (id == Favourite.HOME) T("Home", "בית") else name
+
+// The saved place under the favourite's own name, its address or stop name kept as the detail.
+fun Favourite.named(p: Moovit.Place): Moovit.Place =
+    if (label.isBlank() || label == p.name) p else Moovit.Place(label, p.name, p.lat, p.lon, p.type, p.mode)
 
 private val SLOT = 72.dp + K.gap2
 
@@ -237,11 +242,14 @@ fun FavouriteStrip(
                         }
                     }
                     Spacer(Modifier.height(K.gap1))
-                    // Letters differ in width and the system font may be large, so a name a little too wide for the tile
-                    // (a six-letter הרצליה where יהודית fits) shrinks to fit before it is cut.
+                    // The whole name: a long one takes a second line, and one still too long for two lines (or with a word
+                    // wider than the tile) shrinks a little before anything is cut.
                     var labelSize by remember(f.label) { mutableStateOf(12.sp) }
-                    Text(f.label, style = K.type.caption, fontSize = labelSize, color = if (set) K.text else K.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        softWrap = false, onTextLayout = { if (it.didOverflowWidth && labelSize > 9.sp) labelSize *= 0.9f })
+                    Text(
+                        f.label, style = K.type.caption, fontSize = labelSize, color = if (set) K.text else K.textSecondary,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                        onTextLayout = { if ((it.hasVisualOverflow || it.didOverflowWidth) && labelSize > 10.sp) labelSize *= 0.92f },
+                    )
                 }
             }
             if (manage) EditControls(

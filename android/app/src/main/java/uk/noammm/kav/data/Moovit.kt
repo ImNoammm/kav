@@ -1561,7 +1561,9 @@ object Moovit {
             boolField(10, skipTaxi)
             i32ListField(13, listOf(5, 1, 2, 4))
             boolField(15, true)
-            structField(16, TWriter().boolField(1, false).boolField(2, false).boolField(3, false))
+            // Personal preferences: 1 slow walking, 3 accessible routes. 2 is the most minutes to walk (an i16); Kav has
+            // no such cap, so it's left out and Moovit uses its own.
+            structField(16, TWriter().boolField(1, false).boolField(3, false))
             i32Field(17, 1)
             strField(18, "suggested_routes")
             if (stopovers.isNotEmpty()) {

@@ -25,7 +25,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -105,7 +104,8 @@ internal fun facing(pano: Pair<Double, Double>, look: StreetLook): Int? {
 
 // Google's Street View embed, which needs no key: the panorama by its id, looking where Kav says, a little wider than
 // Google's default so more of the street fits a phone held upright. Each message counts the fields under it. lang: the
-// language Google labels the street in ("en", "he"); without it Google picks one, and picked Arabic on a phone in English.
+// language Google labels the street in ("en", "he"); without it Google picks one itself, which can be Arabic on a phone
+// in English.
 internal fun streetEmbedUrl(pano: String?, at: Pair<Double, Double>, heading: Int?, lang: String? = null): String {
     val inner = listOfNotNull(
         pano?.let { "!1s$it" }, "!2m2",
@@ -117,6 +117,7 @@ internal fun streetEmbedUrl(pano: String?, at: Pair<Double, Double>, heading: In
 }
 
 // The embed only works inside a frame. No referrer goes to Google, nor the means to go full screen, which Kav already is.
+// The frame may read the phone's motion and compass: without the compass Chrome gives a frame no absolute orientation.
 // ground: the page's colour behind the frame, the screen's own, until the panorama paints. The frame's load tells Kav
 // (KavHost), a second later, that the panorama is up.
 internal fun streetEmbedPage(url: String, ground: String = "#000"): String =
@@ -124,7 +125,7 @@ internal fun streetEmbedPage(url: String, ground: String = "#000"): String =
         "<style>html,body{margin:0;height:100%;background:$ground;overflow:hidden}" +
         "iframe{position:fixed;top:0;left:0;border:0;width:100%;height:100%}</style></head>" +
         "<body><iframe src=\"$url\" onload=\"setTimeout(function(){window.KavHost&&KavHost.loaded()},1000)\" " +
-        "allow=\"accelerometer; gyroscope\" referrerpolicy=\"no-referrer\"></iframe></body></html>"
+        "allow=\"accelerometer; gyroscope; magnetometer\" referrerpolicy=\"no-referrer\"></iframe></body></html>"
 
 // A point m metres from at, the way bearing (degrees clockwise from north) points.
 internal fun offsetBy(at: Pair<Double, Double>, bearing: Float, m: Double): Pair<Double, Double> {

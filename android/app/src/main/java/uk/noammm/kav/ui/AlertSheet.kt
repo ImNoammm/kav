@@ -21,12 +21,10 @@ import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -38,7 +36,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -65,7 +62,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -76,6 +72,7 @@ import uk.noammm.kav.KavModel
 import uk.noammm.kav.data.LineAlert
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.stopKey
+import uk.noammm.kav.data.shownName
 import java.util.Locale
 import kotlin.math.abs
 
@@ -86,7 +83,10 @@ internal fun AlertSheet(model: KavModel, net: Net, stop: Int, moovitId: Int, onD
     val ctx = LocalContext.current
     val key = net.stopKey(stop)
     val numbers = remember(stop) { net.linesAt(stop) }
+    // A train station numbers no line: its trains are chosen by where they end.
+    val ends = remember(stop) { if (numbers.isEmpty()) net.endsAt(stop) else emptyList() }
     var lines by remember(stop) { mutableStateOf(emptySet<String>()) }
+    var toward by remember(stop) { mutableStateOf(emptySet<Int>()) }
     var days by remember { mutableIntStateOf(LineAlert.WEEKDAYS) }
     var from by remember { mutableIntStateOf(8 * 60) }
     var to by remember { mutableIntStateOf(9 * 60) }
@@ -109,7 +109,7 @@ internal fun AlertSheet(model: KavModel, net: Net, stop: Int, moovitId: Int, onD
                 set.forEach { a ->
                     row {
                         ListRow(
-                            a.lines.joinToString(", "), subtitle = alertWhen(a), chevron = false,
+                            alertWhat(a), subtitle = alertWhen(a), chevron = false,
                             trailing = {
                                 KavIconButton(
                                     Icons.Rounded.DeleteOutline, T("Delete this alert", "מחיקת ההתראה"),
@@ -121,12 +121,19 @@ internal fun AlertSheet(model: KavModel, net: Net, stop: Int, moovitId: Int, onD
                 }
             }
         }
-        if (numbers.isEmpty()) {
+        if (numbers.isEmpty() && ends.isEmpty()) {
             Spacer(Modifier.height(K.gap3))
-            Note(T("Alerts go by line number, and no numbered line leaves from here.", "ההתראות הן לפי מספר קו, ומכאן לא יוצא קו עם מספר."))
+            NoteCard(T("Nothing leaves from here to be alerted of.", "מכאן לא יוצא דבר שאפשר לקבל עליו התראה."))
         } else {
-            Heading(T("Lines", "קווים"))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(K.gap2), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+            if (numbers.isEmpty()) {
+                Heading(T("Trains to", "רכבות אל"))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(K.gap2), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+                    ends.forEach { e ->
+                        KavChip(net.stopName(e), e in toward, { toward = if (e in toward) toward - e else toward + e }, check = true)
+                    }
+                }
+            } else Heading(T("Lines", "קווים"))
+            if (numbers.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(K.gap2), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
                 numbers.forEach { n ->
                     KavChip(n, n in lines, { lines = if (n in lines) lines - n else lines + n }, Modifier.semantics { contentDescription = T("Line $n", "קו $n") }, check = true)
                 }
@@ -149,11 +156,11 @@ internal fun AlertSheet(model: KavModel, net: Net, stop: Int, moovitId: Int, onD
                 }
             }
             Spacer(Modifier.height(K.gap5))
-            val ready = lines.isNotEmpty() && days != 0
+            val ready = (lines.isNotEmpty() || toward.isNotEmpty()) && days != 0
             // Until it can be added, it says what's missing.
             KavButton(
                 when {
-                    lines.isEmpty() -> T("Choose a line", "בחרו קו")
+                    lines.isEmpty() && toward.isEmpty() -> if (numbers.isEmpty()) T("Choose where to", "בחרו יעד") else T("Choose a line", "בחרו קו")
                     days == 0 -> T("Choose a day", "בחרו יום")
                     else -> T("Add alert", "הוספת התראה")
                 },
@@ -162,21 +169,26 @@ internal fun AlertSheet(model: KavModel, net: Net, stop: Int, moovitId: Int, onD
                         val alert = LineAlert(
                             System.currentTimeMillis(), key, net.stopName(stop), numbers.filter { it in lines }, days, from, to,
                             StopPhotos.idNow(net, stop) ?: moovitId,
+                            ends.filter { it in toward }.map { LineAlert.End(net.name[it], net.code[it], net.lat[it], net.lon[it]) },
                         )
                         model.saveAlerts(ctx, model.lineAlerts + alert)
                         lines = emptySet()
+                        toward = emptySet()
                         editing = null
                         if (Build.VERSION.SDK_INT >= 33 &&
                             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
                         ) ask.launch(Manifest.permission.POST_NOTIFICATIONS)
                 },
             )
-            Text(
-                T(
+            NoteCard(
+                if (numbers.isEmpty()) T(
+                    "On those days and hours, the next trains to these places stay in your notifications, refreshed about every minute.",
+                    "בימים ובשעות האלה, הרכבות הבאות ליעדים האלה יופיעו בהתראות, ויתעדכנו בערך כל דקה.",
+                ) else T(
                     "On those days and hours, the next buses of these lines stay in your notifications, refreshed about every minute.",
                     "בימים ובשעות האלה, האוטובוסים הבאים של הקווים האלה יופיעו בהתראות, ויתעדכנו בערך כל דקה.",
                 ),
-                style = K.type.subhead, color = K.textTertiary, modifier = Modifier.padding(top = K.gap3),
+                Modifier.padding(top = K.gap3),
             )
         }
     }
@@ -312,8 +324,25 @@ internal fun alertWhen(a: LineAlert): String {
     return "$days · ${hhmm(a.from * 60)}-${hhmm(a.to * 60)}"
 }
 
+// "12, 18", or "To Tel Aviv Center" at a station: what an alert is for.
+internal fun alertWhat(a: LineAlert): String =
+    if (a.toward.isNotEmpty()) T("To ", "אל ") + a.toward.joinToString(", ") { shownName(it.name) } else a.lines.joinToString(", ")
+
 // "12, 18 · Sun-Thu · 08:00-09:00": its lines, days and hours.
-internal fun alertSummary(a: LineAlert): String = "${a.lines.joinToString(", ")} · ${alertWhen(a)}"
+internal fun alertSummary(a: LineAlert): String = "${alertWhat(a)} · ${alertWhen(a)}"
+
+// Where the trains leaving a stop end, the most trains first: for alerts at a station, which numbers no line.
+internal fun Net.endsAt(stop: Int): List<Int> {
+    val trains = HashMap<String, Int>()
+    val first = HashMap<String, Int>()
+    for (i in dStart[stop] until dStart[stop + 1]) {
+        val end = tripLast(tripOf(cST[dConn[i]]))
+        if (name[end] == name[stop]) continue
+        trains[name[end]] = (trains[name[end]] ?: 0) + 1
+        first.putIfAbsent(name[end], end)
+    }
+    return trains.entries.sortedByDescending { it.value }.map { first.getValue(it.key) }
+}
 
 // The numbered lines leaving a stop, in number order.
 internal fun Net.linesAt(stop: Int): List<String> {

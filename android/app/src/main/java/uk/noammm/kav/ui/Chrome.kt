@@ -15,12 +15,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
-// The older names of the kit's controls (Kit.kt), kept while the screens move to it, drawn the kit's way.
-
-@Composable
-fun Sig(plain: String, accent: String, modifier: Modifier = Modifier) {
-    Text("$plain $accent".trim(), style = Display, modifier = modifier)
-}
+// Shortcuts for the kit's controls (Kit.kt), as the screens call them.
 
 @Composable
 fun BackButton(onClick: () -> Unit) =

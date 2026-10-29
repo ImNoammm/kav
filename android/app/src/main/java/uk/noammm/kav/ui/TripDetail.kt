@@ -129,7 +129,7 @@ fun TripDetailScreen(
                 onTrack = { leg, stopId -> tracking = leg to stopId },
                 onStart = { navigating = true; planFromNavigation = false; onStart() },
                 onReport = { model.report = it },
-                pay = { leg, ride -> TripPay(model, leg, ride, r, trip) })
+                pay = if (Shown.payments) { leg, ride -> TripPay(model, leg, ride, r, trip) } else null)
         }
     }
     alert?.let { (group, label) ->
@@ -571,7 +571,10 @@ private fun BoardOption(
     val now = System.currentTimeMillis() / 1000
     Column(Modifier.fillMaxWidth().padding(vertical = K.gap2)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Row(
+            // Moovit's look for buses, when chosen in Settings.
+            if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && modeOf(rt) == Mode.BUS) {
+                LinePlateBadge(ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…", Mode.BUS, plate)
+            } else Row(
                 Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.surface2)
                     .padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -619,13 +622,16 @@ private fun BoardOption(
             }
         }
         wait?.let { AlertRow(it.alertCategory, it.alertText, r.line(ride.lineId)?.groupId ?: 0) }
-        val bus = r.arrival(ride)?.takeIf { it.hasLocation }
+        // Not boarded yet, so the soonest bus of the line still to come, as on the trip's map.
+        val bus = shownArrival(ride, ride to wait, r, now)?.takeIf { it.hasLocation }
         Spacer(Modifier.height(K.gap2))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(K.gap2), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
             LiveLocationButton(bus != null, bus?.let { freshColour(freshnessOf(it.sampleUtc, now)) } ?: K.realtime, compact = true) {
-                onTrack(ride, ride.fromStop)
+                onTrack(bus?.let { ride.copy(tripId = it.tripId) } ?: ride, ride.fromStop)
             }
-            LocalLineOpener.current?.let { open -> CardButton(T("All departures", "כל היציאות")) { open(ride, r) } }
+            LocalLineOpener.current?.takeIf { !uk.noammm.kav.data.RailTrip.owns(ride.lineId) }?.let { open ->
+                CardButton(T("All departures", "כל היציאות")) { open(ride, r) }
+            }
         }
     }
 }

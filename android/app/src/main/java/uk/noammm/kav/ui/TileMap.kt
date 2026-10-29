@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -32,6 +33,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
@@ -62,6 +64,7 @@ import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sinh
 import kotlin.math.tan
@@ -226,8 +229,19 @@ private fun Style.setKavGeometry(g: MapGeometry) {
         }
     }
     getSourceAs<GeoJsonSource>(SRC_LINES)?.setGeoJson(FeatureCollection.fromFeatures(lines))
-    getSourceAs<GeoJsonSource>(SRC_DOTS)?.setGeoJson(FeatureCollection.fromFeatures(dotFeatures(g.dots)))
     getSourceAs<GeoJsonSource>(SRC_MARKS)?.setGeoJson(FeatureCollection.fromFeatures(markFeatures(g.markers)))
+}
+
+private fun Style.setKavDots(dots: List<MapDot>) {
+    getSourceAs<GeoJsonSource>(SRC_DOTS)?.setGeoJson(FeatureCollection.fromFeatures(dotFeatures(dots)))
+}
+
+private val MapDot.place get() = Triple(lat, lon, radius)
+
+// The dot at a of its own opacity, in tenths, so a fade is about ten updates of the map whatever the screen's rate.
+private fun MapDot.faded(a: Float): MapDot {
+    val q = (a * 10).roundToInt() / 10f
+    return if (q >= 1f) this else copy(fill = fill.copy(alpha = fill.alpha * q), stroke = stroke.copy(alpha = stroke.alpha * q))
 }
 
 private fun dotFeatures(dots: List<MapDot>): List<Feature> = dots.mapIndexed { i, d ->
@@ -272,6 +286,9 @@ private fun arrowBitmap(dp: Float): android.graphics.Bitmap {
     canvas.drawPath(path, fill)
     return bmp
 }
+
+// The same arrow for the stop rail (Navigate.kt), which turns it to point down the ride.
+internal fun getArrowBitmap(dp: Float): android.graphics.Bitmap = arrowBitmap(dp)
 
 internal object Geo {
     const val SIZE = 256
@@ -541,7 +558,6 @@ fun TileMap(
     status: (@Composable () -> Unit)? = null,
     controls: (@Composable () -> Unit)? = null,
     attribution: Boolean = true,
-    reveal: Any? = null,
 ) {
     val ctx = LocalContext.current
     val density = LocalDensity.current
@@ -612,6 +628,39 @@ fun TileMap(
             s.setKavGeometry(geometry)
         }
     }
+    // Stops fade in as they come (a new area loaded, or Stops picked) and out as they go, each from where it was when
+    // the next change came, while the ones that stay keep still. A dot is the same one while it keeps its place and
+    // size, so new colours show at once. Its fade is drawn into it, in its place in the list, the ones going under the
+    // rest, so every update of the map is whole and keeps the order.
+    val dots by rememberUpdatedState(geometry?.dots)
+    LaunchedEffect(style) {
+        val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
+        val shown = LinkedHashMap<Triple<Double, Double, Float>, Float>()
+        val last = HashMap<Triple<Double, Double, Float>, MapDot>()
+        snapshotFlow { dots }.filterNotNull().collectLatest { now ->
+            val listed = now.mapTo(HashSet()) { it.place }
+            now.associateByTo(last) { it.place }
+            val scale = currentCoroutineContext()[MotionDurationScale]?.scaleFactor ?: 1f
+            var before = 0L
+            var sent: List<MapDot>? = null
+            do {
+                val at = withFrameMillis { it }
+                // A slow frame, like the one a switch's own work makes, moves a fade on by two frames at most, so the
+                // fade still shows after it instead of being over.
+                val step = if (scale <= 0f) 1f else if (before == 0L) 0f else (at - before).coerceAtMost(32L) / (240f * scale)
+                before = at
+                for (p in listed) shown[p] = ((shown[p] ?: 0f) + step).coerceAtMost(1f)
+                val going = shown.keys.filter { it !in listed }
+                for (p in going) {
+                    val a = shown.getValue(p) - step
+                    if (a > 0f) shown[p] = a else { shown.remove(p); last.remove(p) }
+                }
+                val drawn = going.mapNotNull { p -> shown[p]?.let { last.getValue(p).faded(it) } } +
+                    now.map { it.faded(shown.getValue(it.place)) }
+                if (drawn != sent && s.isFullyLoaded) { s.ensureKavLayers(); s.setKavDots(drawn); sent = drawn }
+            } while (shown.any { (p, a) -> p !in listed || a < 1f })
+        }
+    }
     LaunchedEffect(style, live) {
         val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
         if (live != null) {
@@ -620,18 +669,18 @@ fun TileMap(
             s.setKavLive(live)
         }
     }
-    // Stops and vehicles fade in when they first come and when what's shown changes (reveal), not pop up.
-    val stopsShown = geometry != null && (geometry.dots.isNotEmpty() || geometry.markers.isNotEmpty())
+    // Marks and vehicles fade in when they first come, not pop up; switching what's shown doesn't fade them again.
+    val marksShown = geometry != null && geometry.markers.isNotEmpty()
     val liveShown = live != null && (live.dots.isNotEmpty() || live.markers.isNotEmpty())
-    val stopsFade = remember { Animatable(0f) }
+    val marksFade = remember { Animatable(0f) }
     val liveFade = remember { Animatable(0f) }
-    LaunchedEffect(stopsShown, reveal) { if (stopsShown) { stopsFade.snapTo(0f); stopsFade.animateTo(1f, tween(360)) } }
-    LaunchedEffect(liveShown, reveal) { if (liveShown) { liveFade.snapTo(0f); liveFade.animateTo(1f, tween(360)) } }
+    LaunchedEffect(marksShown) { if (marksShown) { marksFade.snapTo(0f); marksFade.animateTo(1f, tween(360)) } }
+    LaunchedEffect(liveShown) { if (liveShown) { liveFade.snapTo(0f); liveFade.animateTo(1f, tween(360)) } }
     LaunchedEffect(style) {
         val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
-        snapshotFlow { stopsFade.value to liveFade.value }.collect { (stopsA, liveA) ->
+        snapshotFlow { marksFade.value to liveFade.value }.collect { (marksA, liveA) ->
             if (!s.isFullyLoaded) return@collect
-            s.fadeLayers(stopsA, "kav-dot", "kav-mark")
+            s.fadeLayers(marksA, "kav-mark")
             s.fadeLayers(liveA, "kav-live-dot", "kav-live-mark", "kav-live-turn")
         }
     }
@@ -763,11 +812,20 @@ fun TileMap(
 }
 
 // The map's credit line, drawn by a screen whose own cards cover the map's corner (Navigate) where they end.
+// OpenStreetMap's guidelines let it fade 5 s after the map shows, as About Kav keeps the full credits. Esri's
+// satellite credit has to stay on the map.
 @Composable
 internal fun MapAttribution(modifier: Modifier = Modifier) {
     val type = MapFile.type
+    val ready = MapFile.state is MapFile.State.Ready
+    var faded by remember(type, ready) { mutableStateOf(false) }
+    if (type == MapFile.Type.STANDARD && ready) LaunchedEffect(type, ready) {
+        kotlinx.coroutines.delay(5_000)
+        faded = true
+    }
+    val alpha by animateFloatAsState(if (faded) 0f else 0.8f, tween(400), label = "mapCredit")
     Text(MapFile.attribution(type), fontSize = 8.sp, color = if (type == MapFile.Type.SATELLITE) Color.White else K.dim,
-        modifier = modifier.alpha(0.8f))
+        modifier = modifier.alpha(alpha))
 }
 
 @Composable

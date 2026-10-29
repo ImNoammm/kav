@@ -132,7 +132,7 @@ fun WhenSheet(
             val rolled = day == 0 && pickedToday < openedMinute
             val picked = if (rolled) chosenMillis(today, day + 1, hour, minute) else pickedToday
             if (rolled) {
-                Text(T("That time has passed today, this will be for tomorrow.", "השעה הזו כבר עברה היום, הנסיעה תתוכנן למחר."), style = K.type.subhead)
+                NoteCard(T("That time has passed today, this will be for tomorrow.", "השעה הזו כבר עברה היום, הנסיעה תתוכנן למחר."))
                 Spacer(Modifier.height(K.gap2))
             }
             KavButton(T("Done", "סיום"), {

@@ -1,14 +1,12 @@
 package uk.noammm.kav.ui
 
 import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Schedule
@@ -22,16 +20,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import uk.noammm.kav.ActiveJourney
 import uk.noammm.kav.KavModel
@@ -122,7 +117,8 @@ internal fun HomeScreen(
                 item {
                     FavouriteStrip(
                         favourites,
-                        onPick = { f -> f.place?.let { onFavourite(it) } ?: onSetFavourite(f) },
+                        // A trip to a saved place goes by the name it was saved under, with where it is under that.
+                        onPick = { f -> f.place?.let { onFavourite(f.named(it)) } ?: onSetFavourite(f) },
                         onAdd = { creating = true },
                         onEdit = { editing = it },
                         horizontalPadding = 0.dp,

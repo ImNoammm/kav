@@ -150,13 +150,14 @@ private fun onStep(step: Step, r: Moovit.Resolved, chosen: Map<Int, Int>, fix: F
 // A phone that stops reporting hasn't moved, so where you were last seen beats the timetable.
 // `seen` is that place, or null once a ride has been assumed since; `waitForFix` holds the
 // timetable back while a first fix is still to come.
+// startNow: the rider wants a trip to move to its first walk at once (Settings), not at its time or once they move off.
 private fun done(
     step: Step, r: Moovit.Resolved, chosen: Map<Int, Int>, now: Long, live: Fix?, seen: Fix?, waitForFix: Boolean,
-    walks: List<List<Pair<Double, Double>>>,
+    walks: List<List<Pair<Double, Double>>>, startNow: Boolean = false,
 ): Boolean {
     val target = stepTarget(step, r, chosen)
     return when (step) {
-        is Step.Start -> now >= step.time || (live != null && target != null && live.distanceTo(target) > 60)
+        is Step.Start -> startNow || now >= step.time || (live != null && target != null && live.distanceTo(target) > 60)
         is Step.Walk -> when {
             target == null -> now >= step.leg.arr
             live != null -> live.distanceTo(target) < 40
@@ -298,6 +299,7 @@ internal fun journeyProgress(
     now: Long,
     fix: Fix?,
     canLocate: Boolean,
+    startNow: Boolean = false,
 ): Int {
     if (steps.isEmpty()) return 0
     var i = current.coerceIn(0, steps.lastIndex)
@@ -321,7 +323,7 @@ internal fun journeyProgress(
         val seen = fix?.takeIf { f ->
             (0 until i).none { j -> (steps[j] as? Step.Ride)?.let { f.at < rideOf(it, chosen).arr - 300 } == true }
         }
-        if (!done(steps[i], r, chosen, now, live, seen, waitForFix, walks)) break
+        if (!done(steps[i], r, chosen, now, live, seen, waitForFix, walks, startNow)) break
         i++
     }
     return i

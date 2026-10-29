@@ -538,6 +538,11 @@ private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) 
     val rt = if (info != null) r.routeType(agency) else 3
     val label = shortName.ifBlank { null } ?: info?.number?.ifBlank { null }
     val plate = linePlate(rt, agency) { Operators.of(r, agency) }
+    // Moovit's look for buses, when chosen in Settings.
+    if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && modeOf(rt) == Mode.BUS) {
+        LinePlateBadge(label, Mode.BUS, plate)
+        return
+    }
     Column(
         Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.badgePlate)
             .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),

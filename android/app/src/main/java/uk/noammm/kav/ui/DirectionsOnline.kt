@@ -3,8 +3,6 @@
 package uk.noammm.kav.ui
 
 import androidx.compose.foundation.clickable
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
@@ -13,7 +11,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -28,9 +25,10 @@ import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.Moovit.Place
 import uk.noammm.kav.data.MoovitLink
 import androidx.compose.material.icons.Icons
-import androidx.compose.material3.Icon
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import uk.noammm.kav.data.RailTrip
+import kotlinx.coroutines.launch
 
 private data class OpenTrip(
     val trip: Moovit.Itinerary,
@@ -510,7 +508,7 @@ fun DirectionsOnline(model: KavModel) {
             }
             when {
                 error == TOO_CLOSE -> item {
-                    Note(
+                    NoteCard(
                         T(
                             "You're too close to your destination to plan a route.",
                             "אתם קרובים מדי ליעד כדי לתכנן מסלול.",
@@ -520,7 +518,7 @@ fun DirectionsOnline(model: KavModel) {
                 }
                 error != null -> item { Note(error.orEmpty(), Modifier.padding(K.gap4)) }
                 toLL == null -> item {
-                    Note(
+                    NoteCard(
                         if (fromLL == null) T(
                             "Choose where you are starting from, and where you are going.",
                             "בחרו מהיכן אתם יוצאים ולאן אתם רוצים להגיע.",
@@ -532,18 +530,16 @@ fun DirectionsOnline(model: KavModel) {
                 fromLL == null && !findHereFailed -> item { LoadingBlock(T("Finding routes", "מחפשים מסלולים"), Modifier.fillParentMaxHeight(.6f)) }
                 fromLL == null -> item {
                     Column(Modifier.padding(K.gap4)) {
-                        Note(
-                            if (findHereFailed) T("Couldn't get an accurate location. Try again or choose a start.",
-                                "לא התקבל מיקום מדויק. נסו שוב או בחרו נקודת התחלה.")
-                            else T("Choose a start to find routes.", "בחרו נקודת התחלה כדי למצוא מסלולים."),
-                        )
+                        if (findHereFailed) Note(T("Couldn't get an accurate location. Try again or choose a start.",
+                            "לא התקבל מיקום מדויק. נסו שוב או בחרו נקודת התחלה."))
+                        else NoteCard(T("Choose a start to find routes.", "בחרו נקודת התחלה כדי למצוא מסלולים."))
                         if (findHereFailed && !findingHere) Text(T("Try again", "נסו שוב"), color = K.accentInk,
                             modifier = Modifier.clickable { hereRetry++ }.padding(vertical = K.gap3))
                     }
                 }
                 planning || plannedFor != planKey -> item { LoadingBlock(T("Finding routes", "מחפשים מסלולים"), Modifier.fillParentMaxHeight(.6f)) }
                 shown.isEmpty() -> item {
-                    Note(
+                    NoteCard(
                         if (raw.isEmpty()) T("No routes found for this trip.", "לא נמצאו מסלולים לנסיעה הזו.")
                         else T("Every route found is switched off in your filters.", "כל המסלולים שנמצאו הוסתרו על ידי המסננים שלכם."),
                         Modifier.padding(K.gap4),
@@ -564,11 +560,13 @@ fun DirectionsOnline(model: KavModel) {
                             KavChip(T("Earlier", "מוקדם יותר"), selected = false, onClick = { nudge(-15 * 60_000L) },
                                 icon = Icons.AutoMirrored.Rounded.KeyboardArrowLeft)
                             Spacer(Modifier.weight(1f))
-                            Text(
+                            // The time rolls up for Later and down for Earlier.
+                            RollingText(
                                 shown.firstOrNull()?.let {
                                     clockFormat().format(java.util.Date(it.dep * 1000))
                                 }.orEmpty(),
                                 style = K.type.caption.tabular,
+                                order = compareBy { t -> t.filter(Char::isDigit).toIntOrNull() ?: 0 },
                             )
                             Spacer(Modifier.weight(1f))
                             KavChip(T("Later", "מאוחר יותר"), selected = false, onClick = { nudge(15 * 60_000L) },
@@ -577,7 +575,7 @@ fun DirectionsOnline(model: KavModel) {
                     }
                     // Late at night or on Shabbat Moovit may only offer walking and cycling.
                     if (raw.none { t -> t.legs.any { it.kind == Moovit.LegKind.RIDE } }) item(key = "no-transit") {
-                        Note(
+                        NoteCard(
                             T("No public transport found for this time.", "לא נמצאה תחבורה ציבורית לשעה הזו."),
                             Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
                         )
@@ -598,7 +596,26 @@ fun DirectionsOnline(model: KavModel) {
                     // Moovit's results show the train.
                     railPair(shown, resolved)?.takeIf { sort == Sort.RECOMMENDED }?.let { rail ->
                         item(key = "rail") {
-                            Box(Modifier.popIn(0, raw to sort)) { RailCard(model.net, rail, Modifier.padding(horizontal = K.gap4)) }
+                            val scope = rememberCoroutineScope()
+                            // A train journey opens as a trip of its own, like any route, in the railway's name and colours.
+                            val railway = shown.firstNotNullOfOrNull { t ->
+                                t.rides.firstOrNull(resolved::isTrain)?.let { resolved.line(it.lineId)?.agencyId }
+                            } ?: KavPlan.agencyId(2, 2)
+                            Box(Modifier.popIn(0, raw to sort)) {
+                                RailCard(model.net, rail, Modifier.padding(horizontal = K.gap4)) { journey ->
+                                    scope.launch {
+                                        // Kav's timetable, loaded now if nothing has needed it yet.
+                                        val net = model.net ?: runCatching { uk.noammm.kav.loadNet(ctx) }.getOrNull()?.also { model.net = it }
+                                            ?: return@launch
+                                        val (trip, r) = withContext(Dispatchers.Default) { RailTrip.of(net, journey, railway) }
+                                            ?: return@launch
+                                        open = OpenTrip(
+                                            trip, r, r.stopName(trip.legs.first().fromStop).orEmpty(),
+                                            r.stopName(trip.legs.last().toStop).orEmpty(),
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                     items(shown.size) { i ->

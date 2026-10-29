@@ -23,7 +23,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -161,7 +160,7 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
             }
             if (q.isNotBlank()) {
                 if (hits.isEmpty()) item {
-                    Note(T("No stop by that name or code.", "אין תחנה בשם או במספר הזה."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
+                    NoteCard(T("No stop by that name or code.", "אין תחנה בשם או במספר הזה."), Modifier.padding(vertical = K.gap4))
                 } else item { Spacer(Modifier.height(K.gap2)) }
                 itemsIndexed(hits, key = { _, s -> s }) { i, s ->
                     StopListRow(net, s, null, town = true, first = i == 0, last = i == hits.lastIndex) { model.stationStop = s }
@@ -179,8 +178,8 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
                 item(key = "nearby") { SectionHeader(T("Nearby", "בסביבה")) }
                 when {
                     here == null -> item {
-                        Column(Modifier.padding(horizontal = K.gap4)) {
-                            Note(if (locating) T("Waiting for a fix…", "ממתינים למיקום…") else T("Kav doesn't know where you are yet.", "Kav עדיין לא יודע איפה אתם."))
+                        Column {
+                            NoteCard(if (locating) T("Waiting for a fix…", "ממתינים למיקום…") else T("Kav doesn't know where you are yet.", "Kav עדיין לא יודע איפה אתם."))
                             Spacer(Modifier.height(K.gap3))
                             KavButton(
                                 T("Use my location", "השתמשו במיקום שלי"), style = ButtonStyle.Secondary, busy = locating,
@@ -194,20 +193,19 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
                                 },
                             )
                             Spacer(Modifier.height(K.gap3))
-                            Text(
+                            NoteCard(
                                 T(
                                     "Your location, read once, used only to sort this list. " +
                                         "It is never stored and never leaves the phone.",
                                     "המיקום שלכם, שנקרא פעם אחת, משמש רק למיון הרשימה הזו. הוא לעולם לא נשמר ולא יוצא מהטלפון.",
                                 ),
-                                style = K.type.subhead, color = K.textTertiary,
                             )
                         }
                     }
                     near.isEmpty() -> item {
-                        Note(
+                        NoteCard(
                             T("No stops within 2.5 km of you.", "אין תחנות במרחק של 2.5 ק״מ מכם."),
-                            Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
+                            Modifier.padding(vertical = K.gap2),
                         )
                     }
                     else -> itemsIndexed(near, key = { _, it -> it.first }) { i, (s, d) ->
@@ -250,11 +248,10 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
     LaunchedEffect(moovitId, t0, fromServer) {
         stopLive(net, stop, moovitId, fromServer)?.let { (l, t) -> live = l; trains = t }
     }
-    fun liveAt(trip: Int, dep: Int): LiveAt? = live.at(net, trip, dep)
     val rows = remember(stop, t0, live) { boardRows(net, stop, t0, live, 60) }
 
     var alerting by remember(stop) { mutableStateOf(false) }
-    val numbered = remember(stop) { net.linesAt(stop).isNotEmpty() }
+    val alertable = remember(stop) { net.linesAt(stop).isNotEmpty() || net.endsAt(stop).isNotEmpty() }
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(K.bg)) {
         ScreenHeader(T("Departures", "יציאות"), back = onBack)
@@ -290,8 +287,8 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                 ) { ink, fill -> starGlyph(ink, fill) }
                 ActionDivider()
                 val alerts = model.lineAlerts.count { it.stop == key }
-                // Line alerts go by line number: a stop no numbered line leaves from (a train station) has none to set.
-                if (alerts > 0 || numbered) {
+                // Alerts go by line number, or at a train station by where the trains end; a stop nothing leaves has none.
+                if (alerts > 0 || alertable) {
                     ActionTile(
                         if (alerts > 0) T("Alerts", "התראות") else T("Alert", "התראה"),
                         if (alerts > 0) T.count(
@@ -311,7 +308,7 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
         }
         Spacer(Modifier.height(K.gap3))
         if (rows.isEmpty()) {
-            Note(T("Nothing more today or tomorrow.", "אין עוד יציאות היום או מחר."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
+            NoteCard(T("Nothing more today or tomorrow.", "אין עוד יציאות היום או מחר."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
         }
         val lines = remember(rows, trains, T.lang) { rows.map { boardLine(net, it, live, trains, t0) } }
         val columns = boardColumns(net, lines)

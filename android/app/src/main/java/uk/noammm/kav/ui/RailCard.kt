@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -80,7 +81,8 @@ private sealed class RailAnswer {
 // "View schedules" one, where the results talk about the train. It opens on a tap, and only then asks the railway: it
 // learns the two stations and the day. Once asked, closed, it names the next train.
 @Composable
-internal fun RailCard(net: Net?, pair: RailPair, modifier: Modifier = Modifier) {
+// onJourney: a train route tapped, to open like any other route.
+internal fun RailCard(net: Net?, pair: RailPair, modifier: Modifier = Modifier, onJourney: ((IsraelRail.Journey) -> Unit)? = null) {
     val scope = rememberCoroutineScope()
     var answer by remember(pair.from, pair.to, pair.at) { mutableStateOf<RailAnswer?>(null) }
     var open by remember(pair.from, pair.to, pair.at) { mutableStateOf(false) }
@@ -142,7 +144,12 @@ internal fun RailCard(net: Net?, pair: RailPair, modifier: Modifier = Modifier) 
                     is RailAnswer.Found -> {
                         if (soon.isNullOrEmpty()) Note(T("No more trains that day.", "אין עוד רכבות באותו יום."))
                         soon.orEmpty().forEachIndexed { i, j ->
-                            Box(Modifier.popIn(i, a)) { RailJourney(net, j) }
+                            Box(
+                                Modifier.popIn(i, a).then(
+                                    if (onJourney == null) Modifier
+                                    else Modifier.clip(RoundedCornerShape(K.rTile)).clickable(role = Role.Button) { onJourney(j) },
+                                ),
+                            ) { RailJourney(net, j) }
                         }
                         Text(
                             T("From Israel Railways' own timetable", "מלוח הזמנים של רכבת ישראל"),

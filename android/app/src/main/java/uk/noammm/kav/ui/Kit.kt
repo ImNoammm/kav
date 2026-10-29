@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -291,12 +292,7 @@ fun ListGroup(
                 row()
             }
         }
-        footer?.let {
-            Text(
-                it, style = K.type.subhead, color = K.textTertiary, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
-            )
-        }
+        footer?.let { NoteCard(it, Modifier.padding(top = K.gap2)) }
     }
 }
 
@@ -423,6 +419,17 @@ fun KavCard(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, conten
     )
 }
 
+// A short note of a few words or lines (a hint, a footer, what something does) in a quiet card of its own, never loose on
+// the page.
+@Composable
+fun NoteCard(text: String, modifier: Modifier = Modifier, color: Color = K.textSecondary) {
+    Text(
+        text, style = K.type.subhead, color = color,
+        modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.fill)
+            .padding(horizontal = K.gap4, vertical = K.gap3),
+    )
+}
+
 // A sheet's title row: its title, a line under it where there is one, and Close.
 @Composable
 fun SheetHeader(title: String, onClose: () -> Unit, subtitle: String? = null) {
@@ -458,7 +465,32 @@ fun LinePlateBadge(
 ) {
     val shape = RoundedCornerShape(K.rBadge)
     val ink = plate?.ink ?: K.text
-    Row(
+    val mark = if (dense) 12.dp else 14.dp
+    // Moovit's look, for buses when chosen in Settings: a grey plate over a strip of the operator's colour.
+    if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && mode == Mode.BUS) Column(
+        modifier
+            .widthIn(min = 44.dp)
+            .width(IntrinsicSize.Max)
+            .height(if (dense) 24.dp else 28.dp)
+            .clip(shape)
+            .background(plate?.fill ?: K.fill)
+            .border(1.dp, K.borderStrong, shape),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().weight(1f).background(K.badgePlate).padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+        ) {
+            if (glyph != null) glyph(K.textSecondary, mark) else ModeGlyph(mode, K.textSecondary, mark)
+            if (!number.isNullOrBlank()) {
+                Text(
+                    number, style = (if (dense) K.type.subhead else K.type.bodyStrong).tabular, color = K.text,
+                    fontWeight = FontWeight.Medium, maxLines = 1,
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+    } else Row(
         modifier
             .widthIn(min = 44.dp)
             .height(if (dense) 24.dp else 28.dp)
@@ -469,7 +501,6 @@ fun LinePlateBadge(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
     ) {
-        val mark = if (dense) 12.dp else 14.dp
         if (glyph != null) glyph(plate?.ink ?: K.textSecondary, mark) else ModeGlyph(mode, plate?.ink ?: K.textSecondary, mark)
         if (!number.isNullOrBlank()) {
             Text(

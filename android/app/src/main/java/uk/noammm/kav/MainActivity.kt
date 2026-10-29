@@ -153,6 +153,7 @@ class MainActivity : ComponentActivity() {
         K.accent = Color(Prefs.accent(this))
         K.applyTheme(Prefs.look(this))
         K.liquid = Prefs.liquidGlass(this)
+        K.lineBadgeAppearance = Prefs.lineBadges(this)
         Shown.co2 = Prefs.showCo2(this)
         Shown.payments = Prefs.showPayments(this)
         Pip.allowed = Prefs.pipNavigation(this)
@@ -339,6 +340,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         K.accent = Color(Prefs.accent(ctx))
         K.applyTheme(Prefs.look(ctx))
         K.liquid = Prefs.liquidGlass(ctx)
+        K.lineBadgeAppearance = Prefs.lineBadges(ctx)
         Shown.co2 = Prefs.showCo2(ctx)
         Shown.payments = Prefs.showPayments(ctx)
         Pip.allowed = Prefs.pipNavigation(ctx)
@@ -727,7 +729,9 @@ private fun Shell(model: KavModel) {
     val journeyActive = model.activeJourney != null
     LaunchedEffect(journeyActive, lifecycle) {
         if (!journeyActive) return@LaunchedEffect
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        // Only while Kav is in front: the small window lives on the trip service's fixes (TripBridge.fix), which it
+        // asks for only as often as the step needs.
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             val stop = trackLocation(ctx, onFix = { model.track(it.latitude, it.longitude, it.speed, it.fixTime()) },
                 onRough = { model.glimpse(it.latitude, it.longitude, it.speed, it.fixTime()) })
             try { awaitCancellation() } finally { stop() }
@@ -740,7 +744,7 @@ private fun Shell(model: KavModel) {
             val current = model.activeJourney?.takeIf { it.trip === journey.trip } ?: break
             val next = journeyProgress(
                 steps, model.journeyStep, current.resolved, current.chosen,
-                System.currentTimeMillis() / 1000, model.fix, canLocate(ctx),
+                System.currentTimeMillis() / 1000, model.fix, canLocate(ctx), Prefs.beginTripsImmediately(ctx),
             )
             if (next != model.journeyStep) model.journeyStep = next
             delay(2000)
@@ -818,11 +822,14 @@ private fun Shell(model: KavModel) {
             Spacer(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.safeDrawing).background(K.bg))
         },
         bottomBar = {
-            // The tab bar slides away while navigating and back up after, instead of popping in.
+            // The tab bar slides away while navigating, and under the screens that cover everything (Settings, Pay,
+            // Payment history, a report) where its tabs couldn't do anything; it slides back up after.
+            val covered = model.settingsOpen || model.payOpen || model.payHistoryOpen || model.report != null
+            val shown = !model.navigating && !covered
             Box {
-                if (model.navigating) Spacer(Modifier.fillMaxWidth().windowInsetsBottomHeight(WindowInsets.safeDrawing))
+                if (!shown) Spacer(Modifier.fillMaxWidth().windowInsetsBottomHeight(WindowInsets.safeDrawing))
                 androidx.compose.animation.AnimatedVisibility(
-                    !model.navigating,
+                    shown,
                     enter = androidx.compose.animation.slideInVertically(spring(dampingRatio = 1f, stiffness = 400f)) { it } +
                         androidx.compose.animation.fadeIn(tween(200)),
                     exit = androidx.compose.animation.slideOutVertically(tween(200)) { it } +
@@ -1241,7 +1248,11 @@ fun requestLocationOnce(
 
 // Rough fixes, and network ones while a precise provider is talking, would move the steps on, so a rough one goes to onRough instead,
 // only to show where you are. One rougher than VIEW_FIX_M is no use at all.
-fun trackLocation(ctx: Context, onFix: (Location) -> Unit, onRough: ((Location) -> Unit)? = null): () -> Unit {
+// every and quality: how often and how precisely, by default every second as closely as the phone can.
+fun trackLocation(
+    ctx: Context, onFix: (Location) -> Unit, onRough: ((Location) -> Unit)? = null, every: Long = 1000L,
+    quality: Int = LocationRequestCompat.QUALITY_HIGH_ACCURACY,
+): () -> Unit {
     if (!hasLocationPermission(ctx)) return {}
     val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return {}
     var active = true
@@ -1266,9 +1277,8 @@ fun trackLocation(ctx: Context, onFix: (Location) -> Unit, onRough: ((Location) 
     var any = false
     for (provider in locationProviders(lm)) {
         try {
-            val interval = if (provider == LocationManager.NETWORK_PROVIDER) 4000L else 1000L
-            val request = LocationRequestCompat.Builder(interval)
-                .setQuality(LocationRequestCompat.QUALITY_HIGH_ACCURACY).build()
+            val interval = if (provider == LocationManager.NETWORK_PROVIDER) maxOf(4000L, every) else every
+            val request = LocationRequestCompat.Builder(interval).setQuality(quality).build()
             LocationManagerCompat.requestLocationUpdates(lm, provider, request, listener, Looper.getMainLooper())
             any = true
         } catch (e: SecurityException) {
@@ -1492,6 +1502,10 @@ object Prefs {
     fun liveFromKav(ctx: Context): Boolean = store(ctx).getBoolean("liveFromKav", false)
     fun setLiveFromKav(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("liveFromKav", on).apply()
 
+    // A started trip goes straight to its first walk instead of waiting for its time or for the rider to move off.
+    fun beginTripsImmediately(ctx: Context): Boolean = store(ctx).getBoolean("beginTripsImmediately", false)
+    fun setBeginTripsImmediately(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("beginTripsImmediately", on).apply()
+
     // Kav's own planner rather than Moovit's, while Kav's server is chosen.
     fun planWithKav(ctx: Context): Boolean = store(ctx).getBoolean("planWithKav", false)
     fun setPlanWithKav(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("planWithKav", on).apply()
@@ -1603,6 +1617,7 @@ object Prefs {
             .put("privateSearch", privateSearch(ctx))
             .put("liveFromKav", liveFromKav(ctx))
             .put("planWithKav", planWithKav(ctx))
+            .put("beginTripsImmediately", beginTripsImmediately(ctx))
             .put("timetableUpdates", timetableUpdates(ctx))
             .put("kavServer", kavServer(ctx))
             .put("kavServerKey", kavServerKey(ctx))
@@ -1634,6 +1649,7 @@ object Prefs {
         if (o.has("privateSearch")) e.putBoolean("privateSearch", o.optBoolean("privateSearch"))
         if (o.has("liveFromKav")) e.putBoolean("liveFromKav", o.optBoolean("liveFromKav"))
         if (o.has("planWithKav")) e.putBoolean("planWithKav", o.optBoolean("planWithKav"))
+        if (o.has("beginTripsImmediately")) e.putBoolean("beginTripsImmediately", o.optBoolean("beginTripsImmediately"))
         if (o.has("timetableUpdates")) e.putBoolean("timetableUpdates", o.optBoolean("timetableUpdates"))
         KavLive.serverAddress(o.optString("kavServer"))?.let {
             // The server's timetable key is asked of it again (Timetable.refresh).
@@ -1683,6 +1699,9 @@ object Prefs {
         }
         store(ctx).edit().putString("favourites", arr.toString()).apply()
     }
+    fun lineBadges(ctx: Context): LineBadgeAppearance =
+        LineBadgeAppearance.entries.firstOrNull { it.name == store(ctx).getString("lineBadgeAppearance", null) } ?: LineBadgeAppearance.KAV
+    fun setLineBadges(ctx: Context, a: LineBadgeAppearance) = store(ctx).edit().putString("lineBadgeAppearance", a.name).apply()
 }
 
 // A Moovit line link opens that line's page; a stop link opens the stop's board, found by its public code.

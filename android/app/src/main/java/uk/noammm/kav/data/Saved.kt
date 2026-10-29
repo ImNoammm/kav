@@ -28,11 +28,19 @@ class LineAlert(
     val id: Long, val stop: String, val name: String, val lines: List<String>, val days: Int, val from: Int, val to: Int,
     // Moovit's id for the stop, for live times from Moovit, where it was known.
     val moovit: Int = -1,
+    // At a train station, which numbers no line, the trains it's for by where they end.
+    val toward: List<End> = emptyList(),
 ) {
+    // Where trains end: the timetable's name, with the stop code and place that tell it from a station of a like name.
+    class End(val name: String, val code: Int, val lat: Double, val lon: Double) {
+        fun json(): JSONObject = JSONObject().put("name", name).put("code", code).put("lat", lat).put("lon", lon)
+    }
+
     val code: Int get() = stop.substringBefore('/').toIntOrNull() ?: 0
 
     fun json(): JSONObject = JSONObject().put("id", id).put("stop", stop).put("name", name)
         .put("lines", JSONArray(lines)).put("days", days).put("from", from).put("to", to).put("moovit", moovit)
+        .apply { if (toward.isNotEmpty()) put("toward", JSONArray(toward.map { it.json() })) }
 
     // The days' windows around now, as epoch seconds, from the day before (one running past midnight) to a week on.
     private fun windows(now: Long): List<LongRange> {
@@ -62,11 +70,15 @@ class LineAlert(
         const val WEEKDAYS = 0b0011111
 
         fun of(o: JSONObject): LineAlert? {
-            val lines = o.optJSONArray("lines")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } }
-            if (lines.isNullOrEmpty() || o.optString("stop").isBlank()) return null
+            fun strings(key: String) = o.optJSONArray(key)?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } }.orEmpty()
+            val lines = strings("lines")
+            val toward = o.optJSONArray("toward")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+                .filter { it.optString("name").isNotBlank() }
+                .map { End(it.optString("name"), it.optInt("code"), it.optDouble("lat"), it.optDouble("lon")) }
+            if ((lines.isEmpty() && toward.isEmpty()) || o.optString("stop").isBlank()) return null
             return LineAlert(
                 o.optLong("id"), o.optString("stop"), o.optString("name"), lines, o.optInt("days", WEEKDAYS) and 0x7F,
-                o.optInt("from").coerceIn(0, 1439), o.optInt("to").coerceIn(0, 1439), o.optInt("moovit", -1),
+                o.optInt("from").coerceIn(0, 1439), o.optInt("to").coerceIn(0, 1439), o.optInt("moovit", -1), toward,
             )
         }
 

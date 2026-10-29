@@ -31,17 +31,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.runtime.remember
 
 // A section's header with its explanation kept behind a small (i) at its end: the text slides open under the header
-// when asked for, instead of sitting in grey under every control. A block of text sits in a card, like the Live
-// screen's; a single line stays plain.
+// in a card, like the Live screen's, when asked for, instead of sitting in grey under every control.
 @Composable
 fun InfoHeader(text: String, info: String, modifier: Modifier = Modifier) {
     var open by rememberSaveable(text) { mutableStateOf(false) }
@@ -66,23 +58,7 @@ fun InfoHeader(text: String, info: String, modifier: Modifier = Modifier) {
         ) {
             AnimatedContent(
                 info, transitionSpec = { fadeIn(tween(200, delayMillis = 60)) togetherWith fadeOut(tween(120)) }, label = "info",
-            ) { shown ->
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    val measurer = rememberTextMeasurer()
-                    val width = constraints.maxWidth - with(LocalDensity.current) { (K.gap4 * 2).roundToPx() }
-                    // Measured before it's drawn, so it never jumps from plain to card.
-                    val block = remember(shown, width) {
-                        measurer.measure(shown, K.type.subhead, constraints = Constraints(maxWidth = width.coerceAtLeast(0))).lineCount > 1
-                    }
-                    Text(
-                        shown, style = K.type.subhead,
-                        modifier = if (block) {
-                            Modifier.padding(bottom = K.gap2).fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.fill)
-                                .padding(horizontal = K.gap4, vertical = K.gap3)
-                        } else Modifier.padding(horizontal = K.gap4),
-                    )
-                }
-            }
+            ) { shown -> NoteCard(shown, Modifier.padding(bottom = K.gap2)) }
         }
     }
 }

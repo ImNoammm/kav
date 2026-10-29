@@ -1,9 +1,18 @@
 package uk.noammm.kav.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,8 +25,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -117,25 +124,22 @@ fun UpdateSection(model: KavModel) {
         installedNotes = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Updates.latest() } }.getOrNull()
             ?.takeIf { it.version.removePrefix("v") == Updates.installedVersion(ctx).removePrefix("v") }
     }
-    Column(
-        Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard)
-            .padding(K.gap4),
-        verticalArrangement = Arrangement.spacedBy(K.gap3),
-    ) {
+    Column(Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard).padding(K.gap4)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
             AppIcon(40.dp)
-            Column(Modifier.weight(1f)) {
+            // A new status fades in over the old, and the card eases to any new height, as the button beside it changes width.
+            Column(Modifier.weight(1f).animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
                 Text(T.ltr("Kav ${Updates.installedVersion(ctx)}"), style = K.type.headline)
-                Text(
-                    when {
-                        release != null -> T("${release.version} is available", "גרסה ${release.version} זמינה")
+                val available = release?.let { T("${it.version} is available", "גרסה ${it.version} זמינה") }
+                // Short enough for one line beside the button in both languages.
+                ChangingText(
+                    available ?: when {
                         checking -> T("Looking…", "בודקים…")
-                        model.updateFailed -> T("Couldn't check for updates", "לא הצלחנו לבדוק אם יש עדכונים")
-                        model.updateChecked -> T("This is the newest release", "זו הגרסה העדכנית ביותר")
+                        model.updateFailed -> T("Couldn't check", "הבדיקה נכשלה")
+                        model.updateChecked -> T("Up to date", "גרסה עדכנית")
                         else -> T("Not checked yet", "עוד לא נבדק")
                     },
-                    style = K.type.subhead, color = if (release != null) K.accentInk else K.textSecondary,
-                )
+                ) { Text(it, style = K.type.subhead, color = if (it == available) K.accentInk else K.textSecondary) }
             }
             if (release != null) UpdateButton(model) { model.startUpdate(ctx) }
             else KavButton(if (checking) T("Checking…", "בודקים…") else T("Check for updates", "בדקו עדכונים"), {
@@ -145,9 +149,27 @@ fun UpdateSection(model: KavModel) {
                     model.checkForUpdate(ctx)
                     checking = false
                 }
-            }, style = ButtonStyle.Secondary)
+            }, style = ButtonStyle.Secondary, busy = checking)
         }
-        (release ?: installedNotes)?.let { ReleaseNotes(it, maxHeight = 240.dp) }
-        UpdateProgress(model)
+        // The notes, once fetched, and the download open under the row as InfoHeader's text does.
+        val notes = release ?: installedNotes
+        var lastNotes by remember { mutableStateOf(notes) }
+        if (notes != null) lastNotes = notes
+        AnimatedVisibility(notes != null, enter = opening, exit = closing) {
+            AnimatedContent(
+                lastNotes,
+                transitionSpec = {
+                    (fadeIn(tween(200, delayMillis = 60)) togetherWith fadeOut(tween(120)))
+                        .using(SizeTransform { _, _ -> spring(dampingRatio = 1f, stiffness = 500f) })
+                },
+                label = "releaseNotes",
+            ) { shown -> shown?.let { Column(Modifier.padding(top = K.gap3)) { ReleaseNotes(it, maxHeight = 240.dp) } } }
+        }
+        AnimatedVisibility(model.updateProgress != null || model.updateError != null, enter = opening, exit = closing) {
+            Column(Modifier.padding(top = K.gap3)) { UpdateProgress(model) }
+        }
     }
 }
+
+private val opening = expandVertically(spring(dampingRatio = 1f, stiffness = 500f)) + fadeIn(tween(200, delayMillis = 60))
+private val closing = shrinkVertically(spring(dampingRatio = 1f, stiffness = 500f)) + fadeOut(tween(120))

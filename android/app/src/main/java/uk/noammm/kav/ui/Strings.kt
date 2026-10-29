@@ -23,8 +23,6 @@ object T {
 
     val rtl: Boolean get() = lang == Lang.HE
 
-    val onward: String get() = if (rtl) "‹" else "›"
-    val backward: String get() = if (rtl) "›" else "‹"
 
     fun ltr(s: String): String = if (rtl) "\u2066" + s + "\u2069" else s
 

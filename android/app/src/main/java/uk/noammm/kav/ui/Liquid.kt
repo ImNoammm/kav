@@ -16,6 +16,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.layer.GraphicsLayer
@@ -28,7 +29,13 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 
 // The AGSL shaders below are from Kyant0's AndroidLiquidGlass (Apache License 2.0, Copyright 2025 Kyant).
-internal val liquidTint get() = K.bg.copy(alpha = .72f)
+
+// Over the bare page a pane comes out the cards' own shade, with what passes under it showing through.
+internal val liquidTint: Color get() {
+    val a = .72f
+    fun over(card: Float, page: Float) = ((card - (1 - a) * page) / a).coerceIn(0f, 1f)
+    return Color(over(K.surface.red, K.bg.red), over(K.surface.green, K.bg.green), over(K.surface.blue, K.bg.blue), a)
+}
 
 class LiquidBackdrop internal constructor(internal val layer: GraphicsLayer) {
     internal var origin by mutableStateOf(Offset.Zero)

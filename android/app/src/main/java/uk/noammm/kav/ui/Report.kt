@@ -1081,8 +1081,7 @@ private fun YesNo(question: String, value: String, error: String?, onPick: (Stri
 @Composable
 private fun Hint(shown: Boolean, text: String) {
     AnimatedVisibility(shown, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-        Text(text, style = K.type.subhead,
-            modifier = Modifier.fillMaxWidth().panel(K.rTile).padding(K.gap3))
+        NoteCard(text)
     }
 }
 

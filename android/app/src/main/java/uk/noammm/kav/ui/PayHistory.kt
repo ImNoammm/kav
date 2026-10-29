@@ -37,6 +37,22 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 
 private class Month(val key: Int, val rides: List<RavPass.Ride>)
 
@@ -143,7 +159,7 @@ fun PayHistoryScreen(onClose: () -> Unit, onTicket: (String) -> Unit) {
                             KavButton(T("Try again", "נסו שוב"), { error = null; next() }, style = ButtonStyle.Secondary)
                         }
                         loading -> Note(T("Loading…", "טוען…"))
-                        !more -> Note(T("That's the whole history.", "זו כל ההיסטוריה."))
+                        !more -> NoteCard(T("That's the whole history.", "זו כל ההיסטוריה."))
                     }
                 }
             }
@@ -207,7 +223,7 @@ private fun MonthHeader(m: Month) {
         Text(monthName(m.key), style = K.type.caption, modifier = Modifier.weight(1f))
         Text(T.ltr(shekels(m.rides.sumOf { it.paid() })), style = K.type.caption.tabular)
     }
-    if (m.rides.isEmpty()) Note(T("No rides yet this month.", "אין עדיין נסיעות החודש."), Modifier.padding(horizontal = K.gap4))
+    if (m.rides.isEmpty()) NoteCard(T("No rides yet this month.", "אין עדיין נסיעות החודש."), Modifier.padding(horizontal = K.gap4))
 }
 
 // One ride, and its ticket when it is one of today's that Kav still shows.
@@ -304,46 +320,107 @@ private fun shortMonth(key: Int): String =
     )
 
 // Home's look at paying: this month so far and its rides, the six months as bars with this one in the accent.
-// A tap opens the history.
+// A tap opens the history. It opens with what it last knew, dimmed (or quiet placeholders the first time, at the size
+// the numbers will take), and when Rav-Pass answers the amount rolls to the new one and the bars spring to theirs.
 @Composable
 internal fun SpendSummary(onOpen: () -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val now = remember { System.currentTimeMillis() }
+    val current = monthKey(now)
+    val keys = (current - 5..current).toList()
     var rides by remember { mutableStateOf(SpendCache.rides) }
+    val saved = remember { savedSpent(ctx) }
     LaunchedEffect(Unit) {
         if (SpendCache.rides != null && now - SpendCache.at < 10 * 60_000L) return@LaunchedEffect
         runCatching { Payer.call { RavPass.billings(it, 0) }.first }.onSuccess {
             SpendCache.rides = it; SpendCache.at = now; rides = it
+            saveSpent(ctx, spentOf(it, keys))
         }
     }
-    val current = monthKey(now)
-    val keys = (current - 5..current).toList()
-    val byMonth = rides?.groupBy { monthKey(it.boardedUtc) }
-    val spent = keys.map { k -> byMonth?.get(k)?.sumOf { it.paid() } ?: 0L }
-    val count = byMonth?.get(current)?.count { !it.cancelled }
-    val said = keys.zip(spent).joinToString(", ") { (k, v) -> shortMonth(k) + " " + shekels(v) }
+    val fresh = rides?.let { spentOf(it, keys) }
+    val known = fresh ?: saved?.let { s ->
+        val by = (s.month - 5..s.month).zip(s.totals).toMap()
+        Spent(current, keys.map { by[it] ?: 0L }, if (s.month == current) s.rides else null)
+    }
+    val still = remember {
+        android.provider.Settings.Global.getFloat(ctx.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    }
+    val dim by animateFloatAsState(if (fresh == null) .5f else 1f, if (still) snap() else tween(300), label = "spendDim")
+    val said = known?.let { k -> keys.zip(k.totals).joinToString(", ") { (m, v) -> shortMonth(m) + " " + shekels(v) } }.orEmpty()
     Row(
         Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = T("Open payment history", "פתיחת היסטוריית התשלומים"), onClick = onOpen)
             .padding(horizontal = K.gap4, vertical = K.gap3),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap4),
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f).graphicsLayer { alpha = dim }) {
             Text(T("This month", "החודש"), style = K.type.caption)
-            LtrText(if (rides == null) "…" else shekels(spent.last()), 28.sp, K.text, FontWeight.SemiBold)
-            Text(
-                count?.let { T.count(it, "1 ride", "נסיעה אחת", "rides", "נסיעות") } ?: T("Loading…", "טוען…"),
-                style = K.type.subhead,
+            Arriving(
+                known?.let { shekels(it.totals.last()) }, K.type.largeTitle.tabular.copy(textDirection = TextDirection.Ltr),
+                placeholder = 96.dp, still = still, order = compareBy { t -> t.filter(Char::isDigit).toLongOrNull() ?: 0L },
+            )
+            Arriving(
+                known?.rides?.let { T.count(it, "1 ride", "נסיעה אחת", "rides", "נסיעות") }, K.type.subhead,
+                placeholder = 64.dp, still = still,
             )
         }
-        SpendBars(keys, spent, Modifier.semantics { contentDescription = T("Spent per month: ", "הוצאה לפי חודש: ") + said })
+        SpendBars(
+            keys, known?.totals, still,
+            Modifier.graphicsLayer { alpha = dim }.semantics { contentDescription = T("Spent per month: ", "הוצאה לפי חודש: ") + said },
+        )
         Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(20.dp))
     }
 }
 
-// Six thin bars on one baseline, rounded at the top, 2 dp apart; the month's initials under them in text colours.
+// Words still on their way: until they come, a quiet bar where they'll be, as tall as their line; then they rise in
+// and, when they change, roll to the new ones.
 @Composable
-private fun SpendBars(keys: List<Int>, spent: List<Long>, modifier: Modifier = Modifier) {
-    val top = spent.maxOrNull()?.takeIf { it > 0 } ?: 1L
+private fun Arriving(
+    text: String?, style: androidx.compose.ui.text.TextStyle, placeholder: Dp, still: Boolean,
+    order: Comparator<String> = naturalOrder(),
+) {
+    val line = with(LocalDensity.current) { style.lineHeight.toDp() }
+    Box(Modifier.heightIn(min = line), contentAlignment = Alignment.CenterStart) {
+        AnimatedVisibility(text == null, enter = fadeIn(snap()), exit = if (still) ExitTransition.None else fadeOut(tween(150))) {
+            Box(Modifier.size(placeholder, line * .7f).clip(RoundedCornerShape(K.rBadge)).background(K.fill))
+        }
+        AnimatedVisibility(
+            text != null,
+            enter = if (still) EnterTransition.None else fadeIn(tween(220, delayMillis = 60)) + slideInVertically(spring(dampingRatio = 1f, stiffness = 500f)) { it / 3 },
+            exit = ExitTransition.None,
+        ) { RollingText(text.orEmpty(), style = style, order = order) }
+    }
+}
+
+// The six months' totals and this month's rides, as the card shows them and keeps them for its next opening.
+private class Spent(val month: Int, val totals: List<Long>, val rides: Int?)
+
+private fun spentOf(rides: List<RavPass.Ride>, keys: List<Int>): Spent {
+    val by = rides.groupBy { monthKey(it.boardedUtc) }
+    return Spent(keys.last(), keys.map { k -> by[k]?.sumOf { it.paid() } ?: 0L }, by[keys.last()]?.count { !it.cancelled } ?: 0)
+}
+
+private fun savedSpent(ctx: android.content.Context): Spent? = ctx.getSharedPreferences("spend", android.content.Context.MODE_PRIVATE).run {
+    val month = getInt("month", -1)
+    val totals = getString("totals", null)?.split(",")?.mapNotNull { it.toLongOrNull() }
+    if (month < 0 || totals?.size != 6) null else Spent(month, totals, getInt("rides", 0))
+}
+
+private fun saveSpent(ctx: android.content.Context, s: Spent) =
+    ctx.getSharedPreferences("spend", android.content.Context.MODE_PRIVATE).edit()
+        .putInt("month", s.month).putString("totals", s.totals.joinToString(",")).putInt("rides", s.rides ?: 0).apply()
+
+// Six thin bars on one baseline, rounded at the top, 2 dp apart; the month's initials under them in text colours.
+// They grow from the baseline as the totals come, and spring to new heights when they change.
+@Composable
+private fun SpendBars(keys: List<Int>, spent: List<Long>?, still: Boolean, modifier: Modifier = Modifier) {
+    val top = (spent?.maxOrNull()?.takeIf { it > 0 } ?: 1L).toFloat()
+    val heights = keys.indices.map { i ->
+        animateFloatAsState(
+            (spent?.getOrNull(i) ?: 0L) / top,
+            if (still) snap() else spring(dampingRatio = .8f, stiffness = 300f), label = "spendBar",
+        ).value
+    }
     val past = K.textTertiary
     val now = K.accentInk
     val floor = K.fillStrong
@@ -354,7 +431,7 @@ private fun SpendBars(keys: List<Int>, spent: List<Long>, modifier: Modifier = M
             val r = minOf(w / 2, 4.dp.toPx())
             keys.indices.forEach { i ->
                 val x = mirrorX((i * (w + gap) + w / 2) / size.width) * size.width - w / 2
-                val h = (spent[i].toFloat() / top) * size.height
+                val h = heights[i] * size.height
                 if (h < 1f) {
                     drawRoundRect(floor, Offset(x, size.height - 2.dp.toPx()), Size(w, 2.dp.toPx()), CornerRadius(1.dp.toPx()))
                 } else {

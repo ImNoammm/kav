@@ -1,19 +1,5 @@
 package uk.noammm.kav.ui
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.toggleableState
-import androidx.compose.ui.state.ToggleableState
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import uk.noammm.kav.data.Moovit
 
 enum class ResultFilter {
@@ -75,53 +61,6 @@ fun filterResults(list: List<Moovit.Itinerary>, on: Set<ResultFilter>, r: Moovit
                 Mode.TRAM, Mode.SUBWAY -> ResultFilter.LIGHT_RAIL in on
                 Mode.FUNICULAR, Mode.CABLE, Mode.GONDOLA -> ResultFilter.CARMELIT_RAKAVLIT in on
                 else -> true
-            }
-        }
-    }
-}
-
-@Composable
-fun SwitchRow(
-    label: String,
-    desc: String,
-    on: Boolean,
-    onToggle: (Boolean) -> Unit,
-    leading: @Composable () -> Unit,
-) {
-    // The whole row toggles; what it's for reads the same whether on or off, and the switch says which.
-    Row(
-        Modifier.fillMaxWidth().panel(K.rCard)
-            .semantics { contentDescription = label; toggleableState = if (on) ToggleableState.On else ToggleableState.Off }
-            .clickable(role = Role.Switch) { onToggle(!on) }
-            .padding(horizontal = K.gap4, vertical = K.gap3),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(K.gap3),
-    ) {
-        Box(Modifier.width(24.dp), contentAlignment = Alignment.Center) { leading() }
-        Column(Modifier.weight(1f)) {
-            Text(label, style = K.type.body)
-            Text(desc, style = K.type.subhead, color = K.textTertiary, modifier = Modifier.padding(top = 2.dp))
-        }
-        KavSwitch(on)
-    }
-}
-
-@Composable
-fun FilterRows(enabled: Set<ResultFilter>, onToggle: (ResultFilter, Boolean) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
-        ResultFilter.entries.forEach { f ->
-            val on = f in enabled
-            SwitchRow(f.label, f.desc, on, { onToggle(f, it) }) {
-                when (f) {
-                    ResultFilter.BUS -> ModeGlyph(Mode.BUS, if (on) K.text else K.dim, 18.dp)
-                    ResultFilter.TRAIN -> ModeGlyph(Mode.TRAIN, if (on) K.text else K.dim, 18.dp)
-                    ResultFilter.LIGHT_RAIL -> ModeGlyph(Mode.TRAM, if (on) K.text else K.dim, 18.dp)
-                    ResultFilter.CARMELIT_RAKAVLIT -> CarmelitMark(18.dp)
-                    ResultFilter.SHUTTLE -> ShuttleMark(18.dp)
-                    ResultFilter.TAXI -> ModeGlyph(Mode.TAXI, if (on) K.text else K.dim, 18.dp)
-                    ResultFilter.BIKE -> BikeGlyph(if (on) K.text else K.dim)
-                    ResultFilter.WALK -> WalkGlyph(if (on) K.text else K.dim, 16.dp)
-                }
             }
         }
     }

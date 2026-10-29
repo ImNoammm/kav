@@ -127,7 +127,7 @@ fun KavField(
 }
 
 // The line under a stop's name: its platform first, which tells a station's platforms apart, then its code, as on
-// its sign, and its town. "Platform 4 · Stop 32052 · Rosh Ha'ayin".
+// its sign, and its town.
 internal fun stopDetail(net: Net, stop: Int, town: Boolean = true): String = listOfNotNull(
     net.platform.getOrElse(stop) { "" }.takeIf { it.isNotEmpty() }?.let { T("Platform $it", "רציף $it") },
     net.code.getOrElse(stop) { 0 }.takeIf { it > 0 }?.let { T("Stop $it", "תחנה $it") },
@@ -342,14 +342,14 @@ fun PlacePicker(
         if (q.isBlank() && setting == null) item(key = "favourites") {
             FavouriteStrip(
                 favourites,
-                onPick = { f -> f.place?.let(pick) ?: run { setting = f } },
+                onPick = { f -> f.place?.let { pick(f.named(it)) } ?: run { setting = f } },
                 onAdd = { creating = true },
                 onEdit = { editing = it },
             )
         }
         setting?.let { f ->
             item(key = "setting") {
-                Note(
+                NoteCard(
                     T(
                         "Search for where ${f.label} is. The place you pick is kept as ${f.label}.",
                         "חפשו היכן נמצא ${f.label}. המקום שתבחרו יישמר בתור ${f.label}.",
@@ -393,7 +393,7 @@ fun PlacePicker(
         when {
             error != null -> item { Note(T("Search failed: $error", "החיפוש נכשל: $error"), Modifier.padding(horizontal = K.gap4, vertical = K.gap4)) }
             q.isBlank() && recents.isEmpty() -> item {
-                Note(T("Search a station, street or place.", "חפשו תחנה, רחוב או מקום."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
+                NoteCard(T("Search a station, street or place.", "חפשו תחנה, רחוב או מקום."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
             }
             q.isBlank() -> Unit
             busy && places.isEmpty() && stations.isEmpty() -> item {
@@ -402,7 +402,7 @@ fun PlacePicker(
                 }
             }
             places.isEmpty() && stations.isEmpty() -> item {
-                Note(T("Nothing found.", "לא נמצאו תוצאות."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
+                NoteCard(T("Nothing found.", "לא נמצאו תוצאות."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
             }
         }
         if (showRecents) {

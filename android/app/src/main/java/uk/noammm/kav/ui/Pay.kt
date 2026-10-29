@@ -650,7 +650,7 @@ private fun SignIn() {
         when (val s = step) {
             SignInStep.Phone -> {
                 Text(T("Sign in or sign up", "התחברות או הרשמה"), style = K.type.headline)
-                Note(T("Rav-Pass sends a code by SMS to this number. A number without an account gets a new one.",
+                NoteCard(T("Rav-Pass sends a code by SMS to this number. A number without an account gets a new one.",
                     "רב-פס שולחת קוד ב-SMS למספר הזה. מספר בלי חשבון מקבל חשבון חדש."), color = K.muted)
                 Row(horizontalArrangement = Arrangement.spacedBy(K.gap2), verticalAlignment = Alignment.CenterVertically) {
                     Row(
@@ -852,7 +852,7 @@ private fun DetailsStep() {
     var email by rememberSaveable { mutableStateOf(a?.email.orEmpty()) }
     PayStep {
         Text(T("Your details", "הפרטים שלכם"), style = K.type.headline)
-        Note(T("Rav-Pass asks for your name and email before a card is added. Its receipts go to this email.",
+        NoteCard(T("Rav-Pass asks for your name and email before a card is added. Its receipts go to this email.",
             "רב-פס מבקשת שם ואימייל לפני הוספת כרטיס. הקבלות שלה נשלחות לאימייל הזה."), color = K.muted)
         Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
             Text(T("First name", "שם פרטי"), style = K.type.subhead)
@@ -1651,7 +1651,7 @@ private fun Paying(model: KavModel) {
                         }
                     }
                     if (!located) Column(verticalArrangement = Arrangement.spacedBy(K.gap2)) {
-                        Note(T("Kav needs your location to pay. HopOn gets it only at the moment you scan or pay, as in its own app.",
+                        NoteCard(T("Kav needs your location to pay. HopOn gets it only at the moment you scan or pay, as in its own app.",
                             "Kav צריכה את המיקום שלכם כדי לשלם. הופ-און מקבלת אותו רק ברגע הסריקה או התשלום, כמו באפליקציה שלה."),
                             color = K.problem)
                         AddButton(T("Allow location", "אישור גישה למיקום")) { askLocation.launch(LOCATION_PERMISSIONS) }
@@ -1731,7 +1731,7 @@ private fun StationPrice(m: StationMode, st: RavPass.Station, q: RavPass.Quote?)
                 LtrText(total.text, 22.sp, K.text, FontWeight.Medium)
             }
         }
-        if (m == StationMode.TRAIN) Note(st.maxPrice?.let {
+        if (m == StationMode.TRAIN) NoteCard(st.maxPrice?.let {
             T("The fare is set by your exit station, up to ${it.text}.", "המחיר נקבע לפי תחנת היציאה, עד ${it.text}.")
         } ?: T("The fare is set by your exit station.", "המחיר נקבע לפי תחנת היציאה."))
     }
@@ -1915,7 +1915,7 @@ private fun Passengers(guests: Int, max: Int, onChange: (Int) -> Unit) {
             androidx.compose.animation.AnimatedContent(guests + 1, label = "passengers") { Text("$it", fontSize = 16.sp, color = K.text) }
             if (max > 0) KavIconButton(Icons.Rounded.Add, T("One more", "אחד יותר"), { if (guests < max) onChange(guests + 1) }, size = 40.dp)
         }
-        if (guests > 0) Note(T("Occasional passengers pay full price, according to the Ministry of Transportation",
+        if (guests > 0) NoteCard(T("Occasional passengers pay full price, according to the Ministry of Transportation",
             "נוסעים מזדמנים משלמים מחיר מלא, בהתאם להנחיית משרד התחבורה"))
     }
 }
@@ -2013,8 +2013,8 @@ internal fun rememberNow(): Long = produceState(System.currentTimeMillis()) {
 // The free transfer after a ride, while it lasts.
 @Composable
 private fun TransferLine(until: Long) {
-    Text(T("Free transfers until ${clockOf(until)}", "מעברים ללא תשלום עד ${clockOf(until)}"), fontSize = 14.sp, color = K.dim,
-        modifier = Modifier.fillMaxWidth().padding(K.gap4))
+    NoteCard(T("Free transfers until ${clockOf(until)}", "מעברים ללא תשלום עד ${clockOf(until)}"),
+        Modifier.padding(horizontal = K.gap4, vertical = K.gap2))
 }
 
 @Composable
@@ -2276,9 +2276,9 @@ private fun LinePicks(
     val shown = if (query.isBlank()) around else found
     when {
         shown == null -> Note(T("Searching…", "מחפשים…"))
-        shown.isEmpty() && query.isBlank() -> Note(T("HopOn has no lines around you right now. Search for yours by its number.",
+        shown.isEmpty() && query.isBlank() -> NoteCard(T("HopOn has no lines around you right now. Search for yours by its number.",
             "להופ-און אין עכשיו קווים סביבכם. חפשו את הקו שלכם לפי המספר."))
-        shown.isEmpty() -> Note(T("HopOn has no line by that number.", "להופ-און אין קו במספר הזה."))
+        shown.isEmpty() -> NoteCard(T("HopOn has no line by that number.", "להופ-און אין קו במספר הזה."))
         else -> Column(Modifier.fillMaxWidth().panel(K.rCard)) {
             shown.forEach { n ->
                 Row(
@@ -2364,7 +2364,7 @@ private fun TicketView(t: RavPass.Ticket, onExit: () -> Unit, onAgain: () -> Uni
         verticalArrangement = Arrangement.spacedBy(K.gap3),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (valid) Note(if (t.needsExit) T("Place the QR code on the scanner at the gate", "הניחו את קוד ה-QR על הסורק בשער")
+        if (valid) NoteCard(if (t.needsExit) T("Place the QR code on the scanner at the gate", "הניחו את קוד ה-QR על הסורק בשער")
             else T("Present this QR code for review, whenever needed", "הציגו את קוד ה-QR הזה לביקורת, בכל פעם שיידרש"),
             color = K.muted)
         HorizontalPager(pager, Modifier.fillMaxWidth()) { i ->
@@ -2388,7 +2388,7 @@ private fun TicketView(t: RavPass.Ticket, onExit: () -> Unit, onAgain: () -> Uni
         ).forEach { Note(it, color = K.muted) }
         t.cost?.let { LtrText(it.text, 14.sp, K.muted) }
         if (valid && t.needsExit) {
-            Note(T("Important: at your destination station, tap “Create exit ticket” so the fare is set by where you got off.",
+            NoteCard(T("Important: at your destination station, tap “Create exit ticket” so the fare is set by where you got off.",
                 "חשוב: בתחנת היעד הקישו על “יצירת כרטיס יציאה” כדי שהמחיר ייקבע לפי התחנה שבה ירדתם."), color = K.problem)
             PayButton(T("Create exit ticket", "יצירת כרטיס יציאה"), false, onClick = onExit)
         }

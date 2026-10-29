@@ -291,12 +291,7 @@ fun ListGroup(
                 row()
             }
         }
-        footer?.let {
-            Text(
-                it, style = K.type.subhead, color = K.textTertiary, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
-            )
-        }
+        footer?.let { NoteCard(it, Modifier.padding(top = K.gap2)) }
     }
 }
 
@@ -420,6 +415,17 @@ fun KavCard(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, conten
             .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
             .padding(K.gap4),
         content = content,
+    )
+}
+
+// A short note of a few words or lines (a hint, a footer, what something does) in a quiet card of its own, never loose on
+// the page.
+@Composable
+fun NoteCard(text: String, modifier: Modifier = Modifier, color: Color = K.textSecondary) {
+    Text(
+        text, style = K.type.subhead, color = color,
+        modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.fill)
+            .padding(horizontal = K.gap4, vertical = K.gap3),
     )
 }
 

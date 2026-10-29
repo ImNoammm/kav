@@ -138,7 +138,10 @@ internal object Timetable {
         val s = store(ctx)
         s.promote()
         val body = s.current(LocalDate.now(israel)) ?: return null
-        return runCatching { Net.read(body.inputStream()) }.getOrElse { s.discard(); null }
+        val net = runCatching { Net.read(body.inputStream()) }.getOrElse { s.discard(); null } ?: return null
+        // A copy without English names borrows the shipped week's, so stop names in English stay in English.
+        if (net.nameEn.isEmpty()) runCatching { ctx.assets.open("il.kav").use { Net.read(it) } }.getOrNull()?.let(net::borrowEnglish)
+        return net
     }
 
     // Asks Kav's server about a newer copy at most once a day while the setting is on: on Wi-Fi or another unmetered

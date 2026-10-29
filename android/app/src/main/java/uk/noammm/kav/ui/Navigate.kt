@@ -651,7 +651,7 @@ internal fun StopRail(
         if (progress >= 1f && passedTop >= 0) follow(passedTop)
     }
     val stopArrowImageBitmap by remember {
-        val originalArrowBitmap = arrowBitmap(1.5f)
+        val originalArrowBitmap = getArrowBitmap(1.5f)
         val matrix = Matrix()
         matrix.postRotate(180f)
         mutableStateOf( Bitmap.createBitmap(originalArrowBitmap,0,0,originalArrowBitmap.width, originalArrowBitmap.height, matrix, true).asImageBitmap())

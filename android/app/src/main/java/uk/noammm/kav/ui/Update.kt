@@ -37,7 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 @Composable
 fun UpdatePrompt(model: KavModel) {
     val release = model.update ?: return
-    if (model.updateDismissed) return
+    if (model.updateDismissed || !Shown.updatePrompts) return
     val ctx = LocalContext.current
     Dialog(onDismissRequest = { model.updateDismissed = true }) {
         Column(
@@ -120,7 +120,7 @@ fun UpdateSection(model: KavModel) {
     // The notes of the version in hand, from the same release list the update check reads, when it's the newest.
     var installedNotes by remember { mutableStateOf<Updates.Release?>(null) }
     LaunchedEffect(release) {
-        if (release != null) return@LaunchedEffect
+        if (release != null || !Shown.updatePrompts) return@LaunchedEffect
         installedNotes = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Updates.latest() } }.getOrNull()
             ?.takeIf { it.version.removePrefix("v") == Updates.installedVersion(ctx).removePrefix("v") }
     }

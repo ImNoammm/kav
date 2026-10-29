@@ -106,7 +106,7 @@ internal fun HomeScreen(
                         Icon(Icons.Rounded.Search, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(20.dp))
                         WhereTo(recentNames, Modifier.weight(1f))
                     }
-                    SettingsButton(model.update != null) { model.settingsOpen = true }
+                    SettingsButton(model.update != null && Shown.updatePrompts) { model.settingsOpen = true }
                 }
             }, estimate = K.gap3 + 52.dp, fade = 28.dp) { topSpace, backdrop ->
             LazyColumn(

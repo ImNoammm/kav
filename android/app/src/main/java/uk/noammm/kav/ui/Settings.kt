@@ -52,6 +52,7 @@ import uk.noammm.kav.data.KavRecipe
 import uk.noammm.kav.data.SignedFile
 import uk.noammm.kav.data.StopNames
 import uk.noammm.kav.data.Updates
+import androidx.compose.material.icons.rounded.NewReleases
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.animation.togetherWith
@@ -72,7 +73,7 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     fun part(id: String, title: String, summary: String, content: @Composable ColumnScope.() -> Unit) {
         parts += SettingsPart(id, title, summary, content)
     }
-    val waiting = model.update != null
+    val waiting = model.update != null && Shown.updatePrompts
 
     part(
         "live",
@@ -259,6 +260,22 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     ) {
         Spacer(Modifier.height(K.gap1))
         UpdateSection(model)
+        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
+            InfoHeader(T("New versions", "גרסאות חדשות"), T(
+                "Off, Kav doesn't look for new versions on its own and shows no popup or dot for them, for updating with " +
+                    "Obtainium or another app. Check for updates above still works.",
+                "כשכבוי, Kav לא מחפשת גרסאות חדשות בעצמה ולא מציגה עליהן חלון או נקודה, בשביל עדכון עם Obtainium " +
+                    "או אפליקציה אחרת. הכפתור בדקו עדכונים למעלה עדיין עובד.",
+            ))
+            ListGroup {
+                row {
+                    ToggleRow(
+                        T("Tell me about new versions", "עדכנו אותי על גרסאות חדשות"), Shown.updatePrompts,
+                        { Icon(Icons.Rounded.NewReleases, null, tint = if (Shown.updatePrompts) K.text else K.dim, modifier = Modifier.size(22.dp)) },
+                    ) { on -> Shown.updatePrompts = on; Prefs.setUpdatePrompts(ctx, on) }
+                }
+            }
+        }
     }
 
     part(

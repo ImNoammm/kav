@@ -538,33 +538,28 @@ private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) 
     val rt = if (info != null) r.routeType(agency) else 3
     val label = shortName.ifBlank { null } ?: info?.number?.ifBlank { null }
     val plate = linePlate(rt, agency) { Operators.of(r, agency) }
-    if (K.lineBadgeAppearance== LineBadgeAppearance.KAV || modeOf(rt)!=Mode.BUS) {
-        Column(
-            Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.badgePlate)
-                .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),
+    // Moovit's look for buses, when chosen in Settings.
+    if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && modeOf(rt) == Mode.BUS) {
+        LinePlateBadge(label, Mode.BUS, plate)
+        return
+    }
+    Column(
+        Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.badgePlate)
+            .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),
+    ) {
+        Row(
+            Modifier.padding(start = 5.dp, end = if (label == null) 5.dp else 6.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                Modifier.padding(
-                    start = 5.dp,
-                    end = if (label == null) 5.dp else 6.dp,
-                    top = 2.dp,
-                    bottom = 2.dp
-                ),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AgencyMark(rt, agency, plate?.ink ?: K.muted, 14.dp)
-                if (label != null) {
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        label, style = K.type.bodyStrong, color = plate?.ink ?: K.text,
-                        maxLines = 3, overflow = TextOverflow.Ellipsis,
-                    )
-                }
+            AgencyMark(rt, agency, plate?.ink ?: K.muted, 14.dp)
+            if (label != null) {
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    label, style = K.type.bodyStrong, color = plate?.ink ?: K.text,
+                    maxLines = 3, overflow = TextOverflow.Ellipsis,
+                )
             }
         }
-    }
-    else{
-        LinePlateBadge(number=label, mode=modeOf(rt), plate=plate, )
     }
 }
 

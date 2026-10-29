@@ -37,7 +37,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.text.HtmlCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay

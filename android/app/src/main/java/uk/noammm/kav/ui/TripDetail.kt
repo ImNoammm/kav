@@ -571,23 +571,21 @@ private fun BoardOption(
     val now = System.currentTimeMillis() / 1000
     Column(Modifier.fillMaxWidth().padding(vertical = K.gap2)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (modeOf(rt)!=Mode.BUS || K.lineBadgeAppearance== LineBadgeAppearance.KAV){
-                Row(
-                    Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.surface2)
-                        .padding(horizontal = 10.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AgencyMark(rt, agency, plate?.ink ?: K.muted, 15.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…",
-                        style = K.type.bodyStrong, color = plate?.ink ?: K.text,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp),
-                    )
-                }
-            }
-            else {
-                LinePlateBadge(info?.number, mode=modeOf(rt), plate=plate)
+            // Moovit's look for buses, when chosen in Settings.
+            if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && modeOf(rt) == Mode.BUS) {
+                LinePlateBadge(ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…", Mode.BUS, plate)
+            } else Row(
+                Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.surface2)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AgencyMark(rt, agency, plate?.ink ?: K.muted, 15.dp)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    ride.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…",
+                    style = K.type.bodyStrong, color = plate?.ink ?: K.text,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp),
+                )
             }
             Spacer(Modifier.width(K.gap3))
             Column(Modifier.weight(1f)) {

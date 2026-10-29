@@ -1,3 +1,4 @@
 package uk.noammm.kav.ui
 
-enum class LineBadgeAppearance(val s: String) {MOOVIT("MOOVIT"), KAV("KAV")}
+// How bus line badges look: Kav's own plate in the operator's colour, or Moovit's grey one over a strip of it.
+enum class LineBadgeAppearance { KAV, MOOVIT }

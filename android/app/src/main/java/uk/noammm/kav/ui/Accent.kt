@@ -134,9 +134,7 @@ fun AccentPreview(modifier: Modifier = Modifier) {
                 Text(T("Resume", "המשך"), fontSize = 12.sp, color = K.accentInk, fontWeight = FontWeight.Medium)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                LinePlateBadge(
-                    "69", Mode.BUS, plate= operatorPlate(Operators.ofGtfs(5))
-                )
+                LinePlateBadge("69", Mode.BUS, operatorPlate(Operators.ofGtfs(5)))
                 Text(T("to Tel Aviv", "לתל אביב"), fontSize = 12.sp, color = K.text, modifier = Modifier.weight(1f))
                 LiveGlyph(K.realtime, 10.dp)
                 Text(T("3 min", "3 דק׳"), fontSize = 12.sp, color = K.realtime, fontWeight = FontWeight.Medium)

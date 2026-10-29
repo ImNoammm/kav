@@ -84,6 +84,7 @@ object K {
     val gap4 = 16.dp; val gap5 = 20.dp; val gap6 = 24.dp; val gap8 = 32.dp
 
     val type = KType
+    // Bus line badges in Kav's look or Moovit's, as chosen in Settings.
     var lineBadgeAppearance by mutableStateOf(LineBadgeAppearance.KAV)
 
     // Every colour has to be set for every look, or a switch leaves strays from the last one.

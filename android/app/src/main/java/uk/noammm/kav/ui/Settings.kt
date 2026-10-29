@@ -237,13 +237,16 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
             Spacer(Modifier.height(K.gap4))
             AccentPicker(wheel = 200.dp) { Prefs.setAccent(ctx, it.toArgb()) }
             InfoHeader(
-                T("Line badges", "סמלי קווים"),
-                T("How line badges should look.", "איך על סמלי הקווים להיראות.")
+                T("Line badges", "סמלי הקווים"),
+                T(
+                    "How bus lines look on boards, plans and trips. Kav: the operator's colour fills the badge. Moovit inspired: a grey badge with the operator's colour as a strip under it.",
+                    "איך קווי האוטובוס נראים בלוחות, במסלולים ובנסיעות. Kav: צבע המפעיל ממלא את הסמל. בסגנון Moovit: סמל אפור עם פס בצבע המפעיל מתחתיו.",
+                ),
             )
-            val options = listOf(LineBadgeAppearance.KAV, LineBadgeAppearance.MOOVIT)
+            val badges = listOf(LineBadgeAppearance.KAV, LineBadgeAppearance.MOOVIT)
             KavSegmented(
-                listOf(T("Kav", "קו"), T("Moovit Inspired", "בהשראת מוביט")), selected =options.indexOf(K.lineBadgeAppearance),
-                onSelect = {i -> K.lineBadgeAppearance = options[i]; Prefs.setLineBadgeAppearance(ctx, options[i]) },
+                listOf("Kav", T("Moovit inspired", "בסגנון Moovit")), badges.indexOf(K.lineBadgeAppearance),
+                { i -> K.lineBadgeAppearance = badges[i]; Prefs.setLineBadges(ctx, badges[i]) },
             )
         }
     }

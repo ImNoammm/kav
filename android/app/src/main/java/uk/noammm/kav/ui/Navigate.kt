@@ -684,8 +684,8 @@ internal fun StopRail(
             }
             if (!decidedSplit.isNaN()) {
 
-                drawCircle(Color.Black, radius=stopArrowImageBitmap.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), alpha=.5f)
-                drawCircle(Color.White, radius=stopArrowImageBitmap.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), style=Stroke(2.dp.toPx()))
+                drawCircle(K.bg, radius=stopArrowImageBitmap.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), alpha=.5f)
+                drawCircle(K.text, radius=stopArrowImageBitmap.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), style=Stroke(2.dp.toPx()))
                 drawImage(stopArrowImageBitmap, topLeft=Offset(x-stopArrowImageBitmap.width/2,decidedSplit-stopArrowImageBitmap.height/2))
             }
         }

@@ -651,7 +651,7 @@ internal fun StopRail(
         if (progress >= 1f && passedTop >= 0) follow(passedTop)
     }
     val stopArrowImageBitmap by remember {
-        val originalArrowBitmap =  arrowBitmap(1.5f)
+        val originalArrowBitmap = arrowBitmap(1.5f)
         val matrix = Matrix()
         matrix.postRotate(180f)
         mutableStateOf( Bitmap.createBitmap(originalArrowBitmap,0,0,originalArrowBitmap.width, originalArrowBitmap.height, matrix, true).asImageBitmap())
@@ -669,7 +669,7 @@ internal fun StopRail(
                 val split = y0 + (y1 - y0) * f
                 if (f > 0f) drawLine(K.routeIdle, Offset(x, y0), Offset(x, split), wide)
                 if (f < 1f) drawLine(K.route, Offset(x, split), Offset(x, y1), wide)
-                if ((f>0f)&& (f<1f)){
+                if ((f > 0f) && (f < 1f)){
                     decidedSplit=split
                 }
             }
@@ -684,9 +684,9 @@ internal fun StopRail(
             }
             if (!decidedSplit.isNaN()) {
 
-                drawCircle(K.bg, radius=stopArrowImageBitmap.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), alpha=.2f)
-                drawCircle(K.text, radius=stopArrowImageBitmap.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), style=Stroke(2.dp.toPx()))
-                drawImage(stopArrowImageBitmap, topLeft=Offset(x-stopArrowImageBitmap.width/2,decidedSplit-stopArrowImageBitmap.height/2))
+                drawCircle(K.bg, radius=stopArrowImageBitmap.width.toFloat() / 2 + .1f, center = Offset(x,decidedSplit), alpha = .2f)
+                drawCircle(K.text, radius=stopArrowImageBitmap.width.toFloat()/2 + .1f, center = Offset(x,decidedSplit), style = Stroke(2.dp.toPx()))
+                drawImage(stopArrowImageBitmap, topLeft=Offset(x - stopArrowImageBitmap.width / 2,decidedSplit - stopArrowImageBitmap.height / 2))
             }
         }
         Column(Modifier.fillMaxWidth()) {

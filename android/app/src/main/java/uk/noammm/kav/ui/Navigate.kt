@@ -650,6 +650,12 @@ internal fun StopRail(
     if (follow != null) LaunchedEffect(passed, passedTop >= 0) {
         if (progress >= 1f && passedTop >= 0) follow(passedTop)
     }
+    val stopArrowImageBitmap by remember {
+        val originalArrowBitmap =  arrowBitmap(1.5f)
+        val matrix = Matrix()
+        matrix.postRotate(180f)
+        mutableStateOf( Bitmap.createBitmap(originalArrowBitmap,0,0,originalArrowBitmap.width, originalArrowBitmap.height, matrix, true).asImageBitmap())
+    }
     Box(modifier.fillMaxWidth()) {
         Canvas(Modifier.matchParentSize()) {
             val x = if (layoutDirection == LayoutDirection.Rtl) size.width - 10.dp.toPx() else 10.dp.toPx()
@@ -677,16 +683,10 @@ internal fun StopRail(
                 else drawCircle(K.route, rad, Offset(x, cy), style = Stroke(2.dp.toPx()))
             }
             if (!decidedSplit.isNaN()) {
-                val d =  arrowBitmap(1.5f)
-                val matrix = Matrix()
 
-                matrix.postRotate(180f)
-                val r = Bitmap.createBitmap(d,0,0,d.width, d.height, matrix, true).asImageBitmap()
-                drawCircle(Color.Black, radius=r.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), alpha=.5f)
-                drawCircle(Color.White, radius=r.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), style=Stroke(2.dp.toPx()))
-
-
-                drawImage(r, topLeft=Offset(x-d.width/2,decidedSplit-d.height/2))
+                drawCircle(Color.Black, radius=stopArrowImageBitmap.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), alpha=.5f)
+                drawCircle(Color.White, radius=stopArrowImageBitmap.width.toFloat()/2+.1f, center=Offset(x,decidedSplit), style=Stroke(2.dp.toPx()))
+                drawImage(stopArrowImageBitmap, topLeft=Offset(x-stopArrowImageBitmap.width/2,decidedSplit-stopArrowImageBitmap.height/2))
             }
         }
         Column(Modifier.fillMaxWidth()) {

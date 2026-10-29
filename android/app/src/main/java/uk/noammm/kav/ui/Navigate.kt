@@ -683,10 +683,9 @@ internal fun StopRail(
                 else drawCircle(K.route, rad, Offset(x, cy), style = Stroke(2.dp.toPx()))
             }
             if (!decidedSplit.isNaN()) {
-
                 drawCircle(K.bg, radius=stopArrowImageBitmap.width.toFloat() / 2 + .1f, center = Offset(x,decidedSplit), alpha = .5f)
                 drawCircle(K.text, radius=stopArrowImageBitmap.width.toFloat()/2 + .1f, center = Offset(x,decidedSplit), style = Stroke(2.dp.toPx()))
-                drawImage(stopArrowImageBitmap, topLeft=Offset(x - stopArrowImageBitmap.width / 2,decidedSplit - stopArrowImageBitmap.height / 2))
+                drawImage(stopArrowImageBitmap, topLeft=Offset(x - stopArrowImageBitmap.width / 2, decidedSplit - stopArrowImageBitmap.height / 2))
             }
         }
         Column(Modifier.fillMaxWidth()) {

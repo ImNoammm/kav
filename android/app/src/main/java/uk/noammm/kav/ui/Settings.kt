@@ -52,9 +52,9 @@ import uk.noammm.kav.data.KavRecipe
 import uk.noammm.kav.data.SignedFile
 import uk.noammm.kav.data.StopNames
 import uk.noammm.kav.data.Updates
+import androidx.compose.material.icons.rounded.NewReleases
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Place
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -65,8 +65,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     val ctx = LocalContext.current
     var choosing by remember { mutableStateOf(false) }
-    // Whether Kav asks GitHub for releases by itself, and whether to say one is waiting.
-    var updateChecks by remember { mutableStateOf(Prefs.updateChecks(ctx)) }
 
     // Each part is a row saying what it's set to, and opens on its own page.
     var page by rememberSaveable { mutableStateOf<String?>(null) }
@@ -75,7 +73,7 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     fun part(id: String, title: String, summary: String, content: @Composable ColumnScope.() -> Unit) {
         parts += SettingsPart(id, title, summary, content)
     }
-    val waiting = model.update != null && updateChecks
+    val waiting = model.update != null && Shown.updatePrompts
 
     part(
         "live",
@@ -257,21 +255,25 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     part(
         "updates",
         T("Updates", "עדכונים"),
-        T.ltr("Kav ${Updates.installedVersion(ctx)}") + when {
-            !updateChecks -> T(" · update checks off", " · בדיקת עדכונים כבויה")
-            model.update != null -> T(" · ${model.update!!.version} is available", " · גרסה ${model.update!!.version} זמינה")
-            else -> ""
-        },
+        T.ltr("Kav ${Updates.installedVersion(ctx)}") +
+            (model.update?.let { T(" · ${it.version} is available", " · גרסה ${it.version} זמינה") } ?: ""),
     ) {
         Spacer(Modifier.height(K.gap1))
         UpdateSection(model)
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
-            Spacer(Modifier.height(K.gap4))
-            UpdateChecks(updateChecks) { on ->
-                updateChecks = on
-                Prefs.setUpdateChecks(ctx, on)
-                // A release found before turning checks off stops being offered, and its prompt goes with it.
-                if (!on) model.update = null
+            InfoHeader(T("New versions", "גרסאות חדשות"), T(
+                "Off, Kav doesn't look for new versions on its own and shows no popup or dot for them, for updating with " +
+                    "Obtainium or another app. Check for updates above still works.",
+                "כשכבוי, Kav לא מחפשת גרסאות חדשות בעצמה ולא מציגה עליהן חלון או נקודה, בשביל עדכון עם Obtainium " +
+                    "או אפליקציה אחרת. הכפתור בדקו עדכונים למעלה עדיין עובד.",
+            ))
+            ListGroup {
+                row {
+                    ToggleRow(
+                        T("Tell me about new versions", "עדכנו אותי על גרסאות חדשות"), Shown.updatePrompts,
+                        { Icon(Icons.Rounded.NewReleases, null, tint = if (Shown.updatePrompts) K.text else K.dim, modifier = Modifier.size(22.dp)) },
+                    ) { on -> Shown.updatePrompts = on; Prefs.setUpdatePrompts(ctx, on) }
+                }
             }
         }
     }
@@ -445,31 +447,6 @@ private fun HelpSection() {
         row { link(T("Ask for a feature", "בקשה לפיצ'ר"), T("On GitHub", "ב-GitHub")) { feedbackLink(ctx, bug = false) } }
         row { link(T("Kav's code", "הקוד של Kav"), T("And its server's", "ושל השרת שלה")) { REPO_URL } }
         row { link(T("Buy me a coffee", "קנו לי קפה"), T("If you like Kav", "אם Kav עוזרת לכם")) { COFFEE_URL } }
-    }
-}
-
-// Kav asks GitHub for new releases when it opens. Off, it never asks by itself: only the check button on the card above
-// reaches GitHub.
-@Composable
-private fun UpdateChecks(on: Boolean, onChange: (Boolean) -> Unit) {
-    InfoHeader(
-        T("Automatic update checks", "בדיקת עדכונים אוטומטית"),
-        T(
-            "Kav asks GitHub for a new release when it opens. Turned off, it doesn't ask at all, and you can still check yourself above.",
-            "Kav בודקת ב-GitHub אם יש גרסה חדשה כשנפתחת. כשכבוי, היא לא בודקת בכלל, ואפשר עדיין לבדוק ידנית למעלה.",
-        ),
-    )
-    ListGroup {
-        row {
-            ToggleRow(
-                T("Check automatically", "לבדוק אוטומטית"), on,
-                { Icon(
-                    Icons.Rounded.Refresh, contentDescription = null,
-                    tint = if (on) K.text else K.dim, modifier = Modifier.size(18.dp),
-                ) },
-                subtitle = if (!on) T("Don't tell me about updates", "אל תעדכן אותי לגבי עדכונים") else T("Check automatically for updates", "בדוק אוטומטית אם קיים עדכון"),
-            ) { onChange(it) }
-        }
     }
 }
 

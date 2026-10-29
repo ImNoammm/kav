@@ -156,6 +156,7 @@ class MainActivity : ComponentActivity() {
         K.lineBadgeAppearance = Prefs.lineBadges(this)
         Shown.co2 = Prefs.showCo2(this)
         Shown.payments = Prefs.showPayments(this)
+        Shown.updatePrompts = Prefs.updatePrompts(this)
         Pip.allowed = Prefs.pipNavigation(this)
         StopPhotos.chosen = Prefs.moovitPhotos(this)
         Shown.twelveHour = Prefs.twelveHour(this)
@@ -343,6 +344,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         K.lineBadgeAppearance = Prefs.lineBadges(ctx)
         Shown.co2 = Prefs.showCo2(ctx)
         Shown.payments = Prefs.showPayments(ctx)
+        Shown.updatePrompts = Prefs.updatePrompts(ctx)
         Pip.allowed = Prefs.pipNavigation(ctx)
         StopPhotos.chosen = Prefs.moovitPhotos(ctx)
         Shown.twelveHour = Prefs.twelveHour(ctx)
@@ -505,7 +507,7 @@ private fun Root() {
         OnboardingScreen(model) { Prefs.setOnboarded(ctx); onboarded = true }
         return
     }
-    LaunchedEffect(model) { if (Prefs.updateChecks(app) && !model.updateChecked) model.checkForUpdate(app) }
+    LaunchedEffect(model) { if (!model.updateChecked && Shown.updatePrompts) model.checkForUpdate(app) }
     // Kav's recipe and Vela's: fixes for Moovit or Google that need no update. And the timetable for the seven days from
     // today, taken in at the next start.
     LaunchedEffect(Unit) {
@@ -565,7 +567,7 @@ private fun Root() {
         else if (PendingBackup.uri != null) ImportPrompt(model)
         else {
             UpdatePrompt(model)
-            if (model.update == null || model.updateDismissed) MapPrompt()
+            if (model.update == null || model.updateDismissed || !Shown.updatePrompts) MapPrompt()
         }
     }
 }
@@ -1478,6 +1480,8 @@ object Prefs {
     fun setPipNavigation(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("pipNavigation", on).apply()
     fun showPayments(ctx: Context): Boolean = store(ctx).getBoolean("showPayments", true)
     fun setShowPayments(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showPayments", on).apply()
+    fun updatePrompts(ctx: Context): Boolean = store(ctx).getBoolean("updatePrompts", true)
+    fun setUpdatePrompts(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("updatePrompts", on).apply()
     fun moovitPhotos(ctx: Context): Boolean? = store(ctx).takeIf { it.contains("moovitPhotos") }?.getBoolean("moovitPhotos", true)
     fun setMoovitPhotos(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("moovitPhotos", on).apply()
 
@@ -1513,11 +1517,6 @@ object Prefs {
     // The timetable for the seven days from today from Kav's server, rather than the week Kav shipped with.
     fun timetableUpdates(ctx: Context): Boolean = store(ctx).getBoolean("timetableUpdates", false)
     fun setTimetableUpdates(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("timetableUpdates", on).apply()
-
-    // Kav asks GitHub for a new release when it opens. Off, it never asks by itself, and only a check you ask for
-    // reaches GitHub.
-    fun updateChecks(ctx: Context): Boolean = store(ctx).getBoolean("updateChecks", true)
-    fun setUpdateChecks(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("updateChecks", on).apply()
 
     // The rider's own copy of Kav's server, else Kav's; the key it takes requests signed with (its KAV_APP_KEY), and the
     // public half of the key its timetable is signed with, as it gave it.
@@ -1624,7 +1623,6 @@ object Prefs {
             .put("planWithKav", planWithKav(ctx))
             .put("beginTripsImmediately", beginTripsImmediately(ctx))
             .put("timetableUpdates", timetableUpdates(ctx))
-            .put("updateChecks", updateChecks(ctx))
             .put("kavServer", kavServer(ctx))
             .put("kavServerKey", kavServerKey(ctx))
             .put("mapType", mapType(ctx).name.lowercase())
@@ -1635,6 +1633,7 @@ object Prefs {
             .put("showCo2", showCo2(ctx))
             .put("pipNavigation", pipNavigation(ctx))
             .put("showPayments", showPayments(ctx))
+            .put("updatePrompts", updatePrompts(ctx))
             .apply { moovitPhotos(ctx)?.let { put("moovitPhotos", it) } }
             .put("spokenAlerts", spokenAlerts(ctx))
             .put("twelveHour", twelveHour(ctx))
@@ -1657,7 +1656,6 @@ object Prefs {
         if (o.has("planWithKav")) e.putBoolean("planWithKav", o.optBoolean("planWithKav"))
         if (o.has("beginTripsImmediately")) e.putBoolean("beginTripsImmediately", o.optBoolean("beginTripsImmediately"))
         if (o.has("timetableUpdates")) e.putBoolean("timetableUpdates", o.optBoolean("timetableUpdates"))
-        if (o.has("updateChecks")) e.putBoolean("updateChecks", o.optBoolean("updateChecks"))
         KavLive.serverAddress(o.optString("kavServer"))?.let {
             // The server's timetable key is asked of it again (Timetable.refresh).
             if (it != kavServer(ctx)) e.remove("kavServerBundleKey")
@@ -1668,7 +1666,7 @@ object Prefs {
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }
         if (o.has("showCo2")) e.putBoolean("showCo2", o.optBoolean("showCo2"))
-        for (key in listOf("pipNavigation", "showPayments", "moovitPhotos")) if (o.has(key)) e.putBoolean(key, o.optBoolean(key))
+        for (key in listOf("pipNavigation", "showPayments", "moovitPhotos", "updatePrompts")) if (o.has(key)) e.putBoolean(key, o.optBoolean(key))
         if (o.has("spokenAlerts")) e.putBoolean("spokenAlerts", o.optBoolean("spokenAlerts"))
         if (o.has("twelveHour")) e.putBoolean("twelveHour", o.optBoolean("twelveHour"))
         val chosen = o.optJSONObject("filters")

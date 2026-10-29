@@ -156,6 +156,8 @@ object Shown {
     var twelveHour by mutableStateOf(false)
     // Paying for rides: the home screen's card and a ride's. Off, Kav shows nothing of it.
     var payments by mutableStateOf(true)
+    // A popup and a dot on Settings when a new version is out. Off for riders who update another way, as with Obtainium.
+    var updatePrompts by mutableStateOf(true)
 }
 
 // Times in tabular figures of the system font.

@@ -14,13 +14,12 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -31,22 +30,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.launch
 import uk.noammm.kav.KavModel
-import uk.noammm.kav.Prefs
 import uk.noammm.kav.R
 import uk.noammm.kav.data.Updates
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.unit.Dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 @Composable
 fun UpdatePrompt(model: KavModel) {
     val release = model.update ?: return
-    if (model.updateDismissed) return
+    if (model.updateDismissed || !Shown.updatePrompts) return
     val ctx = LocalContext.current
-    // Checks off means no prompt, even for a release found before they were turned off.
-    if (!Prefs.updateChecks(ctx)) return
     Dialog(onDismissRequest = { model.updateDismissed = true }) {
         Column(
             Modifier.fillMaxWidth().panel(K.rCard, solid = true).padding(K.gap5),
@@ -73,7 +65,7 @@ fun UpdatePrompt(model: KavModel) {
 }
 
 @Composable
-private fun AppIcon(size: Dp) {
+private fun AppIcon(size: androidx.compose.ui.unit.Dp) {
     Box(Modifier.size(size).clip(RoundedCornerShape(size / 4)), contentAlignment = Alignment.Center) {
         Image(
             painterResource(R.drawable.ic_launcher_background), contentDescription = null,
@@ -87,7 +79,7 @@ private fun AppIcon(size: Dp) {
 }
 
 @Composable
-private fun ReleaseNotes(release: Updates.Release, maxHeight: Dp) {
+private fun ReleaseNotes(release: Updates.Release, maxHeight: androidx.compose.ui.unit.Dp) {
     val notes = release.notes.trim().ifBlank { release.name.ifBlank { T("No release notes.", "אין הערות גרסה.") } }
     Column(Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState())) {
         Separator(0.dp)
@@ -128,8 +120,8 @@ fun UpdateSection(model: KavModel) {
     // The notes of the version in hand, from the same release list the update check reads, when it's the newest.
     var installedNotes by remember { mutableStateOf<Updates.Release?>(null) }
     LaunchedEffect(release) {
-        if (release != null || !Prefs.updateChecks(ctx)) return@LaunchedEffect
-        installedNotes = runCatching { withContext(Dispatchers.IO) { Updates.latest() } }.getOrNull()
+        if (release != null || !Shown.updatePrompts) return@LaunchedEffect
+        installedNotes = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Updates.latest() } }.getOrNull()
             ?.takeIf { it.version.removePrefix("v") == Updates.installedVersion(ctx).removePrefix("v") }
     }
     Column(Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard).padding(K.gap4)) {

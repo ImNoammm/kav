@@ -418,7 +418,7 @@ object KavLive {
 
     // Of the route the ministry names, by its long name (name), where the timetable has it: both ways of a line can set
     // out the same minute.
-    private fun stopTimeOf(net: Net, stop: Int, number: String, first: Long, name: String = ""): Int {
+    internal fun stopTimeOf(net: Net, stop: Int, number: String, first: Long, name: String = ""): Int {
         var found = -1
         var best = 4
         val goal = if (name.isEmpty()) 2 else 0
@@ -678,12 +678,8 @@ object KavLive {
         return a to -1
     }
 
-    // Whether that trip goes on from the stop to another one.
-    fun reaches(net: Net, stop: Int, to: Int, number: String, first: Long): Boolean =
-        goesOn(net, stopTimeOf(net, stop, number, first), to)
-
     // Whether the timetable's trip goes on from that stop time of it to the stop.
-    private fun goesOn(net: Net, st: Int?, to: Int): Boolean =
+    internal fun goesOn(net: Net, st: Int?, to: Int): Boolean =
         st != null && st >= 0 && to >= 0 && (st + 1 until net.tripStart[net.tripOf(st) + 1]).any { net.stStop[it] == to }
 
     // The stops, in order, of the timetable's trip of this line that left its first stop at first: of the route the

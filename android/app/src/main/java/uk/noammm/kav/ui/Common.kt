@@ -11,7 +11,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -22,7 +21,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,11 +30,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -134,6 +130,13 @@ fun modeOf(type: Int): Mode = when (type) {
 }
 
 fun isRail(routeType: Int, agencyId: Int) = routeType == 2 || agencyId == 854820
+
+// Israel Railways is paid at the station's gates, before the platform, so a train's payment comes with waiting for it
+// as well as with the ride. Light rail, buses and the rest are paid as they are ridden.
+internal fun paidAtEntry(ride: Moovit.Leg, r: Moovit.Resolved): Boolean {
+    val agency = r.line(ride.lineId)?.agencyId ?: -1
+    return isRail(r.routeType(agency), agency)
+}
 
 data class ModePlate(val fill: Color, val edge: Color, val ink: Color)
 
@@ -416,9 +419,9 @@ fun ServiceAlertSheet(groupId: Int, fallbackLabel: String, onDismiss: () -> Unit
             list == null && !failed ->
                 LoadingPulse(T("Fetching the notice", "מביאים את ההודעה"), Modifier.fillMaxWidth().padding(top = K.gap4, bottom = K.gap2))
             failed || list.isNullOrEmpty() ->
-                Text(
+                NoteCard(
                     T("The operator published no further detail for this alert.", "המפעיל לא פרסם פרטים נוספים על הודעה זו."),
-                    style = K.type.subhead, modifier = Modifier.padding(top = K.gap3),
+                    Modifier.padding(top = K.gap3),
                 )
             else -> list.forEachIndexed { i, a ->
                 if (i > 0) {

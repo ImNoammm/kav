@@ -468,7 +468,7 @@ internal fun LineDetail(model: KavModel, net: Net, route: Int, onBack: () -> Uni
                 if (saved) Icons.Rounded.Star else Icons.Rounded.StarBorder,
                 if (saved) T("Saved, tap to remove", "שמור, הקישו להסרה") else T("Save this line", "שמירת הקו"),
                 { model.saveLines(ctx, if (saved) model.savedLines - key else listOf(key) + model.savedLines) },
-                tint = if (saved) K.accentInk else K.textSecondary,
+                floating = true, tint = if (saved) K.accentInk else K.textSecondary,
             )
         }
         val list = stops
@@ -782,7 +782,7 @@ private fun LineLiveNote(live: LineLive, next: String?) {
         count == 0 -> T("No live location right now", "אין כרגע מיקום בזמן אמת")
         else -> T("Live location · $count on the road", "מיקום בזמן אמת · $count בדרך")
     }
-    // What's found fades in over "Checking…", and the next departure slides open under it, instead of popping in.
+    // What's found fades in over "Checking...", and the next departure slides open under it, instead of popping in.
     var shownNext by remember { mutableStateOf(next) }
     if (next != null) shownNext = next
     val tint by animateColorAsState(if (count > 0) K.realtime else K.textTertiary, tween(200), label = "lineLiveTint")
@@ -988,11 +988,10 @@ internal fun OnlineLineDetail(g: Moovit.LineGroup, onBack: () -> Unit) {
         }
         when {
             line == null -> LoadingBlock(T("Loading the line", "טוענים את הקו…"))
-            dir == null -> Note(
-                if (line?.failed == true) T("Couldn't load this line from Moovit.", "לא ניתן היה לטעון את הקו הזה מ-Moovit.")
-                else T("This line has no trips in the coming week.", "אין לקו הזה נסיעות בשבוע הקרוב."),
-                Modifier.padding(K.gap4),
-            )
+            dir == null && line?.failed == true ->
+                Note(T("Couldn't load this line from Moovit.", "לא ניתן היה לטעון את הקו הזה מ-Moovit."), Modifier.padding(K.gap4))
+            dir == null ->
+                NoteCard(T("This line has no trips in the coming week.", "אין לקו הזה נסיעות בשבוע הקרוב."), Modifier.padding(K.gap4))
             else -> OnlineDirectionView(dir, g.number, train = onlineType(g) == 2)
         }
     }

@@ -283,6 +283,28 @@ class Net private constructor() {
         buildConnections()
     }
 
+    // A downloaded week without English names (no "en" section) takes them from the week Kav shipped with: a stop's by
+    // its code and Hebrew name, else by the Hebrew name alone, and a town's by its Hebrew name. False when there was
+    // nothing to take.
+    fun borrowEnglish(from: Net): Boolean {
+        if (nameEn.isNotEmpty() || from.nameEn.isEmpty()) return false
+        val exact = HashMap<String, String>()
+        val byName = HashMap<String, String>()
+        for (s in 0 until from.nStops) {
+            val en = from.nameEn[s]
+            if (en.isEmpty()) continue
+            exact.putIfAbsent("${from.code[s]}|${from.name[s]}", en)
+            byName.putIfAbsent(from.name[s], en)
+        }
+        val towns = HashMap<String, String>()
+        for (c in from.city.indices) from.cityEn.getOrNull(c)?.takeIf { it.isNotEmpty() }?.let { towns.putIfAbsent(from.city[c], it) }
+        nameEn = Array(nStops) { exact["${code[it]}|${name[it]}"] ?: byName[name[it]] ?: "" }
+        cityEn = Array(city.size) { towns[city[it]] ?: "" }
+        moreEn = from.moreEn
+        hayEn = Array(nStops) { (nameEn[it] + " " + cityEn.getOrElse(cityOf[it]) { "" }).trim().lowercase() }
+        return true
+    }
+
     private fun buildConnections() {
         val nT = tripRoute.size
         var m = 0; var maxT = 0

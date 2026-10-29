@@ -14,7 +14,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import uk.noammm.kav.data.Moovit
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Icon

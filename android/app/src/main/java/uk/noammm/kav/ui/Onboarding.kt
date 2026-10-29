@@ -13,7 +13,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.Prefs
 import uk.noammm.kav.data.MapFile
@@ -22,7 +21,6 @@ import uk.noammm.kav.data.MapFile
 fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
     val ctx = LocalContext.current
     var page by rememberSaveable { mutableIntStateOf(0) }
-    var filters by remember { mutableStateOf(Prefs.filters(ctx)) }
     // A custom spot for Moovit to see is picked on the whole screen, as in Settings.
     var choosing by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler(enabled = page > 0) { page-- }
@@ -69,7 +67,7 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                         "שחור OLED, בהיר או כהה, עם זכוכית נוזלית או משטחים אטומים. " +
                             "התצוגה המקדימה משתנה כשאתם מקישים, ואפשר לשנות זאת שוב בהגדרות.",
                     ),
-                    fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
+                    style = K.type.subhead, modifier = Modifier.padding(top = K.gap2),
                 )
                 Spacer(Modifier.height(K.gap5))
                 AccentPreview()
@@ -89,7 +87,7 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                         "Kav אפורה עם צבע אחד מעליה. גררו את הנקודה או בחרו גוון מוכן; " +
                             "התצוגה המקדימה מתעדכנת תוך כדי, ואפשר לשנות זאת שוב בהגדרות.",
                     ),
-                    fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
+                    style = K.type.subhead, modifier = Modifier.padding(top = K.gap2),
                 )
                 Spacer(Modifier.height(K.gap5))
                 AccentPreview()
@@ -106,32 +104,10 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                         "הכול פעיל. כבו את מה שאתם אף פעם לא נוסעים בו והמתכנן ישמיט אותו. " +
                             "זו אותה רשימה שנמצאת בהגדרות.",
                     ),
-                    fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
+                    style = K.type.subhead, modifier = Modifier.padding(top = K.gap2),
                 )
-                Spacer(Modifier.height(K.gap5))
-                Box(Modifier.padding(horizontal = 0.dp)) {
-                    FilterRows(filters) { f, on ->
-                        filters = if (on) filters + f else filters - f
-                        Prefs.setFilter(ctx, f, on)
-                    }
-                }
-                Spacer(Modifier.height(K.gap5))
-                Text(
-                    T("What a card shows", "מה מוצג בכרטיס"),
-                    style = K.type.caption,
-                    modifier = Modifier.padding(start = K.gap3, bottom = K.gap2),
-                )
-                Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
-                    SwitchRow(
-                        T("Emissions", "פליטות"),
-                        T(
-                            "The CO2e figure on every plan and on the trip you open.",
-                            "נתון ה-CO2e על כל מסלול ועל הנסיעה שאתם פותחים.",
-                        ),
-                        Shown.co2,
-                        { on -> Shown.co2 = on; Prefs.setShowCo2(ctx, on) },
-                    ) { GlobeGlyph(if (Shown.co2) K.text else K.dim, K.surface1, 18.dp) }
-                }
+                Spacer(Modifier.height(K.gap3))
+                PlanChoices(model)
                 Spacer(Modifier.height(K.gap8))
                 OnboardingButton(T("Next", "הבא")) { page = 4 }
             } else if (p == 4) {
@@ -148,7 +124,7 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                             "ישראל, פעם אחת. אחרי זה המפה עובדת גם בלי קליטה. Kav צריכה אותה כדי " +
                             "להציג לכם משהו, אז מורידים אותה עכשיו.",
                     ),
-                    fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
+                    style = K.type.subhead, modifier = Modifier.padding(top = K.gap2),
                 )
                 Spacer(Modifier.height(K.gap5))
                 when (state) {
@@ -159,9 +135,9 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                         Text(T("Downloading… ${(state.progress * 100).toInt()}%", "מורידים… ${(state.progress * 100).toInt()}%"), style = K.type.caption)
                     }
                     is MapFile.State.Failed ->
-                        Text(T("Couldn't download it. ${state.why}", "ההורדה לא הצליחה. ${state.why}"), fontSize = 12.sp, color = K.critical, lineHeight = 17.sp)
+                        Text(T("Couldn't download it. ${state.why}", "ההורדה לא הצליחה. ${state.why}"), style = K.type.subhead, color = K.critical)
                     is MapFile.State.Ready ->
-                        Text(T("Got it. The map stays on your phone from now on.", "מוכן. מעכשיו המפה נשארת בטלפון שלכם."), style = K.type.subhead)
+                        NoteCard(T("Got it. The map stays on your phone from now on.", "מוכן. מעכשיו המפה נשארת בטלפון שלכם."))
                     else -> {}
                 }
                 Spacer(Modifier.height(K.gap8))
@@ -178,21 +154,13 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                         "What Kav shares, and with whom. Settings has all of this again later.",
                         "מה Kav משתפת, ועם מי. אפשר לשנות את כל זה שוב בהגדרות.",
                     ),
-                    fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
+                    style = K.type.subhead, modifier = Modifier.padding(top = K.gap2),
                 )
-                Spacer(Modifier.height(K.gap5))
-                Text(
-                    T("Live locations", "מיקום בזמן אמת"),
-                    style = K.type.caption,
-                    modifier = Modifier.padding(start = K.gap3, bottom = K.gap2),
-                )
-                Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LiveSourceRow() }
-                Spacer(Modifier.height(K.gap5))
-                Text(
-                    T("Search", "חיפוש"),
-                    style = K.type.caption,
-                    modifier = Modifier.padding(start = K.gap3, bottom = K.gap2),
-                )
+                Spacer(Modifier.height(K.gap3))
+                // The same choice as Settings: Moovit, Kav's server, or the rider's own.
+                Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LiveSource() }
+                Spacer(Modifier.height(K.gap3))
+                // PrivacyRows brings its own "Search" header.
                 Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { PrivacyRows(model) { choosing = true } }
                 Spacer(Modifier.height(K.gap8))
                 OnboardingButton(T("Done", "סיום"), onClick = onDone)

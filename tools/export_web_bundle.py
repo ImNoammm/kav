@@ -87,7 +87,7 @@ active = day_masks(table("calendar.txt"), exceptions(), DAYS)
 print(f"services running {DAYS[0]} to {DAYS[-1]}: {len(active):,}")
 
 # The Israeli feed keeps the city in stop_desc, not in stop_name, so a query
-# like "הדרור 30 ראש העין" can never match on the name alone. Pull it out and
+# like "דיזנגוף 50 תל אביב" can never match on the name alone. Pull it out and
 # index it: ~1,200 distinct cities cost 1-2 bytes per stop instead of ~20.
 CITY_RE = re.compile(r"עיר:\s*(.*?)\s*(?:רציף:|קומה:|$)")
 # A bus station's platforms are stops of their own, sharing the station's code; stop_desc numbers each one.

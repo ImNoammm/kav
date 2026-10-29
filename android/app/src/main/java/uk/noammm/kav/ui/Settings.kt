@@ -117,39 +117,18 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         T("Planning", "תכנון"),
         if (ways == ResultFilter.entries.size) T("Every way of getting there", "כל הדרכים להגיע")
         else T("$ways of ${ResultFilter.entries.size} ways of getting there", "$ways מתוך ${ResultFilter.entries.size} דרכים להגיע"),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
-            InfoHeader(
-                T("What a plan may show", "מה מסלול יכול לכלול"),
-                ResultFilter.entries.joinToString("\n") { f -> f.label + ": " + f.desc },
-            )
-            ListGroup {
-                ResultFilter.entries.forEach { f ->
-                    row {
-                        val on = f in model.filters
-                        ToggleRow(f.label, on, { FilterGlyph(f, on) }) { model.setFilter(ctx, f, it) }
-                    }
-                }
-            }
-            InfoHeader(T("What a card shows", "מה מוצג בכרטיס"), T("The CO2e figure on every plan and trip.", "נתון ה-CO2e על כל מסלול ונסיעה."))
-            ListGroup {
-                row {
-                    ToggleRow(T("Emissions", "פליטות"), Shown.co2, { GlobeGlyph(if (Shown.co2) K.text else K.dim, K.surface1, 18.dp) }) { on ->
-                        Shown.co2 = on; Prefs.setShowCo2(ctx, on)
-                    }
-                }
-            }
-        }
-    }
+    ) { PlanChoices(model) }
 
     var spoken by remember { mutableStateOf(Prefs.spokenAlerts(ctx)) }
+    var startNow by remember { mutableStateOf(Prefs.beginTripsImmediately(ctx)) }
     part(
         "trip",
         T("On the way", "בדרך"),
-        listOf(
+        listOfNotNull(
             if (spoken) T("Alerts said out loud", "התראות בקול") else T("Alerts on the screen", "התראות על המסך"),
             if (Pip.allowed) T("small window when you leave Kav", "חלון קטן כשיוצאים מ-Kav")
             else T("no small window", "בלי חלון קטן"),
+            if (startNow) T("trips start right away", "נסיעות מתחילות מיד") else null,
         ).joinToString(" · "),
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
@@ -167,6 +146,17 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
                 row {
                     ToggleRow(T("Small window", "חלון קטן"), Pip.allowed, { PipGlyph(if (Pip.allowed) K.text else K.dim) }) { on ->
                         Pip.allowed = on; Prefs.setPipNavigation(ctx, on)
+                    }
+                }
+            }
+            InfoHeader(T("Starting a trip", "התחלת נסיעה"), T(
+                "A trip you start goes straight to its first walk, as in other navigation apps, instead of waiting for its time or for you to move away.",
+                "נסיעה שמתחילים עוברת מיד להליכה הראשונה, כמו באפליקציות ניווט אחרות, במקום לחכות לשעה שלה או לכך שתתרחקו.",
+            ))
+            ListGroup {
+                row {
+                    ToggleRow(T("Start right away", "להתחיל מיד"), startNow, { RouteGlyph(if (startNow) K.text else K.dim) }) { on ->
+                        startNow = on; Prefs.setBeginTripsImmediately(ctx, on)
                     }
                 }
             }
@@ -284,10 +274,10 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         Absent(
             T("No adverts", "אין פרסומות"),
             T(
-                "The official app carries Vungle video ads (1,038 class references), " +
+                "Moovit's app carries Vungle video ads (1,038 class references), " +
                     "AdMob and Facebook Audience Network. Kav calls none of the ad endpoints, and never " +
                     "requests ad targeting.",
-                "האפליקציה הרשמית כוללת פרסומות וידאו של Vungle (1,038 הפניות למחלקות), " +
+                "האפליקציה של Moovit כוללת פרסומות וידאו של Vungle (1,038 הפניות למחלקות), " +
                     "AdMob ו־Facebook Audience Network. Kav לא פונה לאף אחת מנקודות הקצה הפרסומיות, " +
                     "ולעולם לא מבקשת מיקוד פרסומי.",
             ),
@@ -311,6 +301,14 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
                 "There is no premium tier to be offered, so nothing in this app " +
                     "has a reason to interrupt you.",
                 "אין גרסת פרימיום להציע, ולכן לשום דבר באפליקציה הזו אין סיבה להפריע לכם.",
+            ),
+        )
+        Sub(T("Credits", "קרדיטים"))
+        Absent(
+            T("Maps", "מפות"),
+            T(
+                "Map data © OpenStreetMap contributors, Protomaps. Satellite imagery: Esri, Vantor, Earthstar Geographics.",
+                "נתוני המפה © תורמי OpenStreetMap, Protomaps. צילומי הלוויין: Esri, Vantor, Earthstar Geographics.",
             ),
         )
     }
@@ -463,26 +461,39 @@ private fun MapChoices() {
     }
 }
 
-// Where live buses come from. In Settings first, and the last step of setting Kav up.
+// What a plan may show and what its card shows: Settings' Planning page, and the same step of setting Kav up.
 @Composable
-internal fun LiveSourceRow() {
+internal fun PlanChoices(model: KavModel) {
     val ctx = LocalContext.current
-    SwitchRow(
-        T("From Kav's server", "מהשרת של Kav"),
-        T(
-            "Buses and trains straight from the Ministry of Transport, with Kav's own arrival times. Off, it all comes from Moovit.",
-            "אוטובוסים ורכבות ישירות ממשרד התחבורה, עם זמני ההגעה של Kav. כשכבוי, הכול מגיע מ-Moovit.",
-        ),
-        KavLive.chosen,
-        { on -> KavLive.chosen = on; Prefs.setLiveFromKav(ctx, on) },
-    ) { LiveGlyph(if (KavLive.chosen) K.text else K.dim, 18.dp) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
+        InfoHeader(
+            T("What a plan may show", "מה מסלול יכול לכלול"),
+            ResultFilter.entries.joinToString("\n") { f -> f.label + ": " + f.desc },
+        )
+        ListGroup {
+            ResultFilter.entries.forEach { f ->
+                row {
+                    val on = f in model.filters
+                    ToggleRow(f.label, on, { FilterGlyph(f, on) }) { model.setFilter(ctx, f, it) }
+                }
+            }
+        }
+        InfoHeader(T("What a card shows", "מה מוצג בכרטיס"), T("The CO2e figure on every plan and trip.", "נתון ה-CO2e על כל מסלול ונסיעה."))
+        ListGroup {
+            row {
+                ToggleRow(T("Emissions", "פליטות"), Shown.co2, { GlobeGlyph(if (Shown.co2) K.text else K.dim, K.surface1, 18.dp) }) { on ->
+                    Shown.co2 = on; Prefs.setShowCo2(ctx, on)
+                }
+            }
+        }
+    }
 }
 
 // Where live times come from, one choice of three: Kav's server, Moovit, or the rider's own copy of the server
 // (server/selfhost) with its address and key. Under it, while a server is used, how it's doing, checked when Settings
 // opens; tapped, what each part of it answers.
 @Composable
-private fun LiveSource() {
+internal fun LiveSource() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
@@ -520,9 +531,10 @@ private fun LiveSource() {
         result = null
         round++
     }
+    // Only the source changes: the rider's own switches below keep what they were set to (Kav plans only while a server
+    // that plans gives the live times anyway, KavPlan.wanted).
     fun live(on: Boolean) {
         KavLive.chosen = on; Prefs.setLiveFromKav(ctx, on)
-        if (!on && KavPlan.chosen) { KavPlan.chosen = false; Prefs.setPlanWithKav(ctx, false) }
     }
     Column(Modifier.animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
     InfoHeader(
@@ -543,13 +555,10 @@ private fun LiveSource() {
     KavSegmented(
         listOf("Moovit", T("Kav's server", "השרת של Kav"), T("My own", "שרת משלי")), order.indexOf(mode),
         { i ->
-            val was = mode
             mode = order[i]
-            // Coming from Moovit, a server plans trips too, unless the rider turns it off after.
-            if (was == 1 && mode != 1) { KavPlan.chosen = true; Prefs.setPlanWithKav(ctx, true) }
             when (mode) {
                 0 -> { live(true); if (KavLive.own) use(KavLive.KAV_SERVER, "", "") }
-                1 -> { live(false); Prefs.setTimetableUpdates(ctx, false) }
+                1 -> live(false)
                 else -> live(true)
             }
         },
@@ -786,7 +795,7 @@ private fun SeenChoice(model: KavModel, onChoose: () -> Unit) {
             transitionSpec = { fadeIn(tween(220, delayMillis = 60)) togetherWith fadeOut(tween(120)) },
             label = "seen",
         ) { (seen, town) ->
-            Text(
+            NoteCard(
                 when (seen) {
                     Seen.NONE -> T("Searches carry no location, so results aren't sorted by distance.",
                         "החיפוש לא כולל מיקום, ולכן התוצאות לא ממוינות לפי מרחק.")
@@ -794,8 +803,7 @@ private fun SeenChoice(model: KavModel, onChoose: () -> Unit) {
                         (town?.let { T("Now: $it.", "כרגע: $it.") } ?: "")
                     Seen.PLACE -> T("A place you pick, so results near it come first.", "מקום שתבחרו, כך שתוצאות קרובות אליו מופיעות ראשונות.")
                 },
-                style = K.type.subhead, color = K.textTertiary,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = K.gap4, vertical = K.gap2),
+                Modifier.padding(top = K.gap2),
             )
         }
         androidx.compose.animation.AnimatedVisibility(
@@ -837,13 +845,13 @@ internal fun StopNamesRow(ctx: android.content.Context, modifier: Modifier = Mod
             listOf("English", "עברית"), selected = if (StopNames.english) 0 else 1,
             onSelect = { i -> StopNames.english = i == 0; Prefs.setStopNamesEnglish(ctx, i == 0) },
         )
-        if (explained) Text(
+        if (explained) NoteCard(
             T(
                 "Only the names of stops, stations and towns, as the Ministry of Transport gives them, on the boards, " +
                     "lines and trips. Kav's own language stays as it is.",
                 "רק שמות התחנות והיישובים, כפי שמשרד התחבורה נותן אותם, בלוחות, בקווים ובנסיעות. השפה של Kav נשארת כפי שהיא.",
             ),
-            style = K.type.subhead, color = K.textTertiary, modifier = Modifier.padding(horizontal = K.gap4).padding(top = K.gap2),
+            Modifier.padding(top = K.gap2),
         )
     }
 }

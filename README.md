@@ -72,7 +72,7 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-3.0.apk --repo ImNoammm/kav
+gh attestation verify kav-3.1.apk --repo ImNoammm/kav
 ```
 
 First launch fetches the map, about 176 MB once. It lives on the phone from then

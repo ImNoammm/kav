@@ -24,6 +24,9 @@ import uk.noammm.kav.ui.Payer
 import uk.noammm.kav.ui.T
 import uk.noammm.kav.ui.buildSteps
 import uk.noammm.kav.ui.journeyProgress
+import androidx.core.location.LocationRequestCompat
+import uk.noammm.kav.ui.Step
+import uk.noammm.kav.ui.boardingChoice
 
 class TripService : Service() {
 
@@ -41,6 +44,7 @@ class TripService : Service() {
         override fun run() {
             alertIfDue()
             advance()
+            retune()
             post()
             handler.postDelayed(this, TICK_MS)
         }
@@ -101,7 +105,7 @@ class TripService : Service() {
             start(first, special or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         if (!located && !start(first, special)) return false
         foreground = true
-        if (located) tracking = trackLocation(this, ::onFix)
+        if (located) tracking = trackLocation(this, ::onFix, every = need.every, quality = need.quality)
         return true
     }
 
@@ -110,7 +114,9 @@ class TripService : Service() {
         if (tracking != null || !foreground || !hasLocationPermission(this)) return
         val n = notice()?.let { build(this, it) } ?: return
         val special = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
-        if (start(n, special or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)) tracking = trackLocation(this, ::onFix)
+        if (start(n, special or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)) {
+            tracking = trackLocation(this, ::onFix, every = need.every, quality = need.quality)
+        }
     }
 
     private fun start(n: Notification, types: Int) = try {
@@ -129,6 +135,43 @@ class TripService : Service() {
         val shell = TripBridge.fix
         if (shell != null) shell(f) else advance()
         post()
+    }
+
+    // How closely the trip needs the rider's position: every second while walking and in the minutes before boarding
+    // and getting off; once a minute while the ride is still a few minutes off; every two minutes on board far from
+    // the stop, where the bus's own position tells the trip where it is.
+    private enum class Need(val every: Long, val quality: Int) {
+        CLOSE(1_000L, LocationRequestCompat.QUALITY_HIGH_ACCURACY),
+        WAITING(60_000L, LocationRequestCompat.QUALITY_BALANCED_POWER_ACCURACY),
+        RIDING(120_000L, LocationRequestCompat.QUALITY_LOW_POWER),
+    }
+    private var need = Need.CLOSE
+
+    private fun needNow(): Need {
+        val (journey, step) = journey() ?: return Need.CLOSE
+        val now = System.currentTimeMillis() / 1000
+        return when (val s = buildSteps(journey.trip, journey.fromLabel, journey.toLabel).getOrNull(step)) {
+            is Step.Wait -> {
+                val (ride, wait) = boardingChoice(s.ride, s.wait, journey.chosen[s.legIndex] ?: 0)
+                val due = journey.resolved.departures(ride, wait, now).map { it.timeUtc }.filter { it >= now - 60 }.minOrNull() ?: ride.dep
+                if (due - now > 180) Need.WAITING else Need.CLOSE
+            }
+            is Step.Ride -> {
+                val ride = boardingChoice(s.ride, s.wait, journey.chosen[s.legIndex] ?: 0).first
+                if (ride.arr - now > 480) Need.RIDING else Need.CLOSE
+            }
+            else -> Need.CLOSE
+        }
+    }
+
+    // Asks for the position as often as the step needs, whenever that changes.
+    private fun retune() {
+        val wanted = needNow()
+        if (wanted == need) return
+        need = wanted
+        val stop = tracking ?: return
+        stop()
+        tracking = trackLocation(this, ::onFix, every = need.every, quality = need.quality)
     }
 
     private fun journey(): Pair<ActiveJourney, Int>? {
@@ -182,6 +225,7 @@ class TripService : Service() {
         val steps = buildSteps(journey.trip, journey.fromLabel, journey.toLabel)
         val moved = journeyProgress(
             steps, step, journey.resolved, journey.chosen, System.currentTimeMillis() / 1000, fix, canLocate(this),
+            Prefs.beginTripsImmediately(this),
         )
         if (moved == step) return
         JourneyFile.save(this, journey, moved)
@@ -246,6 +290,8 @@ class TripService : Service() {
         private const val ID = 7
         private const val ALERT_ID = 8
         private const val CHANNEL = "navigation"
+        private const val ALERTS = "trip-alerts"
+        private val BUZZ = longArrayOf(0, 300, 150, 300)
         private const val ACT_END = "uk.noammm.kav.trip.END"
         private const val ACT_REPOST = "uk.noammm.kav.trip.REPOST"
         private const val ACT_PAY = "uk.noammm.kav.trip.PAY"
@@ -285,8 +331,8 @@ class TripService : Service() {
 
         fun alert(ctx: Context, title: String, text: String) {
             if (!NotificationManagerCompat.from(ctx).areNotificationsEnabled()) return
-            ensureChannel(ctx)
-            val n = NotificationCompat.Builder(ctx, CHANNEL)
+            ensureAlerts(ctx)
+            val n = NotificationCompat.Builder(ctx, ALERTS)
                 .setSmallIcon(R.drawable.ic_trip_notice)
                 .setContentTitle(title)
                 .setContentText(text)
@@ -297,6 +343,22 @@ class TripService : Service() {
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .build()
             runCatching { NotificationManagerCompat.from(ctx).notify(ALERT_ID, n) }
+        }
+
+        // Get off, change, a transfer running out: a channel of their own that buzzes, apart from the trip's notice,
+        // which changes every few seconds and can have the phone quiet the alerts posted beside it.
+        private fun ensureAlerts(ctx: Context) {
+            NotificationManagerCompat.from(ctx).createNotificationChannel(
+                NotificationChannelCompat.Builder(ALERTS, NotificationManagerCompat.IMPORTANCE_HIGH)
+                    .setName(T("Trip alerts", "התראות נסיעה"))
+                    .setDescription(T(
+                        "When to get off or change, and when a free transfer is about to end",
+                        "מתי לרדת או להחליף, ומתי מעבר חינם עומד להסתיים",
+                    ))
+                    .setVibrationEnabled(true)
+                    .setVibrationPattern(BUZZ)
+                    .build(),
+            )
         }
 
         private fun ensureChannel(ctx: Context) {

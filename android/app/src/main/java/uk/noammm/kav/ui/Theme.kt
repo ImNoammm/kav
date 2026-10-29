@@ -45,7 +45,7 @@ object K {
     var borderStrong by mutableStateOf(Color(0xFF74747D))
     var sunken by mutableStateOf(Color(0xFF19191C))
 
-    // The names the screens used before the roles above, kept while they move over.
+    // Other names for the roles above, as some screens call them.
     val surface1 get() = surface
     val border get() = separator
     val dim get() = textTertiary
@@ -157,9 +157,7 @@ object Shown {
     var payments by mutableStateOf(true)
 }
 
-// Older styles, kept while the screens move to K.type: titles, and times in tabular figures of the system font.
-val Display get() = K.type.title
-val DisplayItalic get() = Display.copy(fontWeight = FontWeight.Medium)
+// Times in tabular figures of the system font.
 val Mono get() = TextStyle(fontSize = 12.sp, color = K.muted).tabular
 
 private fun scheme() = (if (K.light) lightColorScheme() else darkColorScheme()).copy(
@@ -193,7 +191,7 @@ fun KavTheme(content: @Composable () -> Unit) {
             titleSmall = K.type.headline,
             labelLarge = K.type.bodyStrong,
             labelMedium = K.type.caption,
-            // Text with no style of its own; the screens give theirs as they move to K.type.
+            // For text that sets no style of its own.
             bodyLarge = TextStyle(fontSize = 14.sp, color = K.text),
             bodyMedium = TextStyle(fontSize = 13.sp, color = K.text),
             bodySmall = TextStyle(fontSize = 12.sp, color = K.dim),

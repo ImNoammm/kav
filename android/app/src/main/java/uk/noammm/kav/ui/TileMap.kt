@@ -287,6 +287,9 @@ private fun arrowBitmap(dp: Float): android.graphics.Bitmap {
     return bmp
 }
 
+// The same arrow for the stop rail (Navigate.kt), which turns it to point down the ride.
+internal fun getArrowBitmap(dp: Float): android.graphics.Bitmap = arrowBitmap(dp)
+
 internal object Geo {
     const val SIZE = 256
     const val MIN_Z = 8

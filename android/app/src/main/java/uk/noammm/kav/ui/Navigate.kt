@@ -2,6 +2,8 @@
 
 package uk.noammm.kav.ui
 
+import android.graphics.Bitmap
+import android.graphics.Matrix
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -66,6 +68,7 @@ import uk.noammm.kav.data.shownName
 import java.util.Date
 import kotlin.math.roundToInt
 import androidx.compose.material.icons.rounded.OutlinedFlag
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalContext
@@ -665,10 +668,19 @@ internal fun StopRail(
     if (follow != null) LaunchedEffect(passed, passedTop >= 0) {
         if (progress >= 1f && passedTop >= 0) follow(passedTop)
     }
+    // The arrow where the ride has got to, pointing the way it goes: about the rail's 20 dp across on any screen, and
+    // made again when the look changes, since its colours are drawn into it.
+    val bg = K.bg
+    val ink = K.text
+    val stopArrowImageBitmap = remember(bg, ink, density.density) {
+        val up = getArrowBitmap(density.density * .55f)
+        Bitmap.createBitmap(up, 0, 0, up.width, up.height, Matrix().apply { postRotate(180f) }, true).asImageBitmap()
+    }
     Box(modifier.fillMaxWidth()) {
         Canvas(Modifier.matchParentSize()) {
             val x = if (layoutDirection == LayoutDirection.Rtl) size.width - 10.dp.toPx() else 10.dp.toPx()
             val wide = 3.dp.toPx()
+            var decidedSplit = Float.NaN
             for (i in 0 until stops.lastIndex) {
                 val y0 = centres.getOrElse(i) { Float.NaN }
                 val y1 = centres.getOrElse(i + 1) { Float.NaN }
@@ -677,6 +689,7 @@ internal fun StopRail(
                 val split = y0 + (y1 - y0) * f
                 if (f > 0f) drawLine(K.routeIdle, Offset(x, y0), Offset(x, split), wide)
                 if (f < 1f) drawLine(K.route, Offset(x, split), Offset(x, y1), wide)
+                if (f > 0f && f < 1f) decidedSplit = split
             }
             stops.forEachIndexed { i, _ ->
                 val cy = centres.getOrElse(i) { Float.NaN }
@@ -686,6 +699,12 @@ internal fun StopRail(
                 drawCircle(K.bg, rad + 2.dp.toPx(), Offset(x, cy))
                 if (done) drawCircle(K.routeIdle, rad, Offset(x, cy))
                 else drawCircle(K.route, rad, Offset(x, cy), style = Stroke(2.dp.toPx()))
+            }
+            if (!decidedSplit.isNaN()) {
+                val r = stopArrowImageBitmap.width / 2f + .1f
+                drawCircle(K.bg, radius = r, center = Offset(x, decidedSplit), alpha = .5f)
+                drawCircle(K.text, radius = r, center = Offset(x, decidedSplit), style = Stroke(2.dp.toPx()))
+                drawImage(stopArrowImageBitmap, topLeft = Offset(x - stopArrowImageBitmap.width / 2, decidedSplit - stopArrowImageBitmap.height / 2))
             }
         }
         Column(Modifier.fillMaxWidth()) {

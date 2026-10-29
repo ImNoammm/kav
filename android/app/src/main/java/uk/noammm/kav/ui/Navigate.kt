@@ -668,11 +668,13 @@ internal fun StopRail(
     if (follow != null) LaunchedEffect(passed, passedTop >= 0) {
         if (progress >= 1f && passedTop >= 0) follow(passedTop)
     }
-    val stopArrowImageBitmap by remember {
-        val originalArrowBitmap = getArrowBitmap(1.5f)
-        val matrix = Matrix()
-        matrix.postRotate(180f)
-        mutableStateOf( Bitmap.createBitmap(originalArrowBitmap,0,0,originalArrowBitmap.width, originalArrowBitmap.height, matrix, true).asImageBitmap())
+    // The arrow where the ride has got to, pointing the way it goes: about the rail's 20 dp across on any screen, and
+    // made again when the look changes, since its colours are drawn into it.
+    val bg = K.bg
+    val ink = K.text
+    val stopArrowImageBitmap = remember(bg, ink, density.density) {
+        val up = getArrowBitmap(density.density * .55f)
+        Bitmap.createBitmap(up, 0, 0, up.width, up.height, Matrix().apply { postRotate(180f) }, true).asImageBitmap()
     }
     Box(modifier.fillMaxWidth()) {
         Canvas(Modifier.matchParentSize()) {
@@ -687,9 +689,7 @@ internal fun StopRail(
                 val split = y0 + (y1 - y0) * f
                 if (f > 0f) drawLine(K.routeIdle, Offset(x, y0), Offset(x, split), wide)
                 if (f < 1f) drawLine(K.route, Offset(x, split), Offset(x, y1), wide)
-                if ((f > 0f) && (f < 1f)){
-                    decidedSplit=split
-                }
+                if (f > 0f && f < 1f) decidedSplit = split
             }
             stops.forEachIndexed { i, _ ->
                 val cy = centres.getOrElse(i) { Float.NaN }
@@ -701,9 +701,10 @@ internal fun StopRail(
                 else drawCircle(K.route, rad, Offset(x, cy), style = Stroke(2.dp.toPx()))
             }
             if (!decidedSplit.isNaN()) {
-                drawCircle(K.bg, radius=stopArrowImageBitmap.width.toFloat() / 2 + .1f, center = Offset(x,decidedSplit), alpha = .5f)
-                drawCircle(K.text, radius=stopArrowImageBitmap.width.toFloat()/2 + .1f, center = Offset(x,decidedSplit), style = Stroke(2.dp.toPx()))
-                drawImage(stopArrowImageBitmap, topLeft=Offset(x - stopArrowImageBitmap.width / 2, decidedSplit - stopArrowImageBitmap.height / 2))
+                val r = stopArrowImageBitmap.width / 2f + .1f
+                drawCircle(K.bg, radius = r, center = Offset(x, decidedSplit), alpha = .5f)
+                drawCircle(K.text, radius = r, center = Offset(x, decidedSplit), style = Stroke(2.dp.toPx()))
+                drawImage(stopArrowImageBitmap, topLeft = Offset(x - stopArrowImageBitmap.width / 2, decidedSplit - stopArrowImageBitmap.height / 2))
             }
         }
         Column(Modifier.fillMaxWidth()) {

@@ -503,7 +503,7 @@ private fun Root() {
         OnboardingScreen(model) { Prefs.setOnboarded(ctx); onboarded = true }
         return
     }
-    LaunchedEffect(model) { if (!model.updateChecked) model.checkForUpdate(app) }
+    LaunchedEffect(model) { if (Prefs.updateChecks(app) && !model.updateChecked) model.checkForUpdate(app) }
     // Kav's recipe and Vela's: fixes for Moovit or Google that need no update. And the timetable for the seven days from
     // today, taken in at the next start.
     LaunchedEffect(Unit) {
@@ -1500,6 +1500,11 @@ object Prefs {
     fun timetableUpdates(ctx: Context): Boolean = store(ctx).getBoolean("timetableUpdates", false)
     fun setTimetableUpdates(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("timetableUpdates", on).apply()
 
+    // Kav asks GitHub for a new release when it opens. Off, it never asks by itself, and only a check you ask for
+    // reaches GitHub.
+    fun updateChecks(ctx: Context): Boolean = store(ctx).getBoolean("updateChecks", true)
+    fun setUpdateChecks(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("updateChecks", on).apply()
+
     // The rider's own copy of Kav's server, else Kav's; the key it takes requests signed with (its KAV_APP_KEY), and the
     // public half of the key its timetable is signed with, as it gave it.
     fun kavServer(ctx: Context): String =
@@ -1604,6 +1609,7 @@ object Prefs {
             .put("liveFromKav", liveFromKav(ctx))
             .put("planWithKav", planWithKav(ctx))
             .put("timetableUpdates", timetableUpdates(ctx))
+            .put("updateChecks", updateChecks(ctx))
             .put("kavServer", kavServer(ctx))
             .put("kavServerKey", kavServerKey(ctx))
             .put("mapType", mapType(ctx).name.lowercase())
@@ -1635,6 +1641,7 @@ object Prefs {
         if (o.has("liveFromKav")) e.putBoolean("liveFromKav", o.optBoolean("liveFromKav"))
         if (o.has("planWithKav")) e.putBoolean("planWithKav", o.optBoolean("planWithKav"))
         if (o.has("timetableUpdates")) e.putBoolean("timetableUpdates", o.optBoolean("timetableUpdates"))
+        if (o.has("updateChecks")) e.putBoolean("updateChecks", o.optBoolean("updateChecks"))
         KavLive.serverAddress(o.optString("kavServer"))?.let {
             // The server's timetable key is asked of it again (Timetable.refresh).
             if (it != kavServer(ctx)) e.remove("kavServerBundleKey")

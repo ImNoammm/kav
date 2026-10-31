@@ -2953,9 +2953,12 @@ def morning_after(when):
 # Shabbat and the holidays, when the timetable has hardly a bus: a trip asked for from noon the day before (a Friday, a
 # holiday's eve) to when the days off end, with nothing to ride, gets the first routes after them: the routes list's
 # question from REST_BEFORE seconds before nightfall over REST_WINDOW, or else the next morning's (morning_after()).
-# Those setting out after nightfall (the sun REST_SUN degrees below the horizon where the trip starts) are tagged
-# after_shabbat, or after_holiday when the last day off is a holiday on a weekday.
+# Those whose first ride sets out after nightfall (the sun REST_SUN degrees below the horizon where the trip starts)
+# are tagged after_shabbat, or after_holiday when the last day off is a holiday on a weekday, whatever found them.
 REST_BEFORE, REST_WINDOW, REST_SUN = 3 * 3600, "PT8H", 8.5
+# Over the days off the planner is slow across their empty hours: the question after them, and the last way's earlier
+# question asked before or during them, have until REST_BY seconds after the trip was asked for, inside the app's 15 s.
+REST_BY = 12
 HEBREW_EPOCH = -1373427  # the Hebrew calendar's first day as a proleptic Gregorian ordinal
 
 
@@ -4163,7 +4166,7 @@ def on_kavs_times(found, when, lines, ask):
 
 
 def plan_answer(doc, when, arrive, ask=None, more=None, frm=None, to=None, again=None, last=None, morning=None,
-                earlier=None, reluctant=None, wider=None, official=None, direct=None, weighed=None, rested=None):
+                earlier=None, reluctant=None, wider=None, official=None, direct=None, weighed=None, rested=None, off=None):
     """Kav's answer: the routes list from doc, OpenTripPlanner's answer for it; and from more, its answers for the
     other kinds of question (plan_kinds, and "taxi" for leaving now), the sections shown besides, each route
     marked with its section's id. again(routes) asks the routes list's question again without those routes. last: for
@@ -4173,7 +4176,8 @@ def plan_answer(doc, when, arrive, ask=None, more=None, frm=None, to=None, again
     wider() asks it over WIDER_WINDOW, in the time left. official() asks it of the planner on the ministry's own times.
     direct() asks it for routes with no change over DIRECT_WINDOW. weighed() gives the planner's answers weighing
     routes as the recipe does (weighed_answers()), whose routes join those found. rested(later) asks the routes list's
-    question after the days off (rest_end()), later the next morning's, and says when they end and if on a Saturday."""
+    question after the days off (rest_end()), later the next morning's, and says when they end and if on a Saturday.
+    off: rest_end() for the time asked, the days off the routes are tagged after."""
     more = more or {}
     stops, lines, agencies = {}, {}, {}
     found = itineraries(doc, stops, lines, agencies)
@@ -4316,9 +4320,14 @@ def plan_answer(doc, when, arrive, ask=None, more=None, frm=None, to=None, again
         picks = merged(picks, lines, stops, arrive)
     picks.sort(key=(lambda i: route_cost(i, when, lines, arrive)) if arrive or recipe else shown_order)
     picks += added
+    after = after or (off and (off[0], "after_shabbat" if off[1] else "after_holiday"))
+    # A route whose first ride sets out after the days off is tagged so first, and those riding during them come before it.
+    past = [after is not None and next((l["dep"] for l in it["legs"] if l["k"] == "r"), 0) >= after[0] for it in picks]
+    if any(past):
+        picks = [it for it, p in zip(picks, past) if not p] + [it for it, p in zip(picks, past) if p]
+        past.sort()
     tags = tag([facts(it) for it in picks], arrive)
-    if after is not None:
-        tags = [([after[1]] + t)[:2] if it["dep"] >= after[0] else t for it, t in zip(picks, tags)]
+    tags = [([after[1]] + t)[:2] if p else t for t, p in zip(tags, past)]
     if not arrive:
         for it in picks:
             lean_at_night(it, when)
@@ -4599,6 +4608,7 @@ class Handler(BaseHTTPRequestHandler):
         like, main_answer, dawning = None, Future(), None
         dawn = morning_after(when) if way in "nd" else None
         rest, resting = (rest_end(when, frm) if way in "nda" and not via else None), None
+        off = rest_end(asked, frm)
         if rest:
             asking = ThreadPoolExecutor(1)
             rest_from = max(when, rest[0] - REST_BEFORE)
@@ -4634,15 +4644,18 @@ class Handler(BaseHTTPRequestHandler):
 
         def rested(later):
             """The routes list's question after the days off (resting), later the next morning's, and when they end."""
+            left = REST_BY - (time.time() - started)
             if later:
+                if left < 1:
+                    raise TimeoutError("no time left")
                 doc = ask_planner(plan_variables(frm, to, morning_after(rest[0] + 6 * 3600), False, allowed, "main",
-                                                 via, MORNING_WINDOW, (), at))
+                                                 via, MORNING_WINDOW, (), at), left)
             else:
-                doc = resting.result(timeout=max(0.1, LAST_DAY_BY - (time.time() - started)))
+                doc = resting.result(timeout=max(0.1, left))
             return doc, rest[0], rest[1]
 
         def earlier(routes, window=LAST_DAY_WINDOW):
-            left = LAST_DAY_BY - (time.time() - started)
+            left = (REST_BY if way == "l" and off else LAST_DAY_BY) - (time.time() - started)
             if left < 1:
                 raise TimeoutError("no time left")
             return ask_planner(plan_variables(frm, to, when, arrive, allowed, "main", via, window, routes, at), left)
@@ -4666,7 +4679,7 @@ class Handler(BaseHTTPRequestHandler):
                                      officially.result if officially else None,
                                      (lambda: ask_planner(plan_variables(frm, to, when, arrive, allowed, "main", via, DIRECT_WINDOW, (),
                                                                          at, transfers=0))) if way in "nd" else None,
-                                     found_too if like or dawning else None, rested=rested if resting else None))
+                                     found_too if like or dawning else None, rested=rested if resting else None, off=off))
 
     def line(self, number, fresh, now):
         """Every bus on the routes that carry this number, and those routes."""

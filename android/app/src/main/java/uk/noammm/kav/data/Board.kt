@@ -20,6 +20,24 @@ fun Net.departuresAt(stop: Int, now: Int, today: Int, limit: Int = 60): List<Pai
     return out.sortedBy { it.second }.take(limit)
 }
 
+// A line's departures from one stop that go on to reach another, soonest first from second now of the board's day
+// today (Sunday 0) and within the next four hours, at most limit: the stop time each leaves from and when. from and to are every stop with the codes
+// the ride is boarded and left at, as a station's platforms share one. number: the line's; null for any train, each of
+// whose runs is a route of its own.
+fun Net.lineDepartures(from: Set<Int>, to: Set<Int>, number: String?, now: Int, today: Int, limit: Int = 4): List<Pair<Int, Int>> =
+    from.flatMap { departuresAt(it, now, today, limit = 240) }
+        .map { (c, dep) -> cST[c] to dep }
+        .filter { (st, _) ->
+            val t = tripOf(st)
+            val route = tripRoute[t]
+            (if (number == null) rType[route] == 2 else rShort[route] == number) &&
+                (st + 1 until tripStart[t + 1]).any { stStop[it] in to }
+        }
+        .filter { (_, dep) -> dep - now <= 4 * 3600 }
+        .distinctBy { (st, dep) -> tripOf(st) to dep }
+        .sortedBy { it.second }
+        .take(limit)
+
 // A train on a station's board as a live source names it: the timetable trip that is its row, and where it really
 // ends when that's a station before the timetable's last, as when works end a night's trains early.
 class TrainRow(val trip: Int, val to: String?)
@@ -59,27 +77,8 @@ fun Net.cutShort(st: Int, ends: (String) -> Boolean): String? {
     return (st + 1 until tripStart[t + 1]).firstOrNull { ends(name[stStop[it]]) }?.let { name[stStop[it]] }
 }
 
-// Whether Moovit's name for a train's line, "from - to", starts or ends at the station of this name. A station's name
-// can hold " - " itself ("בית שאן - דוד לוי"). Moovit adds symbols, like the airport's plane; both write gershayim as
-// two apostrophes.
-fun moovitLineStartsAt(line: String, station: String): Boolean {
-    val l = stationKey(line)
-    val s = stationKey(station)
-    return s.isNotEmpty() && (l == s || l.startsWith("$s - "))
-}
-
-fun moovitLineEndsAt(line: String, station: String): Boolean {
-    val l = stationKey(line)
-    val s = stationKey(station)
-    return s.isNotEmpty() && (l == s || l.endsWith(" - $s"))
-}
-
-private fun stationKey(name: String): String = name.replace("״", "''").replace("\"", "''").replace("׳", "'")
-    .filter { it.isLetterOrDigit() || it == ' ' || it == '-' || it == '\'' }
-    .replace(Regex("\\s+"), " ").trim()
-
 // What a live source says of a station's trains today: the timetable's trains it has running, where those end early,
-// and from Moovit, which it has cancelled, until when (seconds from the board's midnight) it would list any other,
+// and which it has cancelled, until when (seconds from the board's midnight) it would list any other,
 // -1 when it can't say, and around when it lists trains that fit no row, where nothing is said. named: from Kav's
 // server, the number and platform of each train not yet out, which the timetable keeps without either.
 class TrainsToday(
@@ -92,46 +91,14 @@ class TrainsToday(
         (trip in cancelled || dep <= until && unsure.none { dep in it })
 }
 
-// A train's number and the platform it leaves a station from, as Moovit's boards show both. Blank where the live
+// A train's number and the platform it leaves a station from. Blank where the live
 // source hasn't given one.
 class TrainName(val number: String, val platform: String) {
     companion object {
-        // A live row's, when it names the train: Kav's server gives its number, Moovit names its line instead.
+        // A live row's, when it names the train by its number, as Kav's server does.
         fun of(number: String, platform: String) = TrainName(number, platform).takeIf { number.isNotEmpty() && number.all(Char::isDigit) }
     }
 }
-
-// A train as Moovit lists it at a station: when it's timetabled there and expected (seconds from the board's
-// midnight, rt -1 without a live time), its line's name and whether Moovit has cancelled it.
-class MoovitTrain(val second: Int, val rt: Int, val line: String, val cancelled: Boolean) {
-    fun toCome(now: Int) = (if (rt >= 0) rt else second) >= now - 60
-}
-
-// Moovit's trains at a station on the board's rows: the row of each, null where none fits, and what the list says of
-// the rest. Moovit's list is its timetable for today, works and all, so a train row it doesn't have in the next hour
-// and a half isn't running today, unless a train Moovit has can't be placed within a quarter of an hour of it.
-fun Net.moovitTrains(stop: Int, today: Int, now: Int, trains: List<MoovitTrain>): Pair<List<TrainRow?>, TrainsToday> {
-    val rows = trains.map { m ->
-        trainLeaving(stop, m.second, today, { moovitLineStartsAt(m.line, it) }, { moovitLineEndsAt(m.line, it) })
-    }
-    val running = HashSet<Int>()
-    val cancelled = HashSet<Int>()
-    val unsure = ArrayList<IntRange>()
-    val ends = HashMap<Int, String>()
-    trains.forEachIndexed { i, m ->
-        val row = rows[i]
-        when {
-            row == null -> if (!m.cancelled && m.toCome(now)) unsure += m.second - 900..m.second + 900
-            m.cancelled -> cancelled += row.trip
-            else -> { running += row.trip; row.to?.let { ends[row.trip] = it } }
-        }
-    }
-    val until = if (running.isNotEmpty()) now + LISTED_S else -1
-    return rows to TrainsToday(running, cancelled - running, until, unsure, ends)
-}
-
-// How far ahead Moovit's list is trusted to hold every train.
-const val LISTED_S = 85 * 60
 
 // A train's line as people mean it: every train the timetable runs between the same two stations the same way, each
 // of which it keeps as a route of its own.

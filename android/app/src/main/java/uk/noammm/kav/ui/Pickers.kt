@@ -42,11 +42,12 @@ import androidx.compose.ui.unit.sp
 import uk.noammm.kav.LOCATION_PERMISSIONS
 import uk.noammm.kav.hasLocationPermission
 import uk.noammm.kav.requestLocationOnce
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.stopsMatching
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.rounded.MyLocation
@@ -150,7 +151,7 @@ fun PlacePicker(
     here: Pair<Double, Double>?,
     allowMyLocation: Boolean,
     onMyLocation: (Pair<Double, Double>) -> Unit,
-    onPick: (Moovit.Place) -> Unit,
+    onPick: (Transit.Place) -> Unit,
     onDismiss: () -> Unit,
     initialSetting: Favourite? = null,
     favourites: List<Favourite>,
@@ -162,10 +163,9 @@ fun PlacePicker(
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val q = query
-    var places by remember { mutableStateOf<List<Moovit.Place>>(emptyList()) }
-    var stations by remember { mutableStateOf<List<Moovit.Place>>(emptyList()) }
+    var places by remember { mutableStateOf<List<Transit.Place>>(emptyList()) }
+    var stations by remember { mutableStateOf<List<Transit.Place>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
     var recents by remember { mutableStateOf(uk.noammm.kav.Prefs.recents(ctx)) }
     var setting by remember { mutableStateOf(initialSetting) }
     var editing by remember { mutableStateOf<Favourite?>(null) }
@@ -177,7 +177,7 @@ fun PlacePicker(
     DisposableEffect(Unit) { onDispose { shown = false; stopLocating?.invoke() } }
     fun cancelLocation() { stopLocating?.invoke(); stopLocating = null; locating = false }
     fun save(list: List<Favourite>) = onSaveFavourites(list)
-    val pick: (Moovit.Place) -> Unit = { p ->
+    val pick: (Transit.Place) -> Unit = { p ->
         cancelLocation()
         val f = setting
         if (f != null) {
@@ -188,6 +188,20 @@ fun PlacePicker(
         } else {
             uk.noammm.kav.Prefs.remember(ctx, p)
             onPick(p)
+        }
+    }
+    // A picked Google place takes the point PlacePoint gives it, a town's hub or Google's own, and the trip, Recents and
+    // saved trips all keep that one point.
+    val scope = rememberCoroutineScope()
+    var placing by remember { mutableStateOf(false) }
+    fun pickPlace(p: Transit.Place) {
+        if (placing) return
+        if (p.googleId == null) return pick(p)
+        placing = true
+        scope.launch {
+            val placed = uk.noammm.kav.data.PlacePoint.of(p, net = { net ?: uk.noammm.kav.loadNet(ctx) })
+            placing = false
+            pick(placed)
         }
     }
 
@@ -204,14 +218,13 @@ fun PlacePicker(
     }
 
     LaunchedEffect(q) {
-        error = null
         if (q.isBlank()) {
             places = emptyList(); stations = emptyList(); busy = false
             return@LaunchedEffect
         }
         // A point copied from a map is that very place.
-        uk.noammm.kav.data.MoovitLink.coordinates(q)?.let { (lat, lon) ->
-            places = listOf(Moovit.Place("%.5f, %.5f".format(java.util.Locale.US, lat, lon), T("Coordinates", "קואורדינטות"), lat, lon))
+        uk.noammm.kav.data.TripLink.coordinates(q)?.let { (lat, lon) ->
+            places = listOf(Transit.Place("%.5f, %.5f".format(java.util.Locale.US, lat, lon), T("Coordinates", "קואורדינטות"), lat, lon))
             stations = emptyList(); busy = false
             return@LaunchedEffect
         }
@@ -221,21 +234,11 @@ fun PlacePicker(
         val near = async(kotlinx.coroutines.Dispatchers.Default) {
             try {
                 val n = net ?: uk.noammm.kav.loadNet(ctx)
-                n.stopsMatching(q, at) { modeName(modeOf(it)) }.also { StopPhotos.prefetchNet(n, it) }.map { placeOf(n, it) }
+                n.stopsMatching(q, at) { modeName(modeOf(it)) }.map { placeOf(n, it) }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 emptyList()
-            }
-        }
-        val online = async(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val s = Online.open(at ?: (32.0759 to 34.7745))
-                Result.success(Moovit.searchPlaces(s, q, at))
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(e)
             }
         }
         val address = async(kotlinx.coroutines.Dispatchers.IO) {
@@ -256,10 +259,8 @@ fun PlacePicker(
                 null
             }
         }
-        val waited = kotlinx.coroutines.withTimeoutOrNull(3000) { online.await() }
         stations = near.await()
-        busy = waited == null && stations.isEmpty()
-        val answer = waited ?: online.await()
+        busy = stations.isEmpty()
         val typed = kotlinx.coroutines.withTimeoutOrNull(3000) { google.await() }
         // A typo gets no places from Google, only the text it would correct it to, so its places come from that text.
         val suggested = typed?.queries?.firstOrNull()?.takeIf { typed.places.isEmpty() }?.let { fixed ->
@@ -279,13 +280,11 @@ fun PlacePicker(
             }.getOrDefault(emptyList())
         }
         val exact = kotlinx.coroutines.withTimeoutOrNull(3000) { address.await() }.orEmpty()
-        // Moovit's app lists Google's places, so Kav does too, with Moovit's own search standing in when Google has
-        // none. A suggested address only knows its street's position, so it gives way to the house itself.
+        // Google's places. A suggested address only knows its street's position, so it gives way to the house itself.
         val number = uk.noammm.kav.data.searchWords(q).firstOrNull { it.first().isDigit() }
         val fromGoogle = suggested?.places.orEmpty()
             .filter { p -> number == null || uk.noammm.kav.data.searchWords(p.name).none { it == number } }
-        places = (exact + fromGoogle.ifEmpty { answer.getOrDefault(emptyList()) }).take(5)
-        error = answer.exceptionOrNull()?.takeIf { stations.isEmpty() && places.isEmpty() }?.let { it.message ?: it.javaClass.simpleName }
+        places = (exact + fromGoogle).take(5)
         busy = false
     }
 
@@ -391,7 +390,6 @@ fun PlacePicker(
             }
         }
         when {
-            error != null -> item { Note(T("Search failed: $error", "החיפוש נכשל: $error"), Modifier.padding(horizontal = K.gap4, vertical = K.gap4)) }
             q.isBlank() && recents.isEmpty() -> item {
                 NoteCard(T("Search a station, street or place.", "חפשו תחנה, רחוב או מקום."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
             }
@@ -413,7 +411,7 @@ fun PlacePicker(
             itemsIndexed(recents) { i, p -> PlaceRow(p, here, i == 0, i == recents.lastIndex) { pick(p) } }
         } else if (found) {
             if (places.isNotEmpty()) item { SectionTitle(T("Places", "מקומות")) }
-            itemsIndexed(places) { i, p -> Box(Modifier.popIn(i, places)) { PlaceRow(p, here, i == 0, i == places.lastIndex) { pick(p) } } }
+            itemsIndexed(places) { i, p -> Box(Modifier.popIn(i, places)) { PlaceRow(p, here, i == 0, i == places.lastIndex) { pickPlace(p) } } }
             if (stations.isNotEmpty()) item { SectionTitle(T("Stops", "תחנות")) }
             itemsIndexed(stations) { i, p -> Box(Modifier.popIn(places.size + i, stations)) { PlaceRow(p, here, i == 0, i == stations.lastIndex) { pick(p) } } }
         }
@@ -469,7 +467,7 @@ internal fun SelectOnMapRow(sides: androidx.compose.ui.unit.Dp = K.gap3, framed:
 fun StopMapPicker(
     net: Net?,
     here: Pair<Double, Double>?,
-    onPick: (Moovit.Place) -> Unit,
+    onPick: (Transit.Place) -> Unit,
     onDismiss: () -> Unit,
     onLocate: (Pair<Double, Double>) -> Unit = {},
     allowPin: Boolean = false,
@@ -486,7 +484,7 @@ fun StopMapPicker(
 private fun MapPickerScreen(
     net: Net?,
     here: Pair<Double, Double>?,
-    onPick: (Moovit.Place) -> Unit,
+    onPick: (Transit.Place) -> Unit,
     onDismiss: () -> Unit,
     onLocate: (Pair<Double, Double>) -> Unit,
     allowPin: Boolean,
@@ -561,7 +559,7 @@ private fun nearestLabel(net: Net, lat: Double, lon: Double): String =
 private fun StopMapBody(
     net: Net,
     here: Pair<Double, Double>?,
-    onPick: (Moovit.Place) -> Unit,
+    onPick: (Transit.Place) -> Unit,
     onDismiss: () -> Unit,
     allowPin: Boolean,
     onStop: ((Int) -> Unit)?,
@@ -592,9 +590,9 @@ private fun StopMapBody(
                 ) + (
                 here?.let { (lat, lon) ->
                     listOf(
-                        MapDot(lat, lon, K.live.copy(alpha = .18f), 13f),
-                        MapDot(lat, lon, K.bg, 6f),
-                        MapDot(lat, lon, K.live, 4f),
+                        MapDot(lat, lon, K.live.copy(alpha = .18f), 13f, id = "here-halo"),
+                        MapDot(lat, lon, K.bg, 6f, id = "here-ring"),
+                        MapDot(lat, lon, K.live, 4f, id = "here-dot"),
                     )
                 } ?: emptyList()
                 ),
@@ -661,7 +659,7 @@ private fun StopMapBody(
                                 is MapPick.Stop ->
                                     if (onStop != null) onStop(pick.index) else onPick(placeOf(net, pick.index))
                                 is MapPick.Point ->
-                                    onPick(Moovit.Place(
+                                    onPick(Transit.Place(
                                         T("Pinned location", "מיקום מסומן"),
                                         nearestLabel(net, pick.lat, pick.lon), pick.lat, pick.lon,
                                     ))
@@ -679,8 +677,8 @@ private fun StopMapBody(
 private fun SectionTitle(text: String) = SectionHeader(text, Modifier.padding(horizontal = K.gap4))
 
 @Composable
-private fun PlaceRow(p: Moovit.Place, here: Pair<Double, Double>?, first: Boolean, last: Boolean, onClick: () -> Unit) {
-    // Measured on the phone: Moovit's own figure is from wherever it was told you are.
+private fun PlaceRow(p: Transit.Place, here: Pair<Double, Double>?, first: Boolean, last: Boolean, onClick: () -> Unit) {
+    // Measured on the phone, from where you are.
     val away = here?.let { metres(it.first, it.second, p.lat, p.lon) }?.takeIf { !it.isNaN() }
     ListRow(
         p.name,

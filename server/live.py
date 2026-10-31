@@ -7,14 +7,14 @@ the stops someone is looking at, it asks the ministry directly, which is fresher
 arrival times. Line numbers and names, and the road each route takes, come from the
 ministry's timetable (GTFS), read once a day. Requests are not logged.
 
-It also plans trips without Moovit: OpenTripPlanner, next to it on the server, routes on the
+It also plans trips: OpenTripPlanner, next to it on the server, routes on the
 same timetable and OpenStreetMap, and this picks the few routes worth showing.
 
 Only Kav is answered: it signs each request with the key it's built with (KAV_APP_KEY here).
 
 Settings come from the environment: MOT_KEY, MOT_URL, MOT_URL_BACKUP (the ministry's test
 server, used when the main one fails), MOT_CA (the intermediate certificate the ministry leaves
-out of its chain), KAV_APP_KEY, GTFS_URL, OTP_URL (the planner) and PORT.
+out of its chain), KAV_APP_KEY, GTFS_URL, OTP_URL (the planner), PLANNER (off for none) and PORT.
 """
 import array
 import bisect
@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 import zoneinfo
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KEY = os.environ.get("MOT_KEY", "")
@@ -56,7 +56,7 @@ KEEP_DAYS = 70
 SNAPSHOT_EVERY = 15  # the ministry's minimum between snapshot requests
 IDLE_EVERY = 30  # also how often the history below is timed while nobody looks
 IDLE_AFTER = 120
-STALE = 300  # past this the app is better off with Moovit's positions
+STALE = 300  # past this a snapshot is too old to use
 MAX_FOLLOW = 4
 FOLLOW_TTL = 15
 FOLLOW_PER_SECOND = 2
@@ -66,7 +66,9 @@ MAX_AREA = 0.4  # degrees a side, a city or so
 OLD_POSITION = 600  # a position older than this isn't where the bus is
 AHEAD = 120  # seconds a report may be stamped after now; some buses' clocks run hours fast
 MAX_WORKING = 128  # requests worked on at once; far more than Kav's users make, so only a flood meets it
-OTP_URL = os.environ.get("OTP_URL", "http://kav-otp:8080/otp/gtfs/v1")
+# PLANNER=off (server/selfhost): no planner here, so no routes from this server.
+NO_PLANNER = os.environ.get("PLANNER", "on").lower() in ("off", "0", "no", "false")
+OTP_URL = "" if NO_PLANNER else os.environ.get("OTP_URL", "http://kav-otp:8080/otp/gtfs/v1")
 MAX_PLANNING = 4  # trips planned at once; each takes OpenTripPlanner a second or two
 MORE_WAIT = 5  # seconds a trip's other sections may take after its routes list
 
@@ -107,8 +109,8 @@ def whole(text, top):
 def visits(doc):
     """The answer's time and its vehicles as (route, key, lat, lon, recorded, bearing, speed).
 
-    The key is the journey as the ministry names it: route, first departure, vehicle. Moovit
-    gives a tracked arrival the same string as its vehicle id, which is how the app matches them.
+    The key is the journey as the ministry names it: route, first departure, vehicle. A
+    tracked arrival carries the same string as its vehicle id, which is how the app matches them.
     """
     delivery = doc["Siri"]["ServiceDelivery"]
     at = epoch(delivery["ResponseTimestamp"])
@@ -481,7 +483,7 @@ state = {"snapshot": None, "next": 0.0, "asked": 0.0, "failing": None}
 wake = threading.Event()
 
 # The snapshot gives a train's place but never when it gets anywhere, so the railway stations' own lists give each
-# train's expected arrival at every station ahead, as Moovit's live times have them, all the stations in one request.
+# train's expected arrival at every station ahead, all the stations in one request.
 TRAINS_EVERY = 60
 TRAINS_KEEP = 300  # lists older than this are left out
 trains_held = {"asked": 0.0, "at": 0.0, "doc": None, "codes": None, "codes_at": 0.0, "failed": None, "listed": {}}
@@ -615,7 +617,14 @@ RAILWAY_PAIRS = ((3700, 4600), (4900, 4600), (2300, 2100), (2100, 2300), (8800, 
                  (1220, 1300), (2940, 3700), (5900, 7320), (5000, 5300))
 RAILWAY_EVERY = 900  # its platforms asked again after this
 RAILWAY_KEEP = 3600  # and what it said kept this long while it fails
-railway_held = {"asked": 0.0, "at": 0.0, "platforms": {}, "busy": False, "failed": None}
+# From this hour of the evening, tomorrow's timetable too, once per RAILWAY_TOMORROW_EVERY (120 requests an evening): an
+# evening's routes and boards come to trains of tomorrow's date: the day's answers leave out the next day's trains, and
+# their trains after midnight are the night before's runs, whose platforms can differ.
+RAILWAY_TOMORROW_FROM, RAILWAY_TOMORROW_EVERY = 18, 3600
+# A train's number is one run a day: the run of it nearest a time, within this, is the one then.
+RAILWAY_RUN_NEAR = 6 * 3600
+railway_held = {"asked": 0.0, "at": 0.0, "platforms": {}, "runs": {}, "busy": False, "failed": None,
+                "tomorrow_asked": 0.0, "tomorrow_runs": {}, "tomorrow_busy": False}
 
 
 def railway_platforms(answers):
@@ -636,6 +645,45 @@ def railway_platforms(answers):
     return out
 
 
+def railway_runs(answers):
+    """{(train number, station code): {when it's there: platform}} at every station of each train in the railway's
+    answers, its "HH:MM" on the day nearest when the train sets out on the journey answered (railway_when()). A day's
+    answers have its trains after the midnight before it, the next day's those after the coming one: the same number,
+    a day apart."""
+    codes = {}
+    for code, station in RAILWAY_IDS.items():
+        codes.setdefault(station, []).append(str(code))
+    out = {}
+    for answer in answers:
+        for travel in ((answer or {}).get("result") or {}).get("travels") or []:
+            for train in travel.get("trains") or []:
+                number = str(train.get("trainNumber") or "")
+                try:
+                    start = datetime.datetime.fromisoformat(train["departureTime"]).replace(tzinfo=ISRAEL).timestamp()
+                except (KeyError, TypeError, ValueError):
+                    continue
+                for stop in train.get("routeStations") or [] if number else ():
+                    platform, at = str(stop.get("platform") or "").strip(), railway_when(stop.get("arrivalTime"), start)
+                    if PLATFORM.match(platform) and platform != "0" and at is not None:
+                        for code in codes.get(stop.get("stationId"), ()):
+                            out.setdefault((number, code), {})[at] = platform
+    return out
+
+
+def railway_platform(number, code, at=None):
+    """The railway's platform for the train at the station: its run's nearest at (RAILWAY_RUN_NEAR), in today's answers
+    first, then tomorrow's; with no time or no run of it then, today's answers' (railway_held["platforms"]). None while
+    its timetable isn't at hand, or where it gives none."""
+    if time.time() - railway_held["at"] > RAILWAY_KEEP or not railway_held["platforms"]:
+        return None
+    if at is not None:
+        for runs in (railway_held["runs"], railway_held["tomorrow_runs"]):
+            near = [t for t in runs.get((number, code)) or () if abs(t - at) <= RAILWAY_RUN_NEAR]
+            if near:
+                return runs[(number, code)][min(near, key=lambda t: abs(t - at))]
+    return railway_held["platforms"].get((number, code))
+
+
 def railway_ask(pair, day, hour):
     body = json.dumps({"fromStation": str(pair[0]), "toStation": str(pair[1]), "date": day, "hour": hour,
                        "scheduleType": "ByDeparture", "systemType": "2", "languageId": "Hebrew"}).encode()
@@ -651,15 +699,33 @@ def railway_refresh(now, ask=None):
     ask = ask or railway_ask
     try:
         since = datetime.datetime.fromtimestamp(now - 3600, ISRAEL)
-        found = railway_platforms([ask(pair, since.strftime("%Y-%m-%d"), since.strftime("%H:%M")) for pair in RAILWAY_PAIRS])
+        answers = [ask(pair, since.strftime("%Y-%m-%d"), since.strftime("%H:%M")) for pair in RAILWAY_PAIRS]
+        found = railway_platforms(answers)
         if found:
-            railway_held.update(platforms=found, at=now, failed=None)
+            railway_held.update(platforms=found, runs=railway_runs(answers), at=now, failed=None)
     except Exception as e:
         if railway_held["failed"] != repr(e):
             log("railway platforms failing:", repr(e))
             railway_held["failed"] = repr(e)
     finally:
         railway_held["busy"] = False
+
+
+def railway_tomorrow(now, ask=None):
+    """Tomorrow's runs for every pair of RAILWAY_PAIRS (railway_held["tomorrow_runs"]); what it said before stays while
+    it fails."""
+    ask = ask or railway_ask
+    try:
+        day = (datetime.datetime.fromtimestamp(now, ISRAEL) + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        found = railway_runs([ask(pair, day, "00:00") for pair in RAILWAY_PAIRS])
+        if found:
+            railway_held["tomorrow_runs"] = found
+    except Exception as e:
+        if railway_held["failed"] != repr(e):
+            log("railway platforms failing:", repr(e))
+            railway_held["failed"] = repr(e)
+    finally:
+        railway_held["tomorrow_busy"] = False
 
 
 # The railway's own place for one train, its last station and the next ("nextStation" 0: standing there), asked for that
@@ -783,20 +849,27 @@ def railway_stopped(number, code, named, since, due, now, following=None, start=
 
 
 def railway_due(now, start=None):
-    """Asks the railway again in the background once per RAILWAY_EVERY (railway_refresh)."""
-    if railway_held["busy"] or now - railway_held["asked"] < RAILWAY_EVERY:
+    """Asks the railway again in the background once per RAILWAY_EVERY (railway_refresh), and from RAILWAY_TOMORROW_FROM
+    in the evening for tomorrow's too, once per RAILWAY_TOMORROW_EVERY (railway_tomorrow), never both at once."""
+    start = start or (lambda f, *a: threading.Thread(target=f, args=a, daemon=True).start())
+    if railway_held["busy"] or railway_held["tomorrow_busy"]:
         return
-    railway_held.update(asked=now, busy=True)
-    (start or (lambda f, *a: threading.Thread(target=f, args=a, daemon=True).start()))(railway_refresh, now)
+    if now - railway_held["asked"] >= RAILWAY_EVERY:
+        railway_held.update(asked=now, busy=True)
+        start(railway_refresh, now)
+    elif now - railway_held["tomorrow_asked"] >= RAILWAY_TOMORROW_EVERY and \
+            datetime.datetime.fromtimestamp(now, ISRAEL).hour >= RAILWAY_TOMORROW_FROM:
+        railway_held.update(tomorrow_asked=now, tomorrow_busy=True)
+        start(railway_tomorrow, now)
 
 
 def named_trains(rows):
     """The rows, a train's without a number or platform given what the stations' lists last had for it: the number its
     run has at any station, the platform this station's. Kav brings some trains in itself, at the station they start
     from (with_starting) and in their last minute before one, once its list has dropped them (with_coming, with_near),
-    and gave them neither, where Moovit shows both. A platform still missing is the railway's own (railway_held), and at
-    the station a train sets out from the railway's is taken over the ministry's, as Moovit has it. Further on, where the
-    two differ, Moovit has the ministry's, so it stays."""
+    and gave them neither, where both are known. A platform still missing is the railway's own (railway_held), its run
+    due there then's (railway_platform()), and at the station a train sets out from the railway's is taken over the
+    ministry's. Further on, where the two differ, the ministry's stays."""
     platforms, numbers = trains_held.get("platforms") or {}, trains_held.get("numbers") or {}
     railway = railway_held["platforms"] if time.time() - railway_held["at"] <= RAILWAY_KEEP else {}
     out = []
@@ -805,7 +878,7 @@ def named_trains(rows):
             r = list(r)
             r[3] = r[3] or (numbers.get((r[1], r[4])) or ("",))[0]
             r[13] = r[13] or platforms.get((str(r[0]), r[1], r[4]), "")
-            theirs = railway.get((r[3], str(r[0])), "") if r[3] else ""
+            theirs = (railway_platform(r[3], str(r[0]), r[5] or r[6] or None) or "") if r[3] else ""
             if theirs and (not r[13] or r[12] == 1):
                 r[13] = theirs
         out.append(r)
@@ -815,8 +888,8 @@ def named_trains(rows):
 def railway_specials(rows):
     """The rows, those at a railway station of a route that isn't the catalog's train as the railway's train their
     vehicle names. A train only Israel Railways' timetable runs comes in the stations' lists with its number for its
-    route, the id of whatever route the ministry's timetable has by that number (train 8646 came as route 8646, a bus
-    line from Modiin Illit to Bnei Brak, and showed as "220" on the boards). It comes as the catalog's railway-only line
+    route, the id of whatever route the ministry's timetable has by that number (train 8646 as route 8646, a bus
+    line from Modiin Illit to Bnei Brak). It comes as the catalog's railway-only line
     for it (RAIL_OFFSET + number, rail_only_lines) where there is one; else, of a route the catalog has as something
     else, as a train of that number where the railway's own timetable has it at that station (railway_held), and not at
     all where it doesn't. A route the catalog doesn't know, with no railway-only line for its vehicle, stays as it is."""
@@ -843,6 +916,135 @@ def left_station(code, route, first, now):
     it runs on."""
     at = trains_held.get("listed", {}).get((str(code), route, first))
     return at is not None and trains_held["at"] - at >= TRAIN_DROPPED and now - trains_held["at"] <= TRAINS_KEEP
+
+
+# The ministry's position for a train can stay where the train stood, freshly stamped, while it runs on: a third of the
+# trains on the Live map can be 3 km or more from where they are, and trains under way that report no position at all
+# aren't on it.
+# Such positions are left out. A train's times hold, so every answer puts a train where they put it, as the app does
+# on a line's page (KavLive.trainSpot): its time at the first station ahead (Kav's own where it has one, else the
+# stations' lists') moves the timetable's clocks, and the train is that far between the station it last left and the
+# next, in a straight line, the timetable having no track for trains. One that hasn't left its first station is there.
+failed_places = {"error": None}
+
+
+def train_places(now, doc=None, feed=None):
+    """Where each train in the stations' lists (train_lists()) is by its times at now, by route and first departure:
+    (its journey key, lat, lon, heading in degrees or None, whether it has left its first station, whether the lists have
+    it under way: some list gives it no timetabled time, as they give a train once it is logged in). A train whose run,
+    stations or times aren't known has none."""
+    feed = live_feed if feed is None else feed
+    if doc is None:
+        doc = trains_held["doc"] if now - trains_held["at"] <= TRAINS_KEEP else None
+    if not doc:
+        return {}
+    try:
+        starting_at([], now)  # the stations' places (planner_stops), asked of the planner again when old
+        monitored = doc["Siri"]["ServiceDelivery"].get("StopMonitoringDelivery") or []
+        if isinstance(monitored, dict):
+            monitored = [monitored]
+        runs = {}
+        for part in monitored:
+            for v in part.get("MonitoredStopVisit") or []:
+                try:
+                    j = v["MonitoredVehicleJourney"]
+                    call = j["MonitoredCall"]
+                    line, start, day = j["LineRef"], j["OriginAimedDepartureTime"], j["FramedVehicleJourneyRef"]["DataFrameRef"]
+                    route, first, order, due = int(line), epoch(start), int(call["Order"]), epoch(call["ExpectedArrivalTime"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                named = str(call.get("StopPointRef") or "")
+                if (catalog["lines"].get(route) or [None] * 7)[6] != 2 or not named.isdigit():
+                    continue
+                kav = predictions.at_stop(route, first, int(named), now)
+                run = runs.setdefault((route, first), [f"{line}_{start}_{j.get('VehicleRef', '')}", line, start, day, False, []])
+                run[4] = run[4] or not call.get("AimedArrivalTime")
+                run[5].append((order, named, due if kav is None else int(kav)))
+
+        def station(code):
+            found = planner_stops["where"].get(code) or ()
+            return (sum(p[0] for p in found) / len(found), sum(p[1] for p in found) / len(found)) if found else None
+        places = {}
+        for journey, (key, line, start, day, going, calls) in runs.items():
+            set_out = datetime.datetime.fromisoformat(start)
+            into = int((set_out - datetime.datetime.fromisoformat(day).replace(tzinfo=set_out.tzinfo)).total_seconds())
+            copy = rail_copies_held["copies"].get((line, day))
+            if copy is not None:
+                # The planner's copy of the trip that day is the train (train_updates()).
+                codes, clocks = copy[1], [t - copy[0] for t in copy[2]]
+            else:
+                codes, clocks = feed.stops_of(line, into, day), feed.clocks_of(line, into, day)
+            if not codes or not clocks or len(codes) != len(clocks):
+                continue
+            found = next(((k, due) for order, named, due in sorted(calls, key=lambda c: c[2])
+                          if (k := feed.placed(codes, order, named)) is not None), None)
+            if found is None:
+                continue
+            # There at that time, now at the latest: a station's list has a train until a minute before it comes.
+            k, due = found
+            when = [max(due, now) + c - clocks[k - 1] for c in clocks]
+            ahead = next(i for i, w in enumerate(when) if w >= now)
+            if ahead == 0:
+                at = station(codes[0])
+                if at is not None:
+                    places[journey] = (key, round(at[0], 6), round(at[1], 6), None, False, going)
+                continue
+            a, b = station(codes[ahead - 1]), station(codes[ahead])
+            if a is None or b is None:
+                continue
+            f = min(1.0, (now - when[ahead - 1]) / max(1, when[ahead] - when[ahead - 1]))
+            dx, dy = (b[1] - a[1]) * math.cos(math.radians(a[0])), b[0] - a[0]
+            heading = round(math.degrees(math.atan2(dx, dy))) % 360 if dx or dy else None
+            places[journey] = (key, round(a[0] + (b[0] - a[0]) * f, 6), round(a[1] + (b[1] - a[1]) * f, 6), heading, True, going)
+        failed_places["error"] = None
+        return places
+    except Exception as e:
+        if failed_places["error"] != repr(e):
+            log("train places failing:", repr(e))
+            failed_places["error"] = repr(e)
+        return {}
+
+
+def trains_placed(rows, now, places=None):
+    """Snapshot rows (route, key, lat, lon, recorded, bearing, speed) with each train where its times put it at now
+    (train_places()), heading that way, and the trains under way that report no position too."""
+    places = train_places(now) if places is None else places
+    if not places:
+        return rows
+    routes = {route for route, _ in places}
+    out, seen = [], set()
+    for r in rows:
+        journey = None
+        if r[0] in routes:
+            try:
+                journey = (r[0], epoch(r[1].split("_")[1]))
+            except (IndexError, ValueError):
+                pass
+        p = places.get(journey)
+        if p is None:
+            out.append(r)
+            continue
+        seen.add(journey)
+        out.append((r[0], r[1], p[1], p[2], int(now), p[3], None))
+    # Not one still at its first station that reports no position, as now: logged in, it may not be at the platform yet.
+    out += [(route, p[0], p[1], p[2], int(now), p[3], None) for (route, first), p in places.items()
+            if (route, first) not in seen and p[4] and p[5]]
+    return out
+
+
+def trains_on_board(rows, now, places=None):
+    """A board's rows (stops()) with each train where its times put it (train_places()), as on the map
+    (trains_placed()): one with a position, and one under way that reports none."""
+    if not any((catalog["lines"].get(r[1]) or [None] * 7)[6] == 2 for r in rows):
+        return rows
+    places = train_places(now) if places is None else places
+    out = []
+    for r in rows:
+        p = places.get((r[1], r[4]))
+        if p is not None and (r[7] is not None or p[4] and p[5]):
+            r = r[:7] + [p[1], p[2], int(now), p[3], None] + r[12:]
+        out.append(r)
+    return out
 
 
 def take_snapshot():
@@ -1218,7 +1420,7 @@ STARTING = 600  # how far ahead a bus not yet out comes from the timetable
 # And a train at the station it starts from, from up to half an hour before.
 STARTING_TRAIN = 1800
 # A light rail tram is on no list for a few minutes as it sets out: the stops' lists drop it about two minutes before its
-# time and Kav's own times have it once it is seen moving, three or four minutes after, where Moovit lists it all along.
+# time and Kav's own times have it once it is seen moving, three or four minutes after, though it is due all along.
 # One setting out, from TRAM_SETTING_OUT[0] before its time to [1] after, that a stop's list had within TRAM_LISTED and
 # no longer has, comes from the timetable at that stop, due there from now on. Jerusalem's light rail, which no list
 # has, never comes this way.
@@ -1231,7 +1433,7 @@ STARTING_TTL = 120  # a stop's timetable is asked again after this
 PLANNER_STOPS_TTL = 6 * 3600  # the planner's stops by code, asked again after this
 BUSES = (3, 711)  # route types: buses and shuttles
 # A bus waiting at its stop is there in the ministry's positions, though its list for the stop gives it no place, and
-# Moovit shows it live.
+# it is shown live.
 AT_STOP = 150  # metres from the stop that a bus is at it
 NEAR_STOP = 60  # metres from the stop within which a bus at it is there whatever it has done (gone_by())
 PAST_STOP = 50  # metres along its route since it named the stop that a bus further off than NEAR_STOP has left it
@@ -1246,9 +1448,9 @@ LATER = 3  # departures a route boarding at a stop comes with at least, the ones
 LATER_AHEAD = 86400  # how far past BOARD_AHEAD they're asked for
 LATER_TTL = 600  # a stop's are asked again after this
 # A trip a bus has been heard on that set out longer ago than this doesn't come from the timetable at a stop whose board
-# has nothing of its route (with_later): its time there has likely gone by, which Moovit's list goes by, where the
+# has nothing of its route (with_later): its time there by the timetable has likely gone by, where the
 # planner's is predicted, later. One no bus has been heard on, of a line the ministry has no live data of, comes until
-# its time there, as Moovit lists it.
+# its time there, by its timetable.
 SET_OUT_MOST = 1200
 # stop code -> (when asked, [(route, first departure, when there, place on the trip, trip's number, boarded there, when
 # there by the planner's live updates)])
@@ -1362,7 +1564,7 @@ def with_starting(rows, codes, now, ask=None, fresh=None, buses=None):
     time: the stations' lists have a train until it leaves, so one they leave out has gone, its place often stuck at the
     station. The city's weekend lines (NAIM_OFFSET up), and the trains only Israel Railways' timetable has (RAIL_OFFSET
     up), are in none of the ministry's lists, out or not: theirs come all along their way and as far ahead as those lists
-    go, as Moovit lists them, by their timetable. A light rail tram setting out that a stop's list had lately comes at
+    go, by their timetable. A light rail tram setting out that a stop's list had lately comes at
     that stop too, as far ahead as the lists go (TRAM_SETTING_OUT), with its place and no aimed time once it has set out
     and its vehicle reports, as the list's own rows of it come. A bus waiting at its first stop further off than AT_STOP
     gives its row there and at the stop after its place, due at its time at the earliest (waiting()), and keeps it after
@@ -1452,11 +1654,11 @@ def later_at(codes, now, ask=None):
 def with_later(rows, codes, now, ask=None, followed=None, buses=None):
     """rows, and at each stop every route boarding there with fewer than LATER rows, the next of its departures past
     BOARD_AHEAD to make LATER, from the planner's timetable, without a bus: the ministry's lists go no further, where
-    Moovit's app lists a line's next three however far off. Not a train: each of a line's runs is a route of its own. A
-    route the board has nothing of comes so from now on, as Moovit lists it by its timetable, but for trips a bus has
+    a board shows a line's next three however far off. Not a train: each of a line's runs is a route of its own. A
+    route the board has nothing of comes so from now on, by its timetable, but for trips a bus has
     been heard on that set out over SET_OUT_MOST ago, those a bus of it has passed the stop or is at (Recorder.trips), and
     those the live updates call off. A trip of a route the board does have rows of comes so too when a bus has been
-    heard on it and is silent now (not among buses, buses_of()'s) within those limits, as Moovit lists such buses. And a
+    heard on it and is silent now (not among buses, buses_of()'s) within those limits, by its timetable. And a
     route the board has fewer than LATER rows of gets its timetable's next trips after its last row within the window
     too, within those limits: the ministry's list can leave them out."""
     followed = recorder.trips if followed is None else followed
@@ -1620,8 +1822,8 @@ def with_near(rows, codes, now, ask=None, fresh=None, buses=None, trips=None, ah
 
 def placed(rows, now, fresh=None, buses=None):
     """The rows of a bus the ministry's list gives no place for that the snapshot has at the stop, with that place, due
-    now at the latest: Moovit shows such a bus live. A row whose place the snapshot has newer, for the same bus, gets
-    that place, or it would show older than Moovit's."""
+    now at the latest: such a bus shows live. A row whose place the snapshot has newer, for the same bus, gets
+    that place, or it would show older than the snapshot has it."""
     buses = buses_of(fresh, now) if buses is None else buses
     out = []
     for r in rows:
@@ -1634,7 +1836,7 @@ def placed(rows, now, fresh=None, buses=None):
             r = r[:7] + [lat, lon, seen, bearing, speed] + r[12:]
         elif r[7] is None and not r[5] and bus is not None and (catalog["lines"].get(r[1]) or [None] * 7)[6] in BUSES:
             # A bus under way the list gives no place for, reporting to the snapshot elsewhere: that place, its time as it
-            # was, as Moovit shows such buses live.
+            # was, so it shows live.
             vehicle, lat, lon, seen, bearing, speed = bus
             r = r[:7] + [lat, lon, seen, bearing, speed] + r[12:]
         out.append(r)
@@ -1649,15 +1851,15 @@ def running(rows, feed=None):
 
 
 # A bus stays at a stop past its first this long at most: one that named the stop longer ago has left, the next stop not
-# reached yet, whatever it reports from there since (a frozen GPS keeps reporting from the stop). Moovit's boards drop
-# it after a minute too.
+# reached yet, whatever it reports from there since (a frozen GPS keeps reporting from the stop). The board drops
+# it after that minute.
 DWELL_MOST = 60
 MOVED_LATELY = 900  # a bus not seen moving for this long is parked or not running its trip (with_near)
 
 
 # A bus standing still this long, on a trip that set out as long ago and that no other bus is on, isn't running it
-# (standing()): buses alone on their trip that stood 30 minutes short of its last stop didn't move on, and showing them
-# live at stops further on promised buses that never came. Another bus on the trip standing as long doesn't run it
+# (standing()): one alone on its trip that has stood this long short of its last stop doesn't move on, and showing it
+# live at stops further on promises a bus that never comes. Another bus on the trip standing as long doesn't run it
 # either; one standing as long beside one that is moving can still go on, so those stay.
 STANDING = 1800
 
@@ -1693,14 +1895,16 @@ def standing(rows, now, trips=None, moved=None, heard=None):
 
 
 # A bus gone quiet: its GPS frozen (the very same place with fresh times) for FROZEN past its trip's first stop, or still at
-# its trip's first stop NOT_SET_OUT after the trip's time, alone on its trip. Moovit then lists its trip by the timetable:
+# its trip's first stop NOT_SET_OUT after the trip's time, alone on its trip. Its trip then comes by the timetable:
 # timetabled while the timetable's time at the stop is ahead, not at all once it has gone by. quiet() does the same with
-# the ministry's own clock at each stop (otp/prepare.py's trip-patterns.json `timed`); without it, nothing.
+# the ministry's own clock at each stop (otp/prepare.py's trip-patterns.json `timed`); without it, nothing. One still at
+# its first stop last heard over LATELY_HEARD ago goes only once that time is STALE_GONE past.
 FROZEN = 600
 FROZEN_REPORTS = 3  # reports from that place at least: a bus silent and then heard again from where it stood isn't one
 NOT_SET_OUT = 600
 FIRST_ALONG = 250  # metres along its route within which a bus naming its trip's first stop hasn't set out
 LATELY_HEARD = 90
+STALE_GONE = 600
 
 
 def official_time(row, feed=None):
@@ -1741,10 +1945,9 @@ def quiet(rows, now, trips=None, same=None, along=None, feed=None):
             continue
         frozen = (state[0][0] > 1 and place is not None and place[2] - place[1] >= FROZEN and place[3] >= FROZEN_REPORTS
                   and now - place[2] <= LATELY_HEARD)
-        waiting = (state[0][0] == 1 and on is not None and on[1] <= FIRST_ALONG and now - state[0][1] <= LATELY_HEARD
-                   and now - r[4] >= NOT_SET_OUT)
+        waiting = state[0][0] == 1 and on is not None and on[1] <= FIRST_ALONG and now - r[4] >= NOT_SET_OUT
         due = official_time(r, feed) if frozen or waiting else None
-        if due is None:
+        if due is None or not frozen and now - state[0][1] > LATELY_HEARD and now - STALE_GONE < due <= now:
             out.append(r)
         elif due > now:
             out.append(r[:5] + [due, due, None, None, 0, None, None] + r[12:])
@@ -1810,7 +2013,7 @@ def gone_by(rows, now, trips=None, reached=None, buses=None, along=None, naming=
     """The rows but those of buses past the stop: the snapshot has them at a later stop of their trip, or (it names the
     stop a bus is at or has just passed) at this one but reporting away from it, or having reached it over DWELL_MOST
     ago; never at a bus's first stop, nor a train (it names the station it's heading for). The ministry's list keeps a
-    bus a while after it has passed, where Moovit's lists no longer have it."""
+    bus a while after it has passed, when it is no longer due there."""
     trips = recorder.trips if trips is None else trips
     reached = recorder.reached if reached is None else reached
     along = recorder.along if along is None else along
@@ -1854,11 +2057,14 @@ def gone_by(rows, now, trips=None, reached=None, buses=None, along=None, naming=
 
 UNTIMETABLED_STALE = 400  # seconds since a bus on a trip the timetable doesn't run there last reported (timetabled())
 UNTIMETABLED_ONCE = 120  # the same for a bus heard once, or still at its first stop, after its trip set out
+# A bus this far off at the planner's time, not yet on its way, comes no later than FAR_AFTER after the ministry's own
+# time for it, unless the ministry has it more than FAR_BEFORE before its timetable (far_ahead()).
+FAR, FAR_AFTER, FAR_BEFORE = 3000, 240, 300
 
 
 def at_its_end(row, feed=None):
     """Whether a row's stop is its trip's last, by the trip's own stops in the planner's timetable (trip-patterns.json):
-    a stop a bus only lets riders off at on its way isn't, and Moovit lists those."""
+    a stop a bus only lets riders off at on its way isn't, and those are listed."""
     feed = live_feed if feed is None else feed
     try:
         first = datetime.datetime.fromisoformat(str(row[2]).split("_")[1])
@@ -1880,7 +2086,7 @@ def timetabled(rows, codes, now, ask=None, trips=None, heard=None, moved=None, f
     timetable moved to how long the line has taken, otp/predict.py, and by the live updates), unless that has gone by:
     nearer what the bus did than the ministry's, and the same as the route's own. A train's timetable isn't moved, so
     its delay is only in the live time. A train or a light rail tram no one boards there, one ending there, goes:
-    Moovit's lists leave it out. So does a bus at its trip's last stop (at_its_end()), the next trip's own row there
+    no one can take it from there. So does a bus at its trip's last stop (at_its_end()), the next trip's own row there
     staying."""
     known = {code: trips for code, trips in starting_at([str(int(c)) for c in codes], now, ask).items()
              if code in planner_stops["ids"] and len(trips) < TIMETABLE_MOST}
@@ -1902,7 +2108,7 @@ def timetabled(rows, codes, now, ask=None, trips=None, heard=None, moved=None, f
         # vehicle logged into a trip that isn't running.
         if r[7] is not None and trips is not None and not same and (catalog["lines"].get(r[1]) or [None] * 7)[6] in BUSES:
             # Sooner for a bus heard just once, after its trip set out, and not since, or heard again but still at its
-            # first stop, not MOVED_FAR from where it was first heard: such buses rarely came.
+            # first stop, not MOVED_FAR from where it was first heard: such buses rarely come.
             line, _, rest = str(r[2]).partition("_")
             start, _, vehicle = rest.partition("_")
             key = (line, start, vehicle)
@@ -1918,11 +2124,22 @@ def timetabled(rows, codes, now, ask=None, trips=None, heard=None, moved=None, f
             continue
         trip = min(same, key=lambda t: (t[3] != r[12], abs(t[2] - r[6])))
         # A bus under way with no place, from the list or the snapshot (placed() has run), is the timetable's: its time
-        # there comes as the aimed one, so the app shows it white, as Moovit does, rather than as a live bus.
+        # there comes as the aimed one, so the app shows it white, as timetabled, rather than as a live bus.
         if not r[5] and (catalog["lines"].get(r[1]) or [None] * 7)[6] in BUSES:
             r = r[:5] + [trip[2]] + r[6:]
-        out.append(r[:6] + [trip[6]] + r[7:] if trip[6] >= now - 60 else r)
+        out.append(r[:6] + [far_ahead(trip[6], r, now)] + r[7:] if trip[6] >= now - 60 else r)
     return out
+
+
+def far_ahead(planned, row, now):
+    """The planner's time for a bus FAR or more off and not on its way yet, but no later than FAR_AFTER after the
+    ministry's own time for it (the row's last): that far ahead the planner's moved timetable (otp/predict.py) runs
+    late and the ministry's doesn't. Not when the ministry has the bus more than FAR_BEFORE before its timetable there
+    (the row's aimed): a bus that hasn't set out doesn't come that early."""
+    ministry = row[14] if len(row) > 14 else None
+    if planned - now < FAR or not ministry or not row[5] or ministry < row[5] - FAR_BEFORE:
+        return planned
+    return min(planned, ministry + FAR_AFTER)
 
 
 def kav_times(row, now, ministry=True, trips=None, reached=None):
@@ -1977,6 +2194,9 @@ class LiveFeed:
     # live.
     KEEP = OLD_POSITION
     BEHIND = 60  # Kav's time for the next stop this much before the bus left its own isn't the bus's (encode())
+    # A bus this far behind its trip's timetable at the stop it names isn't running that trip: it is waiting under an old
+    # journey the ministry still lists, and the planner would take the trip as running that late.
+    TOO_LATE = 2 * 3600
     SAME = {"17008": "17123", "17123": "17008"}  # one railway station, two stop codes
     # A trip no bus runs, though it should be on the road, most likely never runs. The planner would take it as running on
     # time and send riders to wait for a bus that never comes, so the updates call such trips off until a bus runs one,
@@ -2171,6 +2391,17 @@ class LiveFeed:
         clocks = patterns["offsets"][m].split(",")
         return int(clocks[place - 1]) if len(clocks) == len(stops) else None
 
+    def clocks_of(self, line, into, day):
+        """Seconds from the trip's first departure to each of its stops in the ministry's timetable, in order (as
+        clock_at() gives one); None when it has none."""
+        patterns = self.patterns_now()
+        if not patterns or "timed" not in patterns:
+            return None
+        m = patterns["timed"].get(line, {}).get(str(into))
+        if isinstance(m, dict):
+            m = m.get(day)
+        return None if m is None else [int(c) for c in patterns["offsets"][m].split(",")]
+
     def placed(self, codes, order, named):
         """The number of the stop a report names: its own where the trip has that stop there, else the nearest place on
         the trip that has it; None when the trip doesn't stop there at all."""
@@ -2216,6 +2447,9 @@ class LiveFeed:
                 # A bus waiting at its first stop leaves on time at the earliest.
                 if order == 1:
                     due = max(due, int(first.timestamp()))
+                clock = self.clock_at(line, into, day, order, codes[order - 1]) if codes and 0 < order <= len(codes) else None
+                if clock is not None and due - int(first.timestamp()) - clock > self.TOO_LATE:
+                    continue
                 trip = (pb_field(5, line) + pb_field(6, int(directions[line]))
                         + pb_field(2, "%02d:%02d:%02d" % (into // 3600, into // 60 % 60, into % 60))
                         + pb_field(3, day.replace("-", "")))
@@ -2584,39 +2818,39 @@ FOLLOW = re.compile(r"^/live/v1/follow/([0-9]{1,9}(?:,[0-9]{1,9}){0,%d})$" % (MA
 PLAN = re.compile(r"^/live/v1/plan/(\d\d\.\d{1,6}),(\d\d\.\d{1,6}),(\d\d\.\d{1,6}),(\d\d\.\d{1,6})/(\d{10})([adnl])"
                   r"(?:/([0-7](?:,[0-7]){0,7}))?(?:/via/(\d\d\.\d{1,6},\d\d\.\d{1,6}(?:;\d\d\.\d{1,6},\d\d\.\d{1,6}){0,2}))?$")
 MODES = {0: "TRAM", 1: "SUBWAY", 2: "RAIL", 3: "BUS", 4: "FERRY", 5: "CABLE_CAR", 6: "GONDOLA", 7: "FUNICULAR"}
-BIKES_ON = (0, 2)  # light rail and trains, which Moovit takes a bike along on
-# Moovit's sections, by its own ids: the routes list, the timetable card, walking or cycling all the way, transit with a
-# bike, routes on East Jerusalem's operators, its taxi card, and a taxi to transit.
+BIKES_ON = (0, 2)  # light rail and trains, which take a bike along
+# The answer's sections by the app's ids: the routes list, the timetable card, walking or cycling all the way, transit
+# with a bike, routes on East Jerusalem's operators, the taxi card, and a taxi to transit.
 MAIN, SCHEDULE, WALK_BIKE, BIKE_TRANSIT, EAST_JERUSALEM_ROUTES, TAXI, TAXI_TRANSIT = 1, 3, 521, 522, 1461, 1561, 1581
-EAST_JERUSALEM = ("42", "44", "45", "49", "50", "51")  # the ministry's operators Moovit keeps out of its routes list
+EAST_JERUSALEM = ("42", "44", "45", "49", "50", "51")  # the ministry's operators kept out of the routes list
 JERUSALEM = (31.68, 31.95, 35.08, 35.35)  # where a trip may use them: south, north, west, east
-WALK_SPEED, PLANNER_WALK_SPEED = 1.33, 1.35  # Moovit's walking pace, and the nearest OpenTripPlanner takes
+WALK_SPEED, PLANNER_WALK_SPEED = 1.33, 1.35  # the walking pace shown, and the nearest OpenTripPlanner takes
 # What the planner calls the walk inside a station: otp/prepare.py's pathways from stations.tsv have no name, and their
-# time is Moovit's own there, not a pace.
+# time is the station's own (stations.tsv), not a pace.
 STATION_PATHWAY = "pathway"
-LEAST_CHANGE = 60  # seconds to spare at a change, at least, as Moovit plans them
+LEAST_CHANGE = 60  # seconds to spare at a change, at least
 # The walk to the first ride sets out this much earlier, so the rider is at the stop a minute before Kav's time: a
 # bus comes early more often than the times say, and arriving earlier never misses one.
 FIRST_LEAN = 60
 # At night buses come early more often still: a route whose first ride sets out from NIGHT_LEAN_FROM o'clock to MORNING
 # sets out up to NIGHT_LEAN earlier in all, never before the time asked.
 NIGHT_LEAN, NIGHT_LEAN_FROM = 150, 21
-# From one train to another, at least this long: none of Moovit's plans has less, as it walks those three minutes to
-# the other platform.
+# From one train to another, at least this long, the walk to the other platform included: three minutes to change
+# platforms at any station.
 TRAIN_CHANGE = 180
-DIRECT_MOST = 3600  # Moovit walks or cycles all the way for an hour at most
-# Moovit's routes list, as searches across the country found it: no walk longer than 1.5 km in one go, three routes at
-# least, the later ones arriving at most 1.7 times the quickest route's time after it. The third route comes closest to
-# Moovit's taken from those costing no more than half as much again as the quickest, with no more changes, arriving
+DIRECT_MOST = 3600  # walking or cycling all the way is offered for an hour at most
+# The routes list: no walk longer than 1.5 km in one go, three routes at
+# least, the later ones arriving at most 1.7 times the quickest route's time after it. The third route is taken
+# from those costing no more than half as much again as the quickest, with no more changes, arriving
 # within one and a half times its time after it, and four routes at most.
 WALK_MOST, LEAST_SHOWN, MOST_SHOWN, LATEST_SHOWN, DEAREST_SHOWN = 1600, 3, 4, 1.5, 1.5
 # Its last ways there walk further: up to 1.95 km.
 WALK_LAST = 2000
-SCHEDULE_NEAR = 200  # metres from a train or Jerusalem light rail station that bring Moovit's timetable card
-# Moovit's Gett card has the taxi there in four minutes, always, and times the drive a little slower than the
-# planner's free-flowing roads: fitted on 39 of its cards, a median 6% off.
+SCHEDULE_NEAR = 200  # metres from a train or Jerusalem light rail station that bring the timetable card
+# The taxi card has the taxi there in four minutes, always, and times the drive a little slower than the
+# planner's free-flowing roads: 7.6% slower, plus 163 seconds.
 TAXI_PICKUP, TAXI_SLOWER, TAXI_EXTRA = 240, 1.076, 163
-# Moovit's taxi to a station: its drives there take ten minutes at most, get there two minutes before the train, and
+# A taxi to a station: its drives there take ten minutes at most, get there two minutes before the train, and
 # are shown when they arrive no more than two minutes after the quickest route in the list.
 TAXI_DRIVE_MOST, TAXI_AT_STATION, TAXI_LATER = 600, 120, 120
 PLAN_QUERY = """
@@ -2654,7 +2888,7 @@ def local_id(gtfs_id):
 def plan_kinds(frm, to, modes, via=()):
     """The questions a trip needs: the routes list, walking and cycling all the way, transit with a bike when trains or
     light rail may be taken, and every operator's routes ("all") where East Jerusalem's run. Going by other places on
-    the way, only the routes list, as Moovit plans it."""
+    the way, only the routes list."""
     if via:
         return ["main"]
     kinds = ["main", "walk", "cycle"]
@@ -2671,17 +2905,17 @@ LAST_WINDOW = "PT5H"  # how far back from three in the morning the last ways the
 # take several seconds, up to 18 s on a Friday afternoon in Gush Dan, so that question has until LAST_DAY_BY seconds
 # after the trip was asked for, or the five hours' routes stand: the app gives up on a plan after 15 s.
 LAST_DAY_WINDOW, LAST_DAY_BY = "PT14H", 9
-# How far back from the time arriving by a time looks: the planner's own window can find no way at all where Moovit has
+# How far back from the time arriving by a time looks: the planner's own window can find no way at all where there are
 # three (Haifa to Nazareth by 18:30).
 ARRIVE_WINDOW = "PT2H"
 # Leaving at a time with nothing to ride in the planner's own window (it took 50 minutes there), the same question over
-# three hours, in what is left of LAST_DAY_BY, as Moovit finds a later bus. At night only up to the morning
+# three hours, in what is left of LAST_DAY_BY, to find a later bus. At night only up to the morning
 # (morning_after()), whose own question finds its routes.
 WIDER_WINDOW = 3 * 3600
 
 
 def last_way(when):
-    """Moovit's latest departure: the routes there by three in the morning, when the service day ends."""
+    """The latest departure: the routes there by three in the morning, when the service day ends."""
     at = datetime.datetime.fromtimestamp(when, ISRAEL)
     end = at.replace(hour=3, minute=0, second=0, microsecond=0)
     if end <= at:
@@ -2689,15 +2923,19 @@ def last_way(when):
     return int(end.timestamp())
 
 
-# Moovit at night: once no route still running walks no more than WALK_MOST in one go, its list is the next morning's
+# At night: once no route still running walks no more than WALK_MOST in one go, the list is the next morning's
 # first routes; while one does, it keeps tonight's. The morning is searched over three hours: over the planner's own
-# window from four only the first buses come, most of them a 2-3 km walk away, where Moovit's set out at five or so, a
+# window from four only the first buses come, most a 2-3 km walk away, where those setting out at five or so are a
 # short walk away.
 NIGHT, MORNING, MORNING_WINDOW = 20, 4, "PT3H"
 # Before that, the same question with a second on foot costing twice what the planner's own weighting has it (2): at
 # night every route it returns can end in a long walk, each named by its similar-legs filter, and at 4 it returns
-# Moovit's own.
+# the ones with a short walk.
 WALK_RELUCTANCE_AGAIN = 4
+# And at every night search the next morning's question goes out too (over MORNING_TOO_WINDOW), beside the routes list's
+# own: its routes join the others found, the next morning's first routes beside tonight's thin ones, if
+# they come within WEIGHED_BY seconds of the trip being asked for.
+MORNING_TOO, MORNING_TOO_WINDOW = True, "PT2H"
 
 
 def morning_after(when):
@@ -2712,15 +2950,77 @@ def morning_after(when):
     return int(start.timestamp())
 
 
-# Moovit starts a trip at a train station's platform, with no walk, from up to about this far from it, where the
+# Shabbat and the holidays, when the timetable has hardly a bus: a trip asked for from noon the day before (a Friday, a
+# holiday's eve) to when the days off end, with nothing to ride, gets the first routes after them: the routes list's
+# question from REST_BEFORE seconds before nightfall over REST_WINDOW, or else the next morning's (morning_after()).
+# Those setting out after nightfall (the sun REST_SUN degrees below the horizon where the trip starts) are tagged
+# after_shabbat, or after_holiday when the last day off is a holiday on a weekday.
+REST_BEFORE, REST_WINDOW, REST_SUN = 3 * 3600, "PT8H", 8.5
+HEBREW_EPOCH = -1373427  # the Hebrew calendar's first day as a proleptic Gregorian ordinal
+
+
+def hebrew_new_year(year):
+    """The date of 1 Tishrei of a Hebrew year, by the calendar's own arithmetic (Reingold and Dershowitz)."""
+    def elapsed(y):
+        months = (235 * y - 234) // 19
+        days = 29 * months + (12084 + 13753 * months) // 25920
+        return days + 1 if (3 * (days + 1)) % 7 < 3 else days
+    a, b, c = elapsed(year - 1), elapsed(year), elapsed(year + 1)
+    return datetime.date.fromordinal(HEBREW_EPOCH + b + (2 if c - b == 356 else 1 if b - a == 382 else 0))
+
+
+@functools.lru_cache(maxsize=8)
+def holidays(year):
+    """Israel's holidays with no work in a year: Pesach's first and seventh days and Shavuot (from 15 Nisan, 163 days
+    before Rosh Hashana), both days of Rosh Hashana, Yom Kippur, Sukkot's first day and Shmini Atzeret."""
+    autumn = hebrew_new_year(year + 3761)
+    return frozenset(autumn + datetime.timedelta(days=d) for d in (-163, -157, -113, 0, 1, 9, 14, 21))
+
+
+def day_off(day):
+    return day.weekday() == 5 or day in holidays(day.year)
+
+
+def nightfall(day, p):
+    """When the sun is REST_SUN degrees below the horizon on a day at point p (NOAA's approximation, a minute or so)."""
+    g = 2 * math.pi / 365 * (day.timetuple().tm_yday - 1)
+    eq = 229.18 * (0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g) - 0.014615 * math.cos(2 * g) -
+                   0.040849 * math.sin(2 * g))
+    dec = (0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g) - 0.006758 * math.cos(2 * g) +
+           0.000907 * math.sin(2 * g) - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g))
+    lat = math.radians(p[0])
+    hour = math.degrees(math.acos(math.cos(math.radians(90 + REST_SUN)) / (math.cos(lat) * math.cos(dec)) -
+                                  math.tan(lat) * math.tan(dec)))
+    midnight = datetime.datetime.combine(day, datetime.time(), datetime.timezone.utc).timestamp()
+    return int(midnight + 60 * (720 - 4 * (p[1] - hour) - eq))
+
+
+def rest_end(when, p):
+    """For a trip asked for from noon the day before a day off to that day's nightfall at p: when the last day off in a
+    row ends, and whether that day is a Saturday; else None."""
+    at = datetime.datetime.fromtimestamp(when, ISRAEL)
+    day = at.date()
+    if not day_off(day):
+        if at.hour < 12 or not day_off(day + datetime.timedelta(days=1)):
+            return None
+        day += datetime.timedelta(days=1)
+    while day_off(day + datetime.timedelta(days=1)):
+        day += datetime.timedelta(days=1)
+    end = nightfall(day, p)
+    return (end, day.weekday() == 5) if end > when else None
+
+
+# A trip starts at a train station's platform, with no walk, from up to about this far from it, where the
 # planner would walk round to the station's entrance.
 STATION_NEAR = 50
 OFF_RAIL = ("TRAM", "SUBWAY", "CABLE_CAR", "GONDOLA", "FUNICULAR")  # stops a trip starting by a station may start at instead
 
 
 def station_at(p, ask=None):
-    """The train station a point is at, which the routes list starts or ends on the platforms of, as Moovit's does: its
-    planner id, or None. The stops are looked for in a box: OpenTripPlanner's radius is a walk, round that entrance."""
+    """The train station a point is at, whose trains the routes list starts or ends on the platforms of: (its planner
+    id, whether the trip's other rides start at the point), or None. They do at a light rail or cable car stop nearer
+    than the station's, boarded there at once (asked_both()). The stops are looked for in a box: OpenTripPlanner's
+    radius is a walk, round that entrance."""
     d = 0.0008
     try:
         found = (ask or ask_graphql)("{ stopsByBbox(minLat: %f, minLon: %f, maxLat: %f, maxLon: %f) { gtfsId lat lon vehicleMode "
@@ -2732,24 +3032,26 @@ def station_at(p, ask=None):
     if not rail:
         return None
     s = min(rail, key=near)
-    # At a light rail or cable car stop nearer than the station's, the trip starts there, not down on the train
-    # platforms, as Moovit's does.
-    if any(o.get("vehicleMode") in OFF_RAIL and near(o) < near(s) for o in found.get("stopsByBbox") or []):
-        return None
-    return (s.get("parentStation") or {}).get("gtfsId") or s["gtfsId"]
+    street = any(o.get("vehicleMode") in OFF_RAIL and near(o) < near(s) for o in found.get("stopsByBbox") or [])
+    return (s.get("parentStation") or {}).get("gtfsId") or s["gtfsId"], street
 
 
 def plan_variables(frm, to, when, arrive, modes, kind="main", via=(), window=None, exclude=(), at=(None, None),
-                   walk_reluctance=None):
+                   walk_reluctance=None, transfers=None, rail=None):
     """at: the train stations (station_at) the trip starts and ends at, if any, which the routes list goes from and to.
-    walk_reluctance: how much a second on foot costs the planner against one riding, where not its own (2)."""
+    walk_reluctance: how much a second on foot costs the planner against one riding, where not its own (2). rail: how
+    much a second on a train, the light rail or the cable car costs against one on a bus, where not the same (1)."""
     stamp = datetime.datetime.fromtimestamp(when, datetime.timezone.utc).isoformat()
 
     def point(p, station):
         if station and kind in ("main", "all"):
-            return {"location": {"stopLocation": {"stopLocationId": station}}}
+            return {"location": {"stopLocation": {"stopLocationId": station[0]}}}
         return {"location": {"coordinate": {"latitude": p[0], "longitude": p[1]}}}
     out = {"o": point(frm, at[0]), "d": point(to, at[1]), "t": {"latestArrival" if arrive else "earliestDeparture": stamp}}
+    street = [s if not (s and s[1]) else None for s in at]
+    if kind in ("main", "all") and street != list(at):
+        # The same question from the points themselves where the other rides start or end there (asked_both()).
+        out["points"] = {"o": point(frm, street[0]), "d": point(to, street[1])}
     if window:
         out["window"] = window
     if via:
@@ -2775,7 +3077,26 @@ def plan_variables(frm, to, when, arrive, modes, kind="main", via=(), window=Non
             out["prefs"]["transit"]["filters"][0]["exclude"].append({"routes": ["1:" + r for r in exclude]})
     if walk_reluctance is not None:
         out.setdefault("prefs", {})["street"] = {"walk": {"reluctance": walk_reluctance}}
+    if transfers is not None:
+        out.setdefault("prefs", {}).setdefault("transit", {})["transfer"] = {"maximumTransfers": transfers}
+    if kind in ("main", "by_taxi"):
+        # Half a minute at the stop before the first bus and a minute at a change, half from boarding and half from the
+        # change, where router-config.json's minute before every bus planned each route a minute later than it runs.
+        rules = out.setdefault("prefs", {}).setdefault("transit", {})
+        rules.setdefault("board", {})["slack"] = "PT30S"
+        rules.setdefault("transfer", {})["slack"] = "PT30S"
+    if rail is not None and kind == "main":
+        # Every mode the planner may take must be named once any is given a cost of its own.
+        named = out["modes"].setdefault("transit", {}).get("transit") or [{"mode": m} for m in ALL_MODES]
+        out["modes"]["transit"]["transit"] = [dict(m, cost={"reluctance": rail}) if m["mode"] in RAIL_MODES else m for m in named]
     return out
+
+
+# OpenTripPlanner's transit modes (its TransitMode), and those the ranking favours: a train or the light rail in a
+# route is worth about twenty minutes to it (ROUTE_COST).
+ALL_MODES = ("AIRPLANE", "BUS", "CABLE_CAR", "CARPOOL", "COACH", "FERRY", "FUNICULAR", "GONDOLA", "MONORAIL", "RAIL",
+             "SNOW_AND_ICE", "SUBWAY", "TAXI", "TRAM", "TROLLEYBUS")
+RAIL_MODES = ("RAIL", "TRAM", "SUBWAY", "CABLE_CAR", "GONDOLA", "FUNICULAR", "MONORAIL")
 
 
 # A second planner on the ministry's own times (the same night's timetable before predict.py): the routes the predicted
@@ -2783,19 +3104,84 @@ def plan_variables(frm, to, when, arrive, modes, kind="main", via=(), window=Non
 OFFICIAL_URL, OFFICIAL_WAIT = os.environ.get("OFFICIAL_URL", ""), 4
 
 
-def ask_official(variables, wait=OFFICIAL_WAIT):
-    """The planner on the ministry's own times."""
+def post_plan(url, variables, wait):
     body = json.dumps({"query": PLAN_QUERY, "variables": variables}).encode()
-    req = urllib.request.Request(OFFICIAL_URL, data=body, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=wait) as r:
         return json.load(r)
+
+
+def on_platforms(node, start, end):
+    """Whether a route rides a train from (start) and to (end) the station it was asked from and to, with no walk
+    before (after) that train."""
+    legs = node["legs"]
+    rides = [i for i, l in enumerate(legs) if l["mode"] not in ("WALK", "BICYCLE", "CAR")]
+    still = lambda part: all(l["start"]["scheduledTime"] == l["end"]["scheduledTime"] for l in part)
+    return bool(rides) and (not start or legs[rides[0]]["mode"] == "RAIL" and still(legs[:rides[0]])) \
+        and (not end or legs[rides[-1]]["mode"] == "RAIL" and still(legs[rides[-1] + 1:]))
+
+
+def into_station(node, frm, to):
+    """A route from the point frm (to the point to) whose first (last) ride is a train from (to) a stop within
+    STATION_NEAR of it, from (to) that train's platform: the walk there and through the station left out, the
+    platform start that a point so near the station has."""
+    legs = node["legs"]
+    rides = [i for i, l in enumerate(legs) if l["mode"] not in ("WALK", "BICYCLE", "CAR")]
+    near = lambda s, p: math.hypot((s["lat"] - p[0]) * 111_320, (s["lon"] - p[1]) * 111_320 * math.cos(math.radians(p[0])))
+    a, b = 0, len(legs)
+    if rides and frm and legs[rides[0]]["mode"] == "RAIL" and near(legs[rides[0]]["from"], frm) <= STATION_NEAR:
+        a = rides[0]
+    if rides and to and legs[rides[-1]]["mode"] == "RAIL" and near(legs[rides[-1]]["to"], to) <= STATION_NEAR:
+        b = rides[-1] + 1
+    return node if (a, b) == (0, len(legs)) else dict(node, legs=legs[a:b])
+
+
+def asked_both(variables, post):
+    """A question from or to a train station by a light rail or cable car stop (plan_variables' points), asked both
+    ways: the routes riding a train from (to) its platforms from the station, every other way from (to) the point
+    itself, which boards the light rail at once and doesn't walk up and out of the station to it; the point's own ways
+    into that station's trains from the platforms too (into_station()). Either answer alone if the other fails."""
+    points = variables.get("points")
+    if not points:
+        return post(variables)
+    asked = {k: v for k, v in variables.items() if k != "points"}
+    with ThreadPoolExecutor(1) as pool:
+        street = pool.submit(post, dict(asked, **points))
+        try:
+            platforms = post(asked)
+        except Exception:
+            return street.result()
+        try:
+            doc = street.result()
+        except Exception:
+            return platforms
+    plan = (doc.get("data") or {}).get("planConnection")
+    if plan is None:
+        return platforms
+    start, end = (asked[k] != points[k] for k in ("o", "d"))
+    at = [(points[k]["location"]["coordinate"]["latitude"], points[k]["location"]["coordinate"]["longitude"]) if s else None
+          for k, s in (("o", start), ("d", end))]
+    other = ((platforms.get("data") or {}).get("planConnection") or {})
+    kept = [e for e in other.get("edges") or [] if on_platforms(e["node"], start, end)]
+    ridden = lambda e: tuple(((l.get("route") or {}).get("gtfsId"), (l.get("trip") or {}).get("gtfsId"))
+                             for l in e["node"]["legs"] if l["mode"] not in ("WALK", "BICYCLE", "CAR"))
+    have = {ridden(e) for e in kept}
+    walked = [dict(e, node=into_station(e["node"], *at)) for e in plan.get("edges") or []]
+    if kept and not walked:
+        plan["routingErrors"] = other.get("routingErrors") or []
+    plan["edges"] = [e for e in walked if ridden(e) not in have] + kept
+    return doc
+
+
+def ask_official(variables, wait=OFFICIAL_WAIT):
+    """The planner on the ministry's own times."""
+    url = OFFICIAL_URL
+    return asked_both(variables, lambda v: post_plan(url, v, wait))
 
 
 def ask_planner(variables, wait=25):
-    body = json.dumps({"query": PLAN_QUERY, "variables": variables}).encode()
-    req = urllib.request.Request(OTP_URL, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=wait) as r:
-        return json.load(r)
+    url = OTP_URL
+    return asked_both(variables, lambda v: post_plan(url, v, wait))
 
 
 # OpenTripPlanner's filter that drops a route costing more than walking all the way, which it works out even for a
@@ -2834,7 +3220,7 @@ def itineraries(doc, stops, lines, agencies):
         node = edge["node"]
         if {n.get("tag") for n in node.get("systemNotices") or []} - {WALK_FILTER}:
             continue
-        legs, rides, inside = [], 0, {}
+        legs, rides, inside, ends = [], 0, {}, {}
         for leg in node["legs"]:
             # The planner's time, which its live updates have moved where a bus is on the road, and the timetable's.
             dep, arr = (epoch((leg[k].get("estimated") or {}).get("time") or leg[k]["scheduledTime"]) for k in ("start", "end"))
@@ -2845,6 +3231,9 @@ def itineraries(doc, stops, lines, agencies):
                              "m": round(leg["distance"] or 0), "shape": shape})
                 inside[len(legs) - 1] = round(sum(s.get("distance") or 0 for s in leg.get("steps") or []
                                                   if s.get("bogusName") and s.get("streetName") == STATION_PATHWAY))
+                ends[len(legs) - 1] = [round(sum(s.get("distance") or 0 for s in itertools.takewhile(
+                    lambda s: s.get("bogusName") and s.get("streetName") == STATION_PATHWAY, steps)))
+                    for steps in (leg.get("steps") or [], (leg.get("steps") or [])[::-1])]
                 if leg["mode"] == "CAR":
                     legs[-1].update({"from": [leg["from"]["lat"], leg["from"]["lon"]], "to": [leg["to"]["lat"], leg["to"]["lon"]]})
                 continue
@@ -2874,7 +3263,8 @@ def itineraries(doc, stops, lines, agencies):
             legs.append({"k": "r", "line": line, "trip": local_id(leg["trip"]["gtfsId"]).split("~")[0], "dep": dep, "arr": arr,
                          "sdep": sdep, "sarr": sarr, "live": live, "first": first,
                          "stops": stops_once(calls), "shape": shape, "next": nxt, "head": leg.get("headsign") or ""})
-        moovit_walks(legs, inside)
+        from_the_door(legs, ends)
+        walk_at_pace(legs, inside)
         lean_first(legs)
         if not legs or not changes_kept(legs, lines):
             continue
@@ -2903,11 +3293,31 @@ def lean_at_night(it, when):
     it["dep"] = it["legs"][0]["dep"]
 
 
-def moovit_walks(legs, inside=None):
-    """Makes each walk as long as Moovit's, a little longer than OpenTripPlanner's: the way to the first ride sets out
+def from_the_door(legs, ends):
+    """A trip asked from (to) a station itself whose first (last) ride isn't on its platforms: the walk sets out from
+    (ends at) the station's door, its time on the station's paths there not walked, as a point within STATION_NEAR of
+    a station is beside it. ends: each walk's metres on a station's paths at its start and at its end, by its place in
+    legs."""
+    rides = [i for i, l in enumerate(legs) if l["k"] == "r"]
+    if not rides:
+        return
+    for i, side in ((0, 0), (len(legs) - 1, 1)):
+        leg, inside = legs[i], ends.get(i, (0, 0))[side]
+        if leg["k"] != "w" or not inside or not (i < rides[0] if side == 0 else i > rides[-1]):
+            continue
+        street = round((leg["m"] - inside) / PLANNER_WALK_SPEED)
+        if side == 0:
+            leg["dep"] = max(leg["dep"], leg["arr"] - street)
+        else:
+            leg["arr"] = min(leg["arr"], leg["dep"] + street)
+        leg["m"] -= inside
+
+
+def walk_at_pace(legs, inside=None):
+    """Walks at WALK_SPEED, a little longer than OpenTripPlanner's: the way to the first ride sets out
     that much earlier, and after a ride, the rest gets there that much later. inside: each walk's metres inside a
-    station, by its place in legs, which a walk from one ride to another doesn't make longer: the time there is Moovit's
-    own, and a longer change could cost a route Moovit has."""
+    station, by its place in legs, which a walk from one ride to another doesn't make longer: the time there is the
+    station's own, and a longer change could lose a route that makes it."""
     rides = [i for i, l in enumerate(legs) if l["k"] == "r"]
 
     def longer(i, leg):
@@ -2933,7 +3343,7 @@ def moovit_walks(legs, inside=None):
 
 
 def changes_kept(legs, lines=None):
-    """Whether every change still leaves Moovit's minute between getting to the stop and boarding, and from one train to
+    """Whether every change still leaves LEAST_CHANGE between getting to the stop and boarding, and from one train to
     another its TRAIN_CHANGE."""
     train = lambda leg: ((lines or {}).get(leg.get("line")) or [None] * 7)[6] == 2
     rode = None
@@ -2952,17 +3362,29 @@ ALTERNATIVE_STOP = """s%d: stop(id: "1:%s") { stoptimesForPatterns(startTime: %d
   stops { gtfsId code name lat lon platformCode } patternGeometry { points } } } }"""
 # Each ride's own departures, from five minutes before it: a ride from the same stop half an hour after another can come
 # after the six departures from before the first. Twelve, as Haifa's cable car leaves every minute: its six from five
-# minutes before were all gone by its own, and it had no next one.
-ALTERNATIVE_TIMES = """r%d: stop(id: "1:%s") { stoptimesForPatterns(startTime: %d, timeRange: 10800, numberOfDepartures: 12,
-  omitNonPickups: true) { pattern { id } stoptimes { serviceDay scheduledDeparture realtimeDeparture realtime stopPosition
+# minutes before are all gone by its own, which would leave it no next one.
+ALTERNATIVE_TIMES = """r%d: stop(id: "1:%s") { stoptimesForPatterns(startTime: %d, timeRange: %d, numberOfDepartures: 12,
+  omitNonPickups: true) { pattern { id } stoptimes { serviceDay scheduledDeparture realtimeDeparture realtime stopPosition headsign
   trip { gtfsId departureStoptime { scheduledDeparture } } } } }"""
 ALTERNATIVE_TRIP = """t%d: trip(id: "1:%s") { stoptimesForDate(serviceDate: "%s") { stop { gtfsId } serviceDay scheduledArrival
   realtimeArrival realtimeDeparture } }"""
-# A route's first ride's departures between the time asked about and five minutes before its own: Moovit's card lists a
+# A route's first ride's departures between the time asked about and five minutes before its own: the card lists a
 # line's departures from then, catchable or not.
 EARLIER_TIMES = """b%d: stop(id: "1:%s") { stoptimesForPatterns(startTime: %d, timeRange: %d, numberOfDepartures: 4,
   omitNonPickups: true) { pattern { id } stoptimes { serviceDay scheduledDeparture realtimeDeparture realtime stopPosition
   trip { gtfsId } } } }"""
+# The card offers each other line's departure up to three hours after the ride's, that one too, and none later.
+ALTERNATIVE_SPAN = 10800
+
+
+def train_platforms(number, board, alight, at=None):
+    """The platforms a train run is boarded at and left at, by its number (the headsign), the two stations' codes and
+    when it leaves (its run that day), as Israel Railways' timetable has them (railway_platform()); either None where it
+    gives none (it has none for the trains setting out from Beer Sheva Center). None while the railway's timetable isn't
+    at hand."""
+    if time.time() - railway_held["at"] > RAILWAY_KEEP or not railway_held["platforms"]:
+        return None
+    return railway_platform(number, board, at), railway_platform(number, alight, at)
 
 
 def ask_graphql(query):
@@ -2971,8 +3393,21 @@ def ask_graphql(query):
         return json.load(r).get("data") or {}
 
 
+ALTERNATIVE_PARTS = 4  # questions the alternatives' parts are asked in at once: the planner answers each part in turn
+
+
+def ask_in_parts(ask, parts):
+    """The planner's answers to a question made of named parts, asked as up to ALTERNATIVE_PARTS questions at once."""
+    groups = [parts[i::ALTERNATIVE_PARTS] for i in range(min(ALTERNATIVE_PARTS, len(parts)))]
+    with ThreadPoolExecutor(len(groups) or 1) as asking:
+        found = {}
+        for got in asking.map(lambda group: ask("{" + " ".join(group) + "}"), groups):
+            found.update(got or {})
+    return found
+
+
 def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
-    """The other lines each ride could be taken on, as Moovit lists them: every line from the same stop to the same stop,
+    """The other lines each ride could be taken on: every line from the same stop to the same stop,
     with its next departures from five minutes before the chosen one, and when it gets there; for a route's first ride,
     also each line's departures there from since (the time asked about) on ("before"). Two questions to the planner for
     all the routes together; a route keeps none when they fail."""
@@ -2985,16 +3420,19 @@ def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
                if since is not None and id(leg) in firsts and leg["dep"] - 300 > since - 60}
     earliest = {b: min(leg["dep"] for leg in rides if leg["stops"][0] == b) - 300 for b in boards}
     # The lines there are looked for from the time asked about too: a train run is a route of its own, so the one
-    # leaving at once has no departure after the ride's and its line's card would lack it. The window still ends three
-    # hours after the first ride's.
+    # leaving at once has no departure after the ride's and its line's card would lack it. The window ends three hours
+    # after the last ride's from there, a minute more for the planner's edge.
+    latest = {b: max(leg["dep"] for leg in rides if leg["stops"][0] == b) + ALTERNATIVE_SPAN + 60 for b in boards}
     start = dict(earliest)
     for leg in earlier.values():
         start[leg["stops"][0]] = min(start[leg["stops"][0]], since - 60)
     try:
-        found = ask("{" + " ".join(ALTERNATIVE_STOP % (i, b, start[b], earliest[b] + 10800 - start[b]) for i, b in enumerate(boards)) + " " +
-                    " ".join(ALTERNATIVE_TIMES % (k, leg["stops"][0], leg["dep"] - 300) for k, leg in enumerate(rides)) + " " +
-                    " ".join(EARLIER_TIMES % (k, leg["stops"][0], since - 60, leg["dep"] - 300 - (since - 60))
-                             for k, leg in earlier.items()) + "}")
+        found = ask_in_parts(ask, [ALTERNATIVE_STOP % (i, b, start[b], latest[b] - start[b])
+                                   for i, b in enumerate(boards)] +
+                             [ALTERNATIVE_TIMES % (k, leg["stops"][0], leg["dep"] - 300, ALTERNATIVE_SPAN + 360)
+                              for k, leg in enumerate(rides)] +
+                             [EARLIER_TIMES % (k, leg["stops"][0], since - 60, leg["dep"] - 300 - (since - 60))
+                              for k, leg in earlier.items()])
     except Exception as e:
         log("alternatives failed:", repr(e))
         return
@@ -3002,11 +3440,22 @@ def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
     when = lambda st: st["serviceDay"] + st["realtimeDeparture"]
     trip_of = lambda st: local_id(st["trip"]["gtfsId"]).split("~")[0]
     # A departure as [when, trip], and 1 after them when the planner has it live: a train card's other trains are its
-    # line's, other routes the ministry's board doesn't match to the ride, and showed white though Kav had them live.
+    # line's, other routes the ministry's board doesn't match to the ride: without it they'd show white though live.
     departure = lambda t, st: [t, trip_of(st)] + ([1] if st.get("realtime") else [])
+    # A line, as below; and the lines each ride's route rides on elsewhere, which the card doesn't offer for the ride.
+    key_of = lambda route: "rail:" + (route.get("longName") or "") if route.get("type") == 2 else local_id(route["gtfsId"])
+    on = {id(leg): next((key_of(p["pattern"]["route"]) for p in patterns.get(leg["stops"][0], [])
+                         if local_id(p["pattern"]["route"]["gtfsId"]) == leg["line"]), leg["line"]) for leg in rides}
+    elsewhere = {id(leg): {on[id(l)] for l in it["legs"] if l is not leg and id(l) in on}
+                 for it in routes for leg in it["legs"] if id(leg) in on}
     wanted = {}
     for k, leg in enumerate(rides):
         board, alight = leg["stops"][0], leg["stops"][-1]
+        # A train's other trains are those from its own platform to its own: those between
+        # other platforms are cards of their own (signature()).
+        code = lambda s: (stops.get(s) or [s])[0]
+        pair = train_platforms(leg.get("head") or "", code(board), code(alight), leg["dep"]) \
+            if (lines.get(leg["line"]) or [None] * 7)[6] == 2 else None
         leg["alts"] = []
         timed, early = {}, {}
         for p in (found.get("r%d" % k) or {}).get("stoptimesForPatterns") or []:
@@ -3014,14 +3463,14 @@ def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
         for p in (found.get("b%d" % k) or {}).get("stoptimesForPatterns") or []:
             early.setdefault(p["pattern"]["id"], []).extend(p["stoptimes"])
         # Each line's ways from here to where the ride gets off. Each train run is a route of its own in the ministry's
-        # timetable, so a train line is its runs between the same two ends, as Moovit names it; otherwise a train has no
+        # timetable, so a train line is its runs between the same two ends; otherwise a train has no
         # next one, and every route with a train is its line's last departure.
         ways, own_line = {}, leg["line"]
         for p in patterns.get(board, []):
             order = [local_id(x["gtfsId"]) for x in p["pattern"]["stops"]]
             if board in order and alight in order[order.index(board) + 1:]:
                 route = p["pattern"]["route"]
-                key = "rail:" + (route.get("longName") or "") if route.get("type") == 2 else local_id(route["gtfsId"])
+                key = key_of(route)
                 if local_id(route["gtfsId"]) == leg["line"]:
                     own_line = key
                 ways.setdefault(key, []).append((p, order))
@@ -3037,7 +3486,7 @@ def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
         # pattern's departures latest first.
         own = sorted({when(st): st for p, order in ways.get(own_line, []) for st in timed.get(p["pattern"]["id"], [])
                       if when(st) > leg["dep"] and trip_of(st) != leg.get("trip") and boarded(st, order) is not None}.items())
-        # Moovit lists five departures: this one and the next four.
+        # Five departures: this one and the next four.
         leg["next"] = [departure(t, st) for t, st in own[:4]]
 
         def before(choices, until, own_trip=None):
@@ -3048,14 +3497,17 @@ def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
         if k in earlier:
             leg["before"] = before(ways.get(own_line, []), leg["dep"], leg.get("trip"))
         for line, choices in ways.items():
-            if line == own_line:
+            if line == own_line or line in elsewhere[id(leg)]:
                 continue
-            # One option a line, whichever of its ways leaves first.
+            # One option a line, whichever of its ways leaves first; a train's, the first between the ride's platforms.
             times = sorted(((when(st), st, p, order) for p, order in choices for st in timed.get(p["pattern"]["id"], [])
-                            if when(st) >= leg["dep"] - 300 and boarded(st, order) is not None), key=lambda x: x[0])
-            if not times:
+                            if leg["dep"] - 300 <= when(st) <= leg["dep"] + ALTERNATIVE_SPAN and boarded(st, order) is not None),
+                           key=lambda x: x[0])
+            fits = [n for n, (_, st, _, _) in enumerate(times)
+                    if pair is None or train_platforms(st.get("headsign") or "", code(board), code(alight), when(st)) == pair]
+            if not fits:
                 continue
-            _, first, p, order = times[0]
+            _, first, p, order = times[fits[0]]
             trip = local_id(first["trip"]["gtfsId"])
             at = boarded(first, order)
             calls = order[at:order.index(alight, at + 1) + 1]
@@ -3072,12 +3524,12 @@ def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
             agencies[agency] = r["agency"]["name"]
             lines[route] = catalog["lines"].get(int(route)) if route.isdigit() and int(route) in catalog["lines"] else \
                 route_line(agency, r["shortName"] or "", r["longName"] or "", r["type"])
-            later = sorted({t: st for t, st, _, _ in times[1:] if trip_of(st) != trip.split("~")[0]}.items())
+            later = sorted({t: st for t, st, _, _ in times[fits[0] + 1:] if trip_of(st) != trip.split("~")[0]}.items())
             # When its trip set out, as a ride's own "first": the app finds the bus by it. Its times here are predicted, not
             # the timetable's, so they'd point the app at the wrong bus.
             alt = {"line": route, "trip": trip.split("~")[0], "dep": when(first),
                    "sdep": first["serviceDay"] + first["scheduledDeparture"], "live": bool(first["realtime"]), "arr": None,
-                   "first": set_out(first),
+                   "first": set_out(first), "head": first.get("headsign") or "",
                    "stops": stops_once(calls), "shape": encode(path), "next": [departure(t, st) for t, st in later[:5]]}
             if k in earlier:
                 alt["before"] = before(choices, when(first), trip.split("~")[0])
@@ -3088,7 +3540,7 @@ def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
         return
     keys = list(wanted)
     try:
-        found = ask("{" + " ".join(ALTERNATIVE_TRIP % (i, t, d) for i, (t, d) in enumerate(keys)) + "}")
+        found = ask_in_parts(ask, [ALTERNATIVE_TRIP % (i, t, d) for i, (t, d) in enumerate(keys)])
     except Exception as e:
         log("alternatives failed:", repr(e))
         found = {}
@@ -3104,9 +3556,10 @@ def alternatives(routes, stops, lines, agencies, ask=ask_graphql, since=None):
             off = next((n for n in range(on + 1, len(ids)) if ids[n] == alight), None)
             if off is not None:
                 alt["arr"] = times[off]["serviceDay"] + times[off]["realtimeArrival"]
-    # One that never says when it gets there, or gets there before it leaves, isn't offered.
+    # One that never says when it gets there, or gets there before it leaves, isn't offered; the rest as the card
+    # lists them, by when they leave.
     for leg in rides:
-        leg["alts"] = [a for a in leg["alts"] if a["arr"] is not None and a["arr"] > a["dep"]]
+        leg["alts"] = sorted((a for a in leg["alts"] if a["arr"] is not None and a["arr"] > a["dep"]), key=lambda a: a["dep"])
 
 
 def first_departure(leg):
@@ -3137,7 +3590,7 @@ def ministry_time(day, seconds):
     return int(at.replace(tzinfo=ISRAEL, fold=1).timestamp())
 
 
-# Moovit's labels, in the order it shows them: warnings first, then what a route is best at. A route shows two at most.
+# The labels, in the order they show: warnings first, then what a route is best at. A route shows two at most.
 TAG_ORDER = ("risky_transfer", "long_walk", "long_wait_time", "last_departure", "early_arrival", "direct", "least_walking",
              "low_transfer", "high_frequency", "flexible_route")
 TIGHT = 120  # seconds to spare at a change, at most, for a tight connection
@@ -3147,11 +3600,10 @@ FREQUENT = 300  # seconds between the first line's departures, on average, at mo
 
 
 def tag(routes, arrive=False):
-    """What each route is: Moovit's labels, from the routes' own facts. Each route is a dict with dep, arr, rides,
+    """What each route is: its labels, from the routes' own facts. Each route is a dict with dep, arr, rides,
     walk (seconds on foot), walk_m (metres), slack (the least spare time at a change, None without one), wait (the
     longest wait at a change), headway (seconds between the first line's departures, None if unknown), last (rides
-    the last trip of a line that day) and choices (every ride could be taken on another line too). Tags lists. Tuned on
-    Moovit's own routes, whose tags it matches exactly for 63% of them and tag by tag for 85-99%."""
+    the last trip of a line that day) and choices (every ride could be taken on another line too). Tags lists."""
     if not routes:
         return []
     found = [[] for _ in routes]
@@ -3183,10 +3635,14 @@ def tag(routes, arrive=False):
     return [sorted(set(t), key=TAG_ORDER.index)[:2] for t in found]
 
 
-def signature(it, lines, stops):
+def signature(it, lines, stops, platforms=True):
     """A route as a rider tells it from another: each ride's line by its number, wherever it's boarded or left and
-    whichever of its trips; a line without a number (a train) by the stations it's taken between. Moovit's list shows
-    each once, the line's next departures in its card."""
+    whichever of its trips; a line without a number (a train) by the stations it's taken between, and a train by the
+    platforms too where the railway's timetable is at hand (train_platforms()). The list shows each once, the
+    line's next departures in its card; between two stations, a card for each pair of platforms, its trains from those
+    alone.
+    Without platforms, a train by its line instead (where its runs set out and end): the list has one route a line
+    sequence, so never a train's line twice between the same stations from two platforms (recipe_list())."""
     out = []
     for l in it["legs"]:
         if l["k"] != "r":
@@ -3196,13 +3652,35 @@ def signature(it, lines, stops):
             out.append((line[6], line[0]))
         else:
             code = lambda s: (stops.get(s) or [s])[0]
-            out.append((line[6], code(l["stops"][0]) if l["stops"] else "", code(l["stops"][-1]) if l["stops"] else ""))
+            ends = (code(l["stops"][0]), code(l["stops"][-1])) if l["stops"] else ("", "")
+            if line[6] == 2:
+                ends += (train_platforms(l.get("head") or "", *ends, l.get("dep")) or ()) if platforms else (line[7] if len(line) > 7 else "",)
+            out.append((line[6],) + ends)
     return tuple(out)
 
 
-# Moovit's routes list leads with the route quickest there counting each change as twenty minutes more and each minute on
+# The routes list leads with the route quickest there counting each change as twenty minutes more and each minute on
 # foot as three, far more often than with the earliest arrival.
 RANK_CHANGE, RANK_WALK = 1200, 3
+# The list as shown, leaving at a time, counts a change as half an hour (shown_order()): it then leads with a route
+# as simple as the recipe's first. choose() still picks by rank().
+SHOWN_CHANGE = 1800
+# A list leaving at a time with no one-line route: the planner asked again for those alone (no change) over this
+# window, and the best within reach joins the list (plan_answer()). Early in the morning the planner's own window can
+# end before the first one-line bus, which the list leads with.
+DIRECT_WINDOW = "PT2H"
+# Leaving at a time, Kav's list is what its recipe picks from every route Kav's planners found (recipe_list()):
+# walks no longer than LIST_END_WALK first or last and LIST_CHANGE_WALK at a change, up to LIST_RIDES
+# rides, the cheapest of each line sequence by ROUTE_COST, from the cheapest on, leaving out a route that is a chosen
+# one plus more rides; the LIST_SHOWN cheapest, and one more when it costs at most LIST_ONE_MORE more than the
+# cheapest. The route that gets there soonest joins them when it arrives LIST_SOONER seconds or more before all of
+# them, that again for each ride it takes beyond the fewest of theirs; else the soonest with no more rides than that,
+# costing at most LIST_TIE more than the dearest of them, when it arrives LIST_SOONER_SIMPLE or more before all of
+# them. A one-line route is listed at its next run: the copy getting there LIST_SOONER or more before the cheapest,
+# when it costs at most LIST_NEXT_RUN more.
+ROUTE_COST = {"ride": 1.0, "change_wait": 0.85, "walk": 3.25, "before": 0.5, "change": 21.5, "train": -22.0, "light_rail": -20.0}
+LIST_END_WALK, LIST_CHANGE_WALK, LIST_RIDES, LIST_SHOWN, LIST_ONE_MORE = 2000, 1000, 5, 3, 20
+LIST_SOONER, LIST_NEXT_RUN, LIST_SOONER_SIMPLE, LIST_TIE = 300, 10, 60, 5
 
 
 def rank(it):
@@ -3210,18 +3688,163 @@ def rank(it):
     return it["arr"] + RANK_CHANGE * max(it["rides"] - 1, 0) + RANK_WALK * it["walk"]
 
 
-# Arriving by a time, Moovit's list leads with the route setting out latest, each change counting as setting out twenty
-# minutes earlier and each minute on foot as three, rank()'s weights.
-def rank_by(it):
-    """Where a route goes in the list, arriving by a time: lowest first."""
-    return -it["dep"] + RANK_CHANGE * max(it["rides"] - 1, 0) + RANK_WALK * it["walk"]
+def route_cost(it, when, lines, arrive=False):
+    """ROUTE_COST of a route asked about at when, in minutes: riding, 0.85 for each minute waiting at a change, 3.25 for
+    each minute on foot and 0.5 for each minute from when to setting out, plus 21.5 a change, less 22 with a train and 20
+    with the light rail. Arriving by when (the last way there too), the wait counted is from getting there to when."""
+    w = ROUTE_COST
+    legs = it["legs"]
+    rides = [n for n, l in enumerate(legs) if l["k"] == "r"]
+    if not rides:
+        return float("inf")
+    on_foot = lambda part: sum(max(0, l["arr"] - l["dep"]) for l in part if l["k"] != "r")
+    riding = sum(legs[n]["arr"] - legs[n]["dep"] for n in rides)
+    before = max(0, when - it["arr"]) if arrive else max(0, legs[rides[0]]["dep"] - when - on_foot(legs[:rides[0]]))
+    at_changes = max(0, legs[rides[-1]]["arr"] - legs[rides[0]]["dep"] - riding - on_foot(legs[rides[0]:rides[-1]]))
+    kinds = {(lines.get(legs[n]["line"]) or [None] * 7)[6] for n in rides}
+    return (w["ride"] * riding + w["change_wait"] * at_changes + w["walk"] * on_foot(legs) + w["before"] * before) / 60 + \
+        w["change"] * (len(rides) - 1) + (w["train"] if 2 in kinds else 0) + (w["light_rail"] if 0 in kinds else 0)
+
+
+def told_apart(routes, lines, stops, first):
+    """routes (one a signature()) but those riding a train the railway's timetable names no platforms for, unless the
+    first of them by first between the same stations: it can't be told apart from the trains it names, so it's listed,
+    as before platforms, only as the best there. Those are mostly the next day's trains in an evening's list, which the
+    railway's timetable for the day leaves out."""
+    bare = lambda it: tuple(r[:3] if r[0] == 2 else r for r in signature(it, lines, stops))
+    blind = lambda it: any(r[0] == 2 and r[3:] == (None, None) for r in signature(it, lines, stops))
+    best = {}
+    for it in sorted(routes, key=first):
+        best.setdefault(bare(it), it)
+    return [it for it in routes if not blind(it) or best[bare(it)] is it]
+
+
+def recipe_list(pool, when, lines, stops):
+    """The routes of pool the recipe lists (ROUTE_COST and the rules beside it), cheapest first and the soonest
+    last when it joins: a route no listed one shares a line sequence or a card with."""
+    def walks_ok(it):
+        legs = it["legs"]
+        at = [n for n, l in enumerate(legs) if l["k"] == "r"]
+        return 0 < len(at) <= LIST_RIDES and all(
+            (l.get("m") or 0) <= (LIST_END_WALK if n < at[0] or n > at[-1] else LIST_CHANGE_WALK)
+            for n, l in enumerate(legs) if l["k"] == "w")
+    pool = [i for i in pool if i["rides"]]
+    pool = [i for i in pool if walks_ok(i)] or pool
+    cost = lambda i: route_cost(i, when, lines)
+    # The cheapest of each line sequence (a train by its line); of those taken between the same platforms, one card.
+    once = {}
+    for i in pool:
+        key = signature(i, lines, stops, False)
+        if key not in once or cost(i) < cost(once[key]):
+            once[key] = i
+    cheapest = {}
+    for i in pool:
+        if once[signature(i, lines, stops, False)] is not i:
+            continue
+        key = signature(i, lines, stops)
+        if key not in cheapest or cost(i) < cost(cheapest[key]):
+            cheapest[key] = i
+    for key, best in list(cheapest.items()):
+        if best["rides"] == 1:
+            runs = [i for i in pool if i["rides"] == 1 and signature(i, lines, stops) == key and cost(i) <= cost(best) + LIST_NEXT_RUN
+                    and i["arr"] <= best["arr"] - LIST_SOONER]
+            if runs:
+                cheapest[key] = min(runs, key=lambda i: (i["arr"], cost(i)))
+    chosen = []
+    for i in sorted(told_apart(list(cheapest.values()), lines, stops, cost), key=cost):
+        if not any(set(signature(c, lines, stops)) < set(signature(i, lines, stops)) for c in chosen):
+            chosen.append(i)
+    more = chosen[LIST_SHOWN:LIST_SHOWN + 1]
+    shown = chosen[:LIST_SHOWN] + [i for i in more if cost(i) <= cost(chosen[0]) + LIST_ONE_MORE]
+    if not shown:
+        return shown
+    fewest, first, dearest = min(i["rides"] for i in shown), min(i["arr"] for i in shown), max(cost(i) for i in shown)
+    new = lambda i: signature(i, lines, stops) not in {signature(s, lines, stops) for s in shown} and \
+        signature(i, lines, stops, False) not in {signature(s, lines, stops, False) for s in shown}
+    soonest = min(pool, key=lambda i: (i["arr"], i["rides"], cost(i)))
+    if soonest["arr"] <= first - LIST_SOONER * max(1, soonest["rides"] - fewest) and new(soonest):
+        shown.append(soonest)
+        return shown
+    simple = [i for i in pool if i["rides"] <= fewest and cost(i) <= dearest + LIST_TIE and
+              i["arr"] <= first - LIST_SOONER_SIMPLE and new(i)]
+    if simple:
+        shown.append(min(simple, key=lambda i: (i["arr"], i["rides"], cost(i))))
+    return shown
+
+
+# The list holds routes OpenTripPlanner's own comparison drops: beaten on time by a route that walks more, rides no
+# train or starts on another line. So the planner is asked again weighing a route as the recipe does (a second on foot
+# costing WEIGHED_WALK, one on a train or the light rail WEIGHED_RAIL), and, as soon as the routes list's own
+# answer comes, the same again without the first line of each of that answer's WEIGHED_BANS best routes, all at
+# once, each over WEIGHED_WINDOW. Their routes join the others found (plan_answer()), asked beside the routes list's
+# own questions and taken if they come within WEIGHED_BY seconds of the trip being asked for. Asked any later, they
+# would keep long trips' answers waiting to the cap.
+WEIGHED, WEIGHED_WALK, WEIGHED_RAIL, WEIGHED_BANS, WEIGHED_BY = True, 5, 0.6, 3, 6
+WEIGHED_WINDOW = "PT40M"
+# Beside them, the routes list's own question with WEIGHED_SLACK at every change instead of half a minute: the
+# connections with time to spare, which the planner drops beside a tight one setting out later or arriving sooner.
+WEIGHED_SLACK = "PT3M"
+
+
+def same_line(route, lines):
+    """A route and every other route of its number and operator (its other way and variants), as excluded() has them."""
+    out = {route}
+    number, agency = (lines.get(route) or [""] * 7)[0], (lines.get(route) or [""] * 7)[5]
+    if number:
+        out.update(str(r) for r in catalog["numbers"].get(number, []) if (catalog["lines"].get(r) or [None] * 7)[5] == agency)
+    return out
+
+
+def weighed_answers(frm, to, when, modes, at, ask=None, bans=WEIGHED_BANS, by=WEIGHED_BY, main=None):
+    """The planner's answers weighing routes as the recipe does (WEIGHED_WALK, WEIGHED_RAIL, WEIGHED_WINDOW): the
+    question as asked, and the same without the first line of each of the best bans routes (rank(), a line once) of
+    main(wait)'s answer, the routes list's own, or without main of the first answer; and, asked with the first, the
+    routes list's own question with WEIGHED_SLACK at every change; all within by seconds, an answer that fails or
+    comes too late left out."""
+    ask = ask or ask_planner
+    until = time.time() + by
+    question = lambda exclude=(): plan_variables(frm, to, when, False, modes, "main", (), WEIGHED_WINDOW, exclude, at,
+                                                 WEIGHED_WALK, rail=WEIGHED_RAIL)
+    spared = plan_variables(frm, to, when, False, modes, "main", (), None, (), at)
+    spared["prefs"]["transit"]["transfer"]["slack"] = WEIGHED_SLACK
+    asking = ThreadPoolExecutor(2 + bans)
+    try:
+        asked = [asking.submit(ask, question(), by), asking.submit(ask, spared, by)]
+        try:
+            base = main(max(0.1, until - time.time())) if main else asked[0].result(timeout=max(0.1, until - time.time()))
+        except Exception as e:
+            log("planner failed on a weighed question:", repr(e))
+            base = {}
+        stops, lines = {}, {}
+        firsts = []
+        for it in sorted((i for i in itineraries(base, stops, lines, {}) if i["rides"]), key=rank):
+            first = next(l["line"] for l in it["legs"] if l["k"] == "r")
+            if len(firsts) < bans and not any(first in same_line(f, lines) for f in firsts):
+                firsts.append(first)
+        left = until - time.time()
+        if left >= 0.5:
+            asked += [asking.submit(ask, question(sorted(same_line(f, lines))), left) for f in firsts]
+        docs = []
+        for f in asked:
+            try:
+                docs.append(f.result(timeout=max(0.1, until - time.time())))
+            except Exception as e:
+                log("planner failed on a weighed question:", repr(e))
+    finally:
+        asking.shutdown(wait=False)
+    return docs
+
+
+def shown_order(it):
+    """Where a route goes in the list shown, leaving at a time: rank() with SHOWN_CHANGE for each change."""
+    return rank(it) + (SHOWN_CHANGE - RANK_CHANGE) * max(it["rides"] - 1, 0)
 
 
 def choose(found, when, arrive, lines, stops, most=MOST_SHOWN, last=None, fill=False):
-    """The few routes worth showing, as Moovit's own list has them: the earliest arrival, the best without a change,
+    """The few routes worth showing: the earliest arrival, the best without a change,
     the least walking, then the best of the rest by the list's own order (rank()), none the same as another; three at
-    least, as Moovit shows, the best of those a little later when too few arrive soon enough after the best. A route
-    with a longer walk than Moovit's ever have only when every one has. Arriving by a time, the rest by
+    least, the best of those a little later when too few arrive soon enough after the best. A route
+    with a walk longer than WALK_MOST only when every one has. Arriving by a time, the rest by
     OpenTripPlanner's cost; leaving at a time, by rank(), since that cost leaves out the wait before setting out. last:
     for the last way there tonight, the time it was asked at. fill: leaving at a time, still fewer than three, the rest
     by the list's order with no more changes than the best (plan_answer(), once nothing else is asked)."""
@@ -3231,7 +3854,7 @@ def choose(found, when, arrive, lines, stops, most=MOST_SHOWN, last=None, fill=F
     short = [i for i in transit if longest_walk(i) <= WALK_MOST]
     if last is not None and short and max(i["dep"] for i in short) < last:
         # The last way tonight, when every route without a long walk has gone: those setting out from then on with a
-        # walk up to WALK_LAST, as Moovit's last ways have.
+        # walk up to WALK_LAST.
         short += [i for i in transit if WALK_MOST < longest_walk(i) <= WALK_LAST and i["dep"] >= last]
     transit = short or transit
     if last is not None:
@@ -3240,11 +3863,14 @@ def choose(found, when, arrive, lines, stops, most=MOST_SHOWN, last=None, fill=F
     by_arrival = lambda i: (i["arr"], i["rides"], i["walk"], -i["dep"])
     by_departure = lambda i: (-i["dep"], i["rides"], i["walk"], i["arr"])
     # Each way once, by its first trip there (its last, arriving by a time): the later ones are the card's next
-    # departures, as in Moovit's. Picked by cost, a later trip whose ride the predictions had a minute quicker took it.
-    earliest = {}
+    # departures. Picked by cost, a later trip whose ride is predicted a minute quicker would win. A
+    # train's line once too, whichever platforms its later trains leave from (signature()).
+    earliest, once = {}, set()
     for i in sorted(transit, key=by_departure if arrive else by_arrival):
-        earliest.setdefault(signature(i, lines, stops), i)
-    transit = list(earliest.values())
+        if signature(i, lines, stops, False) not in once:
+            once.add(signature(i, lines, stops, False))
+            earliest.setdefault(signature(i, lines, stops), i)
+    transit = told_apart(list(earliest.values()), lines, stops, by_departure if arrive else by_arrival)
     best = min(transit, key=by_departure if arrive else by_arrival)
     span = max(best["arr"] - best["dep"], 600)
     within = lambda i, k: i["dep"] >= best["dep"] - k if arrive else i["arr"] <= best["arr"] + k
@@ -3275,9 +3901,9 @@ def choose(found, when, arrive, lines, stops, most=MOST_SHOWN, last=None, fill=F
 
 
 def merged(picks, lines, stops, arrive=False):
-    """Routes whose every ride can be taken on the same lines, once each ride's other lines are known, as one: Moovit
-    shows them in one card, the lines side by side. The card is the one setting out first (last, arriving by a time),
-    as Moovit's leads with the first bus of any of its lines."""
+    """Routes whose every ride can be taken on the same lines, once each ride's other lines are known, as one: they
+    show in one card, the lines side by side. The card is the one setting out first (last, arriving by a time),
+    leading with the first bus of any of its lines."""
     out, seen = [], {}
     first = lambda it: next((l["dep"] for l in it["legs"] if l["k"] == "r"), it["dep"])
     for it in picks:
@@ -3302,7 +3928,7 @@ def longest_walk(it):
 
 def excluded(picks, lines):
     """The routes the picks ride, and every other route of each numbered line among them (its other way and its
-    variants): asked again without them, the planner finds the other lines Moovit's list has."""
+    variants): asked again without them, the planner finds the other lines."""
     out = set()
     for it in picks:
         for l in it["legs"]:
@@ -3343,7 +3969,7 @@ def facts(it):
 
 
 def schedule(picks, lines):
-    """Moovit's timetable card: when a route takes a train or Jerusalem's light rail from where it starts or to where it
+    """The timetable card: when a route takes a train or Jerusalem's light rail from where it starts or to where it
     ends, that ride alone, station to station."""
     for it in picks:
         legs = it["legs"]
@@ -3368,7 +3994,7 @@ def taxi_query(frm, to, when):
 
 
 def taxi_card(data, frm, to, when):
-    """Moovit's Gett card for leaving now: the taxi there in four minutes, then the drive door to door."""
+    """The taxi card for leaving now: the taxi there in four minutes, then the drive door to door."""
     for it in ((data or {}).get("plan") or {}).get("itineraries") or []:
         car = [l for l in it["legs"] if l["mode"] == "CAR"]
         if not car:
@@ -3382,11 +4008,48 @@ def taxi_card(data, frm, to, when):
     return None
 
 
-def ask_all(frm, to, when, arrive, modes, now, via=(), window=None, at=(None, None)):
+class Sections:
+    """The other kinds' answers of ask_all(), as a dict of those that came within MORE_WAIT seconds of the routes
+    list's: waited for when first read, so the routes list is worked out meanwhile."""
+
+    def __init__(self, asked, until):
+        self.asked, self.until, self.got = asked, until, None
+        for answer in asked.values():
+            answer.add_done_callback(lambda f: setattr(f, "came", time.time()))
+
+    def held(self):
+        if self.got is None:
+            self.got = {}
+            for kind, answer in self.asked.items():
+                try:
+                    got = answer.result(timeout=max(0.0, self.until - time.time()))
+                    if getattr(answer, "came", 0) <= self.until:
+                        self.got[kind] = got
+                except Exception as e:
+                    log("planner failed on", kind, repr(e))
+        return self.got
+
+    def __bool__(self):
+        return True
+
+    def get(self, kind, default=None):
+        return self.held().get(kind, default)
+
+    def __getitem__(self, kind):
+        return self.held()[kind]
+
+    def __iter__(self):
+        return iter(self.held())
+
+    def __len__(self):
+        return len(self.held())
+
+
+def ask_all(frm, to, when, arrive, modes, now, via=(), window=None, at=(None, None), on_main=None):
     """Every question the trip needs, at once: the routes list's answer, which must come, and the others' by kind,
-    which are left out when they come more than MORE_WAIT seconds after it."""
+    which are left out when they come more than MORE_WAIT seconds after it (Sections). on_main(answer): told the
+    routes list's answer as soon as it comes."""
     kinds = plan_kinds(frm, to, modes, via)
-    more = {}
     pool = ThreadPoolExecutor(len(kinds) + 2)
     try:
         asked = {k: pool.submit(ask_planner, plan_variables(frm, to, when, arrive, modes, k, via, window, at=at)) for k in kinds}
@@ -3394,25 +4057,22 @@ def ask_all(frm, to, when, arrive, modes, now, via=(), window=None, at=(None, No
             asked["taxi"] = pool.submit(ask_graphql, taxi_query(frm, to, when))
             asked["by_taxi"] = pool.submit(ask_planner, plan_variables(frm, to, when, arrive, modes, "by_taxi"))
         doc = asked.pop("main").result()
-        until = time.time() + MORE_WAIT
-        for kind, answer in asked.items():
-            try:
-                more[kind] = answer.result(timeout=max(0.0, until - time.time()))
-            except Exception as e:
-                log("planner failed on", kind, repr(e))
+        if on_main:
+            on_main(doc)
+        more = Sections(asked, time.time() + MORE_WAIT)
     finally:
         pool.shutdown(wait=False)
     return doc, more
 
 
 def by_taxi(it, now, frm):
-    """A route that starts with a taxi to the station, timed as Moovit's taxi section times it: picked up four minutes
-    after it's ordered, driven at Moovit's taxi pace and there two minutes before the ride. None when it would have
-    to be ordered before now, or the drive is longer than Moovit's."""
+    """A route that starts with a taxi to the station: picked up four minutes
+    after it's ordered, driven at TAXI_SLOWER and there two minutes before the ride. None when it would have
+    to be ordered before now, or the drive is longer than TAXI_DRIVE_MOST."""
     legs = it["legs"]
     first = next((i for i, l in enumerate(legs) if l["k"] == "r"), None)
     taken = next((i for i, l in enumerate(legs) if l["k"] == "t"), None)
-    # The planner may walk to the kerb first; Moovit's taxi picks up where the trip starts.
+    # The planner may walk to the kerb first; the taxi picks up where the trip starts.
     if first is None or taken is None or taken > first or any(l["k"] != "w" for l in legs[:taken]):
         return None
     car = legs[taken]
@@ -3503,14 +4163,17 @@ def on_kavs_times(found, when, lines, ask):
 
 
 def plan_answer(doc, when, arrive, ask=None, more=None, frm=None, to=None, again=None, last=None, morning=None,
-                earlier=None, reluctant=None, wider=None, official=None):
-    """Kav's answer: Moovit's routes list from doc, OpenTripPlanner's answer for it; and from more, its answers for the
-    other kinds of question (plan_kinds, and "taxi" for leaving now), the sections Moovit shows besides, each route
+                earlier=None, reluctant=None, wider=None, official=None, direct=None, weighed=None, rested=None):
+    """Kav's answer: the routes list from doc, OpenTripPlanner's answer for it; and from more, its answers for the
+    other kinds of question (plan_kinds, and "taxi" for leaving now), the sections shown besides, each route
     marked with its section's id. again(routes) asks the routes list's question again without those routes. last: for
     the last way tonight, the time it was asked at (choose()). morning() asks the routes list's question for the next
     morning (morning_after()). earlier(routes) asks the last way's question over LAST_DAY_WINDOW, without those
     routes, in the time left. reluctant() asks the routes list's question with walking costing more (WALK_RELUCTANCE_AGAIN).
-    wider() asks it over WIDER_WINDOW, in the time left. official() asks it of the planner on the ministry's own times."""
+    wider() asks it over WIDER_WINDOW, in the time left. official() asks it of the planner on the ministry's own times.
+    direct() asks it for routes with no change over DIRECT_WINDOW. weighed() gives the planner's answers weighing
+    routes as the recipe does (weighed_answers()), whose routes join those found. rested(later) asks the routes list's
+    question after the days off (rest_end()), later the next morning's, and says when they end and if on a Saturday."""
     more = more or {}
     stops, lines, agencies = {}, {}, {}
     found = itineraries(doc, stops, lines, agencies)
@@ -3537,25 +4200,25 @@ def plan_answer(doc, when, arrive, ask=None, more=None, frm=None, to=None, again
             picks = choose(found, when, arrive, lines, stops, last=last)
         except Exception as e:
             log("planner failed on a wider window:", repr(e))
-    # Fewer routes than Moovit shows: the planner's answer can be the same lines' trips one after another (sixteen light
-    # rail trains, where Moovit shows two bus lines too).
+    # Fewer routes than LEAST_SHOWN: the planner's answer can be the same lines' trips one after another (sixteen light
+    # rail trains, where two bus lines would do too).
     if again is not None and len(picks) < LEAST_SHOWN and any(i["rides"] for i in picks):
         try:
             found += itineraries(again(excluded(picks, lines)), stops, lines, agencies)
             picks = choose(found, when, arrive, lines, stops, last=last)
         except Exception as e:
             log("planner failed on other lines:", repr(e))
-    # Still fewer than three leaving at a time, after the other lines: the rest to three, as Moovit's list has, even
+    # Still fewer than three leaving at a time, after the other lines: the rest to three, even
     # those that cost more than half as much again as the quickest.
     if not arrive and len(picks) < LEAST_SHOWN and any(i["rides"] for i in picks):
         picks = choose(found, when, arrive, lines, stops, last=last, fill=True)
-    # Routes riding somewhere but none within a walk Moovit takes: asked again with walking costing more, which finds
+    # Routes riding somewhere but none within WALK_MOST: asked again with walking costing more, which finds
     # routes riding further. Not from midnight to MORNING, when the soonest routes are the next morning's first, which
-    # the morning's question times as Moovit does.
+    # the morning's question times.
     rode = any(leg["mode"] not in ("WALK", "BICYCLE", "CAR") for edge in ((doc.get("data") or {}).get("planConnection") or {}).get("edges") or []
                for leg in edge["node"]["legs"])
     small_hours = datetime.datetime.fromtimestamp(when, ISRAEL).hour < MORNING
-    walked_less = False
+    walked_less = dawned = False
     if reluctant is not None and rode and not small_hours and not arrive and not any(i["rides"] and longest_walk(i) <= WALK_MOST for i in picks):
         try:
             found += itineraries(reluctant(), stops, lines, agencies)
@@ -3563,30 +4226,70 @@ def plan_answer(doc, when, arrive, ask=None, more=None, frm=None, to=None, again
             walked_less = any(i["rides"] and longest_walk(i) <= WALK_MOST for i in picks)
         except Exception as e:
             log("planner failed walking less:", repr(e))
-    # At night with no route still running within a walk Moovit takes, the next morning's first routes instead. Beside
-    # tonight's found only walking less, the next morning's first route, as Moovit's list has them.
+    # At night with no route still running within WALK_MOST, the next morning's first routes instead. Beside
+    # tonight's found only walking less, the next morning's first route.
     if morning is not None and not arrive and (walked_less or not any(i["rides"] and longest_walk(i) <= WALK_MOST for i in picks)):
         try:
             early = itineraries(morning(), stops, lines, agencies)
             if any(i["rides"] for i in early):
                 first = choose(early, when, arrive, lines, stops)
                 picks = picks[:MOST_SHOWN - 1] + first[:1] if walked_less else first
+                dawned = True
         except Exception as e:
             log("planner failed on the morning:", repr(e))
+    # Shabbat or a holiday with nothing to ride: the first routes after it, leaving at a time, or the next morning's.
+    after = None
+    if rested is not None and not any(i["rides"] for i in picks):
+        try:
+            for later in (False, True):
+                doc_after, ends, saturday = rested(later)
+                got = [i for i in itineraries(doc_after, stops, lines, agencies) if i["rides"]]
+                if got:
+                    picks, arrive, dawned = choose(got, when, False, lines, stops), False, True
+                    after = (ends, "after_shabbat" if saturday else "after_holiday")
+                    break
+        except Exception as e:
+            log("planner failed after the days off:", repr(e))
     # Routes on the ministry's own times that the predicted ones missed, at Kav's times and margins (on_kavs_times()):
     # after Kav's own, to MOST_SHOWN, never first.
-    added = []
-    if official is not None and ask is not None and not arrive and len(picks) < MOST_SHOWN:
+    added, also = [], []  # the official planner's routes at Kav's times and the one-line ones, for the recipe
+    if official is not None and ask is not None and not arrive and len(picks) < MOST_SHOWN and after is None:
         try:
             have = {signature(i, lines, stops) for i in picks}
             fresh = [i for i in itineraries(official(), stops, lines, agencies) if i["rides"] and signature(i, lines, stops) not in have]
             timed = on_kavs_times(choose(fresh, when, arrive, lines, stops, most=2 * MOST_SHOWN), when, lines, ask) if fresh else []
+            also += timed
             for it in choose(timed, when, arrive, lines, stops) if timed else []:
                 if len(picks) + len(added) < MOST_SHOWN and signature(it, lines, stops) not in have:
                     have.add(signature(it, lines, stops))
                     added.append(it)
         except Exception as e:
             log("planner failed on the ministry's times:", repr(e))
+    # No one-line route in the list: the best the planner has with no change, within reach of the soonest route
+    # (LATEST_SHOWN of its time), in the list with Kav's own.
+    if direct is not None and not arrive and picks and after is None and \
+            not any(i["rides"] == 1 for i in picks + added):
+        try:
+            got = [i for i in itineraries(direct(), stops, lines, agencies) if i["rides"] == 1 and longest_walk(i) <= WALK_MOST]
+            soonest = min(picks, key=lambda i: (i["arr"], i["rides"]))
+            reach = soonest["arr"] + LATEST_SHOWN * max(soonest["arr"] - soonest["dep"], 600)
+            got = [i for i in got if i["arr"] <= reach]
+            also += got
+            if got:
+                picks.append(min(got, key=shown_order))
+        except Exception as e:
+            log("planner failed on one-line routes:", repr(e))
+    # The planner's answers weighing routes as the recipe does: more of the routes the recipe would hold, below.
+    if weighed is not None and not arrive and last is None and picks and not dawned:
+        try:
+            found = found + [i for got in weighed() for i in itineraries(got, stops, lines, agencies)]
+        except Exception as e:
+            log("planner failed on the weighed questions:", repr(e))
+    # Leaving at a time, the recipe picks the list from everything found (not beside the next morning's, which
+    # keep their own list).
+    recipe = not arrive and last is None and not dawned and any(i["rides"] for i in found + also)
+    if recipe:
+        picks, added = recipe_list(found + also, when, lines, stops), []
     best = (lambda i: (-i["dep"], i["arr"])) if arrive else (lambda i: (i["arr"], -i["dep"]))
     extra = []
     # Walking or cycling all the way, an hour at most.
@@ -3611,9 +4314,11 @@ def plan_answer(doc, when, arrive, ask=None, more=None, frm=None, to=None, again
     if ask is not None:
         alternatives(picks + added + [i for i in extra if i["rides"]], stops, lines, agencies, ask, None if arrive else when)
         picks = merged(picks, lines, stops, arrive)
-    picks.sort(key=rank_by if arrive else rank)
+    picks.sort(key=(lambda i: route_cost(i, when, lines, arrive)) if arrive or recipe else shown_order)
     picks += added
     tags = tag([facts(it) for it in picks], arrive)
+    if after is not None:
+        tags = [([after[1]] + t)[:2] if it["dep"] >= after[0] else t for it, t in zip(picks, tags)]
     if not arrive:
         for it in picks:
             lean_at_night(it, when)
@@ -3641,6 +4346,14 @@ SHAPE = re.compile(r"^/live/v1/shape/([0-9]{1,9})$")
 BUNDLE_FILE = re.compile(r"^/live/v1/bundle/(manifest\.json|manifest\.json\.sig|il\.kav\.gz)$")
 BUNDLE_TYPES = {"manifest.json": "application/json", "manifest.json.sig": "text/plain", "il.kav.gz": "application/gzip"}
 NUMBER = re.compile(r"^[0-9A-Za-z\u05d0-\u05ea]{1,8}$")
+# Kav's links, which the app shares (a trip, a line, a stop): a phone with Kav opens them in the app by the statement
+# below (Android App Links, the release key's certificate); a browser goes to Kav's releases to get it. Answered to
+# anyone, unsigned; nothing of the path past its first letter or of the query is read, kept or passed on.
+LINK = re.compile(r"^/[tls](/.*)?$")
+RELEASES = "https://github.com/ImNoammm/kav/releases/latest"
+ASSET_LINKS = json.dumps([{"relation": ["delegate_permission/common.handle_all_urls"], "target": {
+    "namespace": "android_app", "package_name": "uk.noammm.kav", "sha256_cert_fingerprints": [
+        "9D:18:3D:43:86:58:40:59:F5:33:76:98:7C:E0:A5:DE:49:60:CD:7A:9B:F4:49:5E:2C:F0:E1:20:F0:58:0F:44"]}}]).encode()
 
 
 def signed(path, mark, now=None):
@@ -3730,8 +4443,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def public(self, path):
+        """The app link statement and Kav's links, for anyone: whether path was one of them."""
+        if path == "/.well-known/assetlinks.json":
+            code, kind, body, more = 200, "application/json", ASSET_LINKS, {}
+        elif LINK.match(path):
+            code, kind, body = 302, "text/html; charset=utf-8", b'<!doctype html><a href="%s">Get Kav</a>\n' % RELEASES.encode()
+            more = {"Location": RELEASES, "Cache-Control": "no-store"}
+        else:
+            return False
+        self.send_response(code)
+        for name, value in {"Content-Type": kind, **more, "Content-Length": str(len(body))}.items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if self.public(path):
+            return
         # Kav alone, and the container's own health check.
         if self.client_address[0] != "127.0.0.1" and not signed(path, self.headers.get("X-Kav")):
             return self.answer(404, {"error": "not found"})
@@ -3778,6 +4509,8 @@ class Handler(BaseHTTPRequestHandler):
         noticed()
         rows = [row for r in routes for row in (fresh.routes.get(r, []) if fresh else [])]
         rows = newest(rows + [row for found in pool.map(follow, routes) for row in found])
+        if any((catalog["lines"].get(r) or [None] * 7)[6] == 2 for r in routes):
+            rows = [r[1:] for r in trains_placed([(int(r[0].split("_")[0]), *r) for r in rows], now) if r[0] in routes]
         self.answer(200, {"at": int(now), "next": int(now + FOLLOW_TTL), "v": [list(row) for row in rows]})
 
 
@@ -3791,8 +4524,9 @@ class Handler(BaseHTTPRequestHandler):
         woke = noticed()
         if fresh is None:
             return self.answer(503, {"error": "no recent snapshot"})
-        # A bus that stopped reporting ten minutes ago isn't somewhere to show.
-        rows = [r for r in fresh.rows if south <= r[2] <= north and west <= r[3] <= east and now - r[4] < OLD_POSITION]
+        # A bus that stopped reporting ten minutes ago isn't somewhere to show; a train is where its times put it.
+        rows = [r for r in trains_placed(fresh.rows, now)
+                if south <= r[2] <= north and west <= r[3] <= east and now - r[4] < OLD_POSITION]
         self.answer(200, {
             "at": fresh.at, "next": self.snapshot_next(woke, now),
             "v": [list(r[1:]) for r in rows], "lines": lines_of(r[0] for r in rows),
@@ -3808,7 +4542,7 @@ class Handler(BaseHTTPRequestHandler):
             rows = with_near(rows, codes, now, buses=buses)
             rows = placed([kav_times(r, now, i < len(ministry)) for i, r in enumerate(rows)], now, buses=buses)
             rows = standing(gone_by(running(timetabled(rows, codes, now)), now, buses=buses), now)
-            rows = with_later(named_trains(quiet(rows, now)), codes, now, buses=buses)
+            rows = trains_on_board(with_later(named_trains(quiet(rows, now)), codes, now, buses=buses), now)
         except Exception:
             return self.answer(503, {"error": "the ministry didn't answer"})
         self.answer(200, {
@@ -3842,7 +4576,7 @@ class Handler(BaseHTTPRequestHandler):
             shutil.copyfileobj(f, self.wfile, 1 << 16)
 
     def plan(self, asked):
-        """Routes from one place to another, planned here on the ministry's timetable instead of by Moovit."""
+        """Routes from one place to another, planned here on the ministry's timetable."""
         started = time.time()
         flat, flon, tlat, tlon, when, way, modes, via = asked.groups()
         frm, to = (float(flat), float(flon)), (float(tlat), float(tlon))
@@ -3855,20 +4589,57 @@ class Handler(BaseHTTPRequestHandler):
         asked = when
         if way == "l":
             when = last_way(when)
-        # A trip from or to a train station starts or ends on its platforms, as Moovit's do.
-        at = (station_at(frm), station_at(to)) if not via else (None, None)
+        # A trip from or to a train station starts or ends on its platforms.
+        at = (None, None)
+        if not via:
+            with ThreadPoolExecutor(2) as both:
+                at = tuple(both.map(station_at, (frm, to)))
         window = {"l": LAST_WINDOW, "a": ARRIVE_WINDOW}.get(way)
+        # Asked beside the routes list's own questions, to be ready when plan_answer() takes them.
+        like, main_answer, dawning = None, Future(), None
+        dawn = morning_after(when) if way in "nd" else None
+        rest, resting = (rest_end(when, frm) if way in "nda" and not via else None), None
+        if rest:
+            asking = ThreadPoolExecutor(1)
+            rest_from = max(when, rest[0] - REST_BEFORE)
+            resting = asking.submit(ask_planner, plan_variables(frm, to, rest_from, False, allowed, "main", via,
+                                                                REST_WINDOW, (), at))
+            asking.shutdown(wait=False)
+        if MORNING_TOO and dawn and not via:
+            asking = ThreadPoolExecutor(1)
+            dawning = asking.submit(ask_planner, plan_variables(frm, to, dawn, False, allowed, "main", via, MORNING_TOO_WINDOW, (), at))
+            asking.shutdown(wait=False)
+        officially = None
+        if OFFICIAL_URL and way in "nd":
+            asking = ThreadPoolExecutor(1)
+            officially = asking.submit(ask_official, plan_variables(frm, to, when, arrive, allowed, "main", via, window,
+                                                                    (), at))
+            asking.shutdown(wait=False)
+        if WEIGHED and way in "nd" and not via:
+            asking = ThreadPoolExecutor(1)
+            # half a second inside the wait below, so the answers that came in time are taken when one hasn't
+            like = asking.submit(weighed_answers, frm, to, when, allowed, at, by=WEIGHED_BY - 0.5,
+                                 main=lambda wait: main_answer.result(timeout=wait))
+            asking.shutdown(wait=False)
         try:
-            doc, more = ask_all(frm, to, when, arrive, allowed, way == "n", via, window, at)
+            doc, more = ask_all(frm, to, when, arrive, allowed, way == "n", via, window, at, main_answer.set_result)
         except Exception as e:
             log("planner failed:", repr(e))
             return self.answer(503, {"error": "the planner didn't answer"})
         finally:
             planning.release()
         again = lambda routes: ask_planner(plan_variables(frm, to, when, arrive, allowed, "main", via, window, routes, at))
-        dawn = morning_after(when) if way in "nd" else None
         morning = (lambda: ask_planner(plan_variables(frm, to, dawn, False, allowed, "main", via, MORNING_WINDOW, (), at))) if dawn else None
         reluctant = lambda: ask_planner(plan_variables(frm, to, when, arrive, allowed, "main", via, window, (), at, WALK_RELUCTANCE_AGAIN))
+
+        def rested(later):
+            """The routes list's question after the days off (resting), later the next morning's, and when they end."""
+            if later:
+                doc = ask_planner(plan_variables(frm, to, morning_after(rest[0] + 6 * 3600), False, allowed, "main",
+                                                 via, MORNING_WINDOW, (), at))
+            else:
+                doc = resting.result(timeout=max(0.1, LAST_DAY_BY - (time.time() - started)))
+            return doc, rest[0], rest[1]
 
         def earlier(routes, window=LAST_DAY_WINDOW):
             left = LAST_DAY_BY - (time.time() - started)
@@ -3876,11 +4647,26 @@ class Handler(BaseHTTPRequestHandler):
                 raise TimeoutError("no time left")
             return ask_planner(plan_variables(frm, to, when, arrive, allowed, "main", via, window, routes, at), left)
         wide = min(WIDER_WINDOW, dawn - when) if dawn else WIDER_WINDOW
+
+        def found_too():
+            """The extra questions' answers that came in time: the weighed ones, then the next morning's."""
+            got = []
+            for asked_too in (like, dawning):
+                if asked_too is None:
+                    continue
+                try:
+                    answer = asked_too.result(timeout=max(0.1, WEIGHED_BY - (time.time() - started)))
+                    got += answer if asked_too is like else [answer]
+                except Exception as e:
+                    log("planner failed on an extra question:", repr(e))
+            return got
         self.answer(200, plan_answer(doc, when, arrive, ask_graphql, more, frm, to, again, asked if way == "l" else None,
                                      morning, earlier if way == "l" else None, reluctant,
                                      (lambda: earlier((), "PT%dM" % (wide // 60))) if way in "nd" and wide >= 600 else None,
-                                     (lambda: ask_official(plan_variables(frm, to, when, arrive, allowed, "main", via, window, (), at)))
-                                     if OFFICIAL_URL and way in "nd" else None))
+                                     officially.result if officially else None,
+                                     (lambda: ask_planner(plan_variables(frm, to, when, arrive, allowed, "main", via, DIRECT_WINDOW, (),
+                                                                         at, transfers=0))) if way in "nd" else None,
+                                     found_too if like or dawning else None, rested=rested if resting else None))
 
     def line(self, number, fresh, now):
         """Every bus on the routes that carry this number, and those routes."""

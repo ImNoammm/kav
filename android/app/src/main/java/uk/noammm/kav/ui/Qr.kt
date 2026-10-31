@@ -103,15 +103,19 @@ internal fun QrScanner(modifier: Modifier, onFail: () -> Unit = {}, onCode: (Str
     )
 }
 
-// A ticket's QR as dark squares on white. The writer leaves the four-square quiet border scanners need.
+// A ticket's QR as dark squares on white. The writer leaves the four-square quiet border scanners need. Each square is
+// whole pixels, the code centred in what's left over: a gate's scanner reads even, sharp squares fastest, as HopOn's
+// own app draws them, where squares of fractions of a pixel came out uneven with grey edges.
 @Composable
 internal fun QrCode(text: String, modifier: Modifier = Modifier) {
     val matrix = remember(text) { runCatching { QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, 0, 0) }.getOrNull() }
     Canvas(modifier.aspectRatio(1f).background(Color.White)) {
         val m = matrix ?: return@Canvas
-        val cell = size.minDimension / m.width
+        val cell = kotlin.math.floor(size.minDimension / m.width).coerceAtLeast(1f)
+        val left = kotlin.math.floor((size.width - cell * m.width) / 2)
+        val top = kotlin.math.floor((size.height - cell * m.height) / 2)
         for (y in 0 until m.height) for (x in 0 until m.width) {
-            if (m[x, y]) drawRect(Color.Black, Offset(x * cell, y * cell), Size(cell + 0.5f, cell + 0.5f))
+            if (m[x, y]) drawRect(Color.Black, Offset(left + x * cell, top + y * cell), Size(cell, cell))
         }
     }
 }

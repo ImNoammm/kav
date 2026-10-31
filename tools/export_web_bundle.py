@@ -17,8 +17,8 @@ from prepare import carmelit, day_masks, naim_feed, once, untangle  # the timeta
 ZIP  = os.environ.get("KAV_GTFS", os.path.join(HERE, ".cache", "israel-gtfs.zip"))
 # Tel Aviv's weekend lines (Na'im BeSofash), in no ministry feed: the city's own GTFS
 # (server/otp/prepare.py NAIM_URL) joins the ministry's when it's there, its stops the
-# ministry's of the same code, its operator named as riders know it, which the Lines
-# tab also tells Moovit's copy of these lines by (ui/Lines.kt NAIM_NAME).
+# ministry's of the same code, its operator named as riders know it, the name the Lines
+# tab uses for these lines (ui/Lines.kt NAIM_NAME).
 NAIM = os.environ.get("KAV_NAIM", os.path.join(HERE, ".cache", "naim-gtfs.zip"))
 NAIM_NAME = "נעים בסופ״ש"
 OUT  = os.environ.get("KAV_OUT",  os.path.join(HERE, "android", "app", "src", "main", "assets"))
@@ -121,16 +121,17 @@ for r in table("agency.txt"):
 print(f"agencies: {len(agencies):,}")
 
 # The feed gives the Carmelit and the Rakavlit the same type 5, though one is an
-# underground funicular and the other hangs from a wire over the Technion. Moovit's
-# own agency record separates them online; offline the split is made here, where the
-# agency is still in hand: agency 20 is the Carmelit, and 7 is MVRouteType's
-# funicular, which is what it is. The Rakavlit keeps 5, the cable car it actually is.
+# underground funicular and the other hangs from a wire over the Technion. The split
+# is made here, where the agency is still in hand: agency 20 is the Carmelit, and 7
+# is GTFS's funicular, which is what it is. The Rakavlit keeps 5, the cable car it
+# actually is.
 #
-# Shuttles get the same treatment. The MOT feed has no shuttle type - Moovit's own
-# shuttle category (the Israel Railways replacement runs, Nativ La'Asakim) is
-# curated data that never reaches this feed at all - but the park-and-ride shuttle
-# lines it does carry arrive as ordinary buses whose stops are named for what they
-# are. 711 is the extended-GTFS "Shuttle Bus", so they leave here wearing it.
+# Shuttles get the same treatment. The MOT feed has no shuttle type: the shuttles
+# kept as a category of their own (the Israel Railways replacement runs, Nativ
+# La'Asakim) are curated data that never reaches this feed. The park-and-ride
+# shuttle lines it does carry arrive as ordinary buses whose stops are named for
+# what they are. 711 is the extended-GTFS "Shuttle Bus", so they leave here
+# wearing it.
 CARMELIT_AGENCY = "20"
 SHUTTLE = "שאטל"
 

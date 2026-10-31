@@ -4,14 +4,13 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-// Moovit's own search can't place an exact street address (its app asks Google with a key only it may use).
 // A search holding a house number asks Google's map search for the house, and GovMap, the Survey of Israel's map,
 // when Google only knows the street: measured on 200 bank branches, Google has the house for about 9 in 10 and
 // GovMap for 4 in 5, and each finds some the other misses. GovMap gets only the typed text, never a location.
 object Addresses {
     private const val SEARCH = "https://www.govmap.gov.il/api/search-service/autocomplete"
 
-    fun find(query: String, at: Pair<Double, Double>?): List<Moovit.Place> {
+    fun find(query: String, at: Pair<Double, Double>?): List<Transit.Place> {
         val typed = TypedAddress.parse(query) ?: return emptyList()
         runCatching { GoogleMaps.geocode(query, at) }.getOrNull()?.let { return listOf(it) }
         val body = JSONObject()
@@ -35,7 +34,7 @@ object Addresses {
             c.disconnect()
         }
         val results = JSONObject(String(raw, Charsets.UTF_8)).optJSONArray("results") ?: return emptyList()
-        val out = ArrayList<Moovit.Place>()
+        val out = ArrayList<Transit.Place>()
         for (i in 0 until results.length()) {
             val r = results.getJSONObject(i)
             if (r.optString("type") != "address") continue
@@ -45,7 +44,7 @@ object Addresses {
             // GovMap also offers the street's other numbers, other streets with this number and other towns' streets.
             if (!typed.numberIs(number) || !typed.streetIs(street) || !typed.townIs(town)) continue
             val (lat, lon) = mercator(r.optString("shape")) ?: continue
-            out.add(Moovit.Place(name = street, detail = town, lat = lat, lon = lon))
+            out.add(Transit.Place(name = street, detail = town, lat = lat, lon = lon))
         }
         val near = at ?: return out.take(2)
         return out.sortedBy { uk.noammm.kav.ui.metres(near.first, near.second, it.lat, it.lon) }.take(2)

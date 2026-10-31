@@ -49,7 +49,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -85,8 +85,8 @@ fun WhenSheet(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 when (chosen) {
-                    Moovit.TIME_ARRIVAL -> T("Arrive by", "הגעה עד")
-                    Moovit.TIME_DEPARTURE -> T("Depart at", "יציאה בשעה")
+                    Transit.TIME_ARRIVAL -> T("Arrive by", "הגעה עד")
+                    Transit.TIME_DEPARTURE -> T("Depart at", "יציאה בשעה")
                     else -> T("When", "מתי")
                 },
                 style = K.type.headline,
@@ -103,12 +103,12 @@ fun WhenSheet(
         Spacer(Modifier.height(K.gap3))
 
         if (chosen == null) {
-            WhenRow(T("Set departure time", "קביעת שעת יציאה")) { mode = Moovit.TIME_DEPARTURE }
-            WhenRow(T("Set desired arrival time", "קביעת שעת הגעה רצויה")) { mode = Moovit.TIME_ARRIVAL }
-            WhenRow(T("Latest departure", "היציאה האחרונה")) { close { onPick(0L, Moovit.TIME_LAST) } }
-            val resettable = departAt > 0L || timeType == Moovit.TIME_LAST
+            WhenRow(T("Set departure time", "קביעת שעת יציאה")) { mode = Transit.TIME_DEPARTURE }
+            WhenRow(T("Set desired arrival time", "קביעת שעת הגעה רצויה")) { mode = Transit.TIME_ARRIVAL }
+            WhenRow(T("Latest departure", "היציאה האחרונה")) { close { onPick(0L, Transit.TIME_LAST) } }
+            val resettable = departAt > 0L || timeType == Transit.TIME_LAST
             WhenRow(T("+15 min", "${T.ltr("+15")} דק׳"), last = !resettable) {
-                close { onPick(System.currentTimeMillis() + 15 * 60_000L, Moovit.TIME_DEPARTURE) }
+                close { onPick(System.currentTimeMillis() + 15 * 60_000L, Transit.TIME_DEPARTURE) }
             }
             if (resettable) WhenRow(T("Leave now", "צאו עכשיו"), tint = K.accentInk, last = true) { close(onNow) }
         } else {
@@ -296,7 +296,7 @@ private fun dayLabel(today: Calendar, offset: Int): String {
 }
 
 internal fun clampDepart(pickedMs: Long, timeType: Int, now: Long): Pair<Long, Int> =
-    if (pickedMs <= now) 0L to Moovit.TIME_DEPARTURE else pickedMs to timeType
+    if (pickedMs <= now) 0L to Transit.TIME_DEPARTURE else pickedMs to timeType
 
 private fun daysBetween(from: Calendar, to: Calendar): Int {
     fun midnight(c: Calendar) = (c.clone() as Calendar).apply {

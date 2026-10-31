@@ -13,7 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.data.KavLive
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 
 // The road a route takes, from Kav's server: empty until it comes, or if the route has none.
 @Composable
@@ -21,23 +21,27 @@ internal fun rememberKavShape(route: Int): List<Pair<Double, Double>> {
     val shape by produceState(KavLive.shapeNow(route), route) {
         value = KavLive.shapeNow(route)
         if (route <= 0 || value.isNotEmpty()) return@produceState
-        // One that didn't come, while the server restarts say, is asked for again a little later.
-        for (wait in longArrayOf(0, 5_000, 15_000)) {
+        // One that didn't come, or came empty, while the server restarts say, is asked for again a little later, and
+        // then less often, for as long as it's wanted.
+        var wait = 0L
+        while (true) {
             delay(wait)
-            withContext(Dispatchers.IO) { runCatching { KavLive.shape(route) }.getOrNull() }?.let { value = it; return@produceState }
+            withContext(Dispatchers.IO) { runCatching { KavLive.shape(route) }.getOrNull() }
+                ?.takeIf { it.size >= 2 }?.let { value = it; return@produceState }
+            wait = (wait * 2).coerceIn(5_000, 60_000)
         }
     }
     return shape
 }
 
 // Bus positions from Kav's server for these routes while the screen is on, asked again when the
-// server expects newer ones. Empty when live locations come from Moovit.
+// server expects newer ones.
 @Composable
 internal fun rememberKavSpots(routes: List<Int>): Map<String, KavLive.Spot> {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val on = KavLive.enabled
     val asked = remember(routes) { routes.distinct().take(KavLive.FOLLOW_MAX).sorted() }
-    // Each Moovit refresh can bring a slightly different set of routes; that alone asks no more than every 10 s.
+    // Each refresh can bring a slightly different set of routes; that alone asks no more than every 10 s.
     val last = remember { longArrayOf(0L) }
     val spots by produceState(emptyMap<String, KavLive.Spot>(), asked, on, lifecycle) {
         if (!on || asked.isEmpty()) { value = emptyMap(); return@produceState }
@@ -76,16 +80,22 @@ internal fun freshColour(f: Freshness): androidx.compose.ui.graphics.Color = whe
     Freshness.OFF -> K.critical
 }
 
-// What a bus card says about a position it has.
+// What a bus card says about a position it has: a live one by how long ago it came, to the second.
 internal fun locationHeadline(sampleUtc: Long, now: Long): Pair<String, androidx.compose.ui.graphics.Color> =
     when (freshnessOf(sampleUtc, now)) {
-        Freshness.LIVE -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.realtime
+        Freshness.LIVE -> updatedAgo(now - sampleUtc) to K.realtime
         Freshness.ESTIMATED -> T("Location is estimated", "המיקום משוער") to K.problem
         Freshness.OFF -> T("Location may not be accurate", "ייתכן שהמיקום אינו מדויק") to K.critical
     }
 
+internal fun updatedAgo(seconds: Long): String {
+    val s = seconds.coerceAtLeast(0)
+    return if (s < 60) T("Location updated $s s ago", "המיקום עודכן לפני $s שנ׳")
+    else T("Location updated ${s / 60} min ago", "המיקום עודכן לפני ${s / 60} דק׳")
+}
+
 // When the bus last reported where it was, and how fast it went then when Kav's server says.
-internal fun updatedLabel(a: Moovit.Arrival): String {
+internal fun updatedLabel(a: Transit.Arrival): String {
     val at = clockFormat().format(java.util.Date(a.sampleUtc * 1000))
     val speed = when {
         !a.hasLocation || a.speed < 0 -> ""
@@ -95,9 +105,9 @@ internal fun updatedLabel(a: Moovit.Arrival): String {
     return T("Location updated: $at", "המיקום עודכן: $at") + speed
 }
 
-// A trip's live layer with its buses where Kav's server last saw them, when that's newer than Moovit.
+// A trip's live layer with its buses where Kav's server last saw them, when that's newer.
 @Composable
-internal fun rememberFresher(trip: Moovit.Itinerary, r: Moovit.Resolved): Moovit.Resolved {
+internal fun rememberFresher(trip: Transit.Itinerary, r: Transit.Resolved): Transit.Resolved {
     val routes = remember(trip, r.live) { KavLive.tripRoutes(trip, r) }
     val spots = rememberKavSpots(routes)
     return remember(r, spots) { if (spots.isEmpty()) r else r.withLive(KavLive.fresher(r.live, spots)) }
@@ -105,7 +115,7 @@ internal fun rememberFresher(trip: Moovit.Itinerary, r: Moovit.Resolved): Moovit
 
 // A bus station's platforms come from the timetable, so a trip with a bus has it loaded.
 @Composable
-internal fun PlannedPlatforms(trip: Moovit.Itinerary, r: Moovit.Resolved) {
+internal fun PlannedPlatforms(trip: Transit.Itinerary, r: Transit.Resolved) {
     val app = LocalContext.current.applicationContext
     val buses = remember(trip, r.lines) { trip.rides.flatMap { it.options }.any { !r.isTrain(it) } }
     LaunchedEffect(buses) { if (buses) runCatching { uk.noammm.kav.loadNet(app) } }

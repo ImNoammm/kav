@@ -36,13 +36,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 
-class Favourite(val id: String, val name: String, val icon: String, val place: Moovit.Place?) {
-    fun copy(name: String = this.name, icon: String = this.icon, place: Moovit.Place? = this.place) =
+class Favourite(val id: String, val name: String, val icon: String, val place: Transit.Place?) {
+    fun copy(name: String = this.name, icon: String = this.icon, place: Transit.Place? = this.place) =
         Favourite(id, name, icon, place)
 
     companion object {
@@ -118,8 +118,8 @@ fun favouriteIcon(key: String): ImageVector =
 val Favourite.label: String get() = if (id == Favourite.HOME) T("Home", "בית") else name
 
 // The saved place under the favourite's own name, its address or stop name kept as the detail.
-fun Favourite.named(p: Moovit.Place): Moovit.Place =
-    if (label.isBlank() || label == p.name) p else Moovit.Place(label, p.name, p.lat, p.lon, p.type, p.mode)
+fun Favourite.named(p: Transit.Place): Transit.Place =
+    if (label.isBlank() || label == p.name) p else Transit.Place(label, p.name, p.lat, p.lon, p.type, p.mode)
 
 private val SLOT = 72.dp + K.gap2
 

@@ -55,7 +55,7 @@ internal fun searchWords(s: String): List<String> {
 
 internal fun spacedWords(s: String) = searchWords(s).joinToString(" ", " ", " ")
 
-// Like Moovit's own stop search: every typed word has to start a word of the name, code or mode.
+// Every typed word has to start a word of the name, code or mode.
 fun Net.stopsMatching(q: String, at: Pair<Double, Double>?, modeName: (Int) -> String): List<Int> {
     val need = searchWords(q).map { w -> forms(w).map { " $it" } }
     if (need.isEmpty()) return emptyList()

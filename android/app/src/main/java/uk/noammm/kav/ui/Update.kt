@@ -29,8 +29,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.launch
+import uk.noammm.kav.BuildConfig
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.R
+import uk.noammm.kav.data.AutoUpdate
+import uk.noammm.kav.data.StartNotice
 import uk.noammm.kav.data.Updates
 import androidx.compose.runtime.LaunchedEffect
 
@@ -39,7 +42,54 @@ fun UpdatePrompt(model: KavModel) {
     val release = model.update ?: return
     if (model.updateDismissed || !Shown.updatePrompts) return
     val ctx = LocalContext.current
-    Dialog(onDismissRequest = { model.updateDismissed = true }) {
+    ReleasePrompt("Kav", "${Updates.installedVersion(ctx)} → ${release.version}", release, { model.updateDismissed = true }, { UpdateProgress(model) }) {
+        UpdateButton(model, Modifier.weight(1f)) { model.startUpdate(ctx) }
+    }
+}
+
+// Install now while it's running, and whether the last one didn't go through (InstallStatus).
+object UpdateRun {
+    var installing by mutableStateOf(false)
+    var failed by mutableStateOf(false)
+}
+
+// An update Kav downloaded and checked in the background (AutoUpdate), asked about as Kav opens: the update prompt with
+// nothing left to download. Install now hands it to Android's installer, which closes Kav; Later asks again next time.
+@Composable
+internal fun ReadyPrompt(notice: AutoUpdate.Notice, onLater: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val busy = UpdateRun.installing
+    ReleasePrompt(
+        T("Kav ${notice.to} is ready 🎉", "Kav ${notice.to} מוכנה 🎉"), "${notice.from} → ${notice.to}", notice.release(),
+        { if (!busy) { UpdateRun.failed = false; onLater() } },
+        {
+            if (UpdateRun.failed) Text(T("It didn't install.", "ההתקנה לא הושלמה."), fontSize = 12.sp, color = K.critical)
+            else if (busy) Text(T("Installing: Kav closes when it's done.", "מתקינים: Kav תיסגר כשזה יסתיים."), fontSize = 12.sp, color = K.dim)
+        },
+    ) {
+        KavButton(T("Install now", "להתקין עכשיו"), {
+            if (busy) return@KavButton
+            if (!Updates.canInstall(ctx)) { Updates.askInstallPermission(ctx); return@KavButton }
+            UpdateRun.installing = true
+            UpdateRun.failed = false
+            val app = ctx.applicationContext
+            scope.launch {
+                val handed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { AutoUpdate.installNow(app) }.getOrDefault(false) }
+                if (!handed) { UpdateRun.installing = false; UpdateRun.failed = true }
+            }
+        }, Modifier.weight(1f), busy = busy)
+    }
+}
+
+// A new version's popup: Kav's icon, the versions, the release's notes from GitHub, and Later (when there's one to
+// put off) beside its action.
+@Composable
+private fun ReleasePrompt(
+    title: String, versions: String, release: Updates.Release, onLater: () -> Unit, status: @Composable () -> Unit = {},
+    later: Boolean = true, action: @Composable RowScope.() -> Unit,
+) {
+    Dialog(onDismissRequest = onLater) {
         Column(
             Modifier.fillMaxWidth().panel(K.rCard, solid = true).padding(K.gap5),
             verticalArrangement = Arrangement.spacedBy(K.gap4),
@@ -47,18 +97,15 @@ fun UpdatePrompt(model: KavModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
                 AppIcon(56.dp)
                 Column {
-                    Text("Kav", style = K.type.title)
-                    Text(T.ltr("${Updates.installedVersion(ctx)} → ${release.version}"), style = K.type.subhead.tabular)
+                    Text(title, style = K.type.title)
+                    Text(T.ltr(versions), style = K.type.subhead.tabular)
                 }
             }
             ReleaseNotes(release, maxHeight = 260.dp)
-            UpdateProgress(model)
+            status()
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                KavButton(
-                    T("Later", "אחר כך"), { model.updateDismissed = true }, Modifier.weight(1f).heightIn(min = 52.dp),
-                    style = ButtonStyle.Secondary,
-                )
-                UpdateButton(model, Modifier.weight(1f)) { model.startUpdate(ctx) }
+                if (later) KavButton(T("Later", "אחר כך"), onLater, Modifier.weight(1f).heightIn(min = 52.dp), style = ButtonStyle.Secondary)
+                action()
             }
         }
     }
@@ -117,11 +164,12 @@ fun UpdateSection(model: KavModel) {
     val scope = rememberCoroutineScope()
     val release = model.update
     var checking by remember { mutableStateOf(false) }
-    // The notes of the version in hand, from the same release list the update check reads, when it's the newest.
+    // The notes of the version in hand, from the newest release the background check kept, when that's this one: opening
+    // this page asks GitHub nothing.
     var installedNotes by remember { mutableStateOf<Updates.Release?>(null) }
     LaunchedEffect(release) {
-        if (release != null || !Shown.updatePrompts) return@LaunchedEffect
-        installedNotes = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Updates.latest() } }.getOrNull()
+        if (release != null) return@LaunchedEffect
+        installedNotes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Updates.stored(ctx) }
             ?.takeIf { it.version.removePrefix("v") == Updates.installedVersion(ctx).removePrefix("v") }
     }
     Column(Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard).padding(K.gap4)) {
@@ -167,6 +215,54 @@ fun UpdateSection(model: KavModel) {
         }
         AnimatedVisibility(model.updateProgress != null || model.updateError != null, enter = opening, exit = closing) {
             Column(Modifier.padding(top = K.gap3)) { UpdateProgress(model) }
+        }
+    }
+}
+
+// Said once, the first time Kav opens after an update, one it downloaded itself (AutoUpdate) or one installed by hand
+// (WhatsNew): the version it came from, when known, and the one it's on, and what's new in it, open from the start as
+// in ReadyPrompt.
+@Composable
+internal fun UpdatedNotice(notice: AutoUpdate.Notice, onClose: () -> Unit) =
+    ReleasePrompt(
+        T("Kav has been updated", "Kav עודכנה"), if (notice.from.isBlank()) notice.to else "${notice.from} → ${notice.to}",
+        notice.release(), onClose, later = false,
+    ) {
+        KavButton(T("Close", "סגירה"), onClose, Modifier.weight(1f))
+    }
+
+// The message this version brings (StartNotice), once, in ReleasePrompt's look: its text, then why Kav needs help, and
+// two ways to close it, Got it and Buy me a coffee, which opens the page as well. On a short screen the text gives way,
+// so the ask and the buttons stay in view.
+@Composable
+internal fun NoticePrompt(notice: StartNotice.Message, onClose: (coffee: Boolean) -> Unit) {
+    Dialog(onDismissRequest = { onClose(false) }) {
+        Column(
+            Modifier.fillMaxWidth().panel(K.rCard, solid = true).padding(K.gap5),
+            verticalArrangement = Arrangement.spacedBy(K.gap4),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
+                AppIcon(56.dp)
+                Column {
+                    Text(notice.title, style = K.type.title)
+                    Text(T.ltr(BuildConfig.VERSION_NAME), style = K.type.subhead.tabular)
+                }
+            }
+            Column(Modifier.weight(1f, fill = false).fillMaxWidth().heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                Separator(0.dp)
+                Spacer(Modifier.height(K.gap3))
+                Text(notice.text, style = K.type.subhead)
+            }
+            Column {
+                Separator(0.dp)
+                Spacer(Modifier.height(K.gap3))
+                Text(notice.helpTitle, style = K.type.headline)
+                Text(notice.help, style = K.type.subhead, modifier = Modifier.padding(top = K.gap1))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+                KavButton(T("Got it", "הבנתי"), { onClose(false) }, Modifier.heightIn(min = 52.dp), style = ButtonStyle.Secondary)
+                KavButton(T("Buy me a coffee", "קנו לי קפה"), { onClose(true) }, Modifier.weight(1f))
+            }
         }
     }
 }

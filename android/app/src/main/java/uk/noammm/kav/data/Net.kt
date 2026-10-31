@@ -10,12 +10,12 @@ import java.util.zip.GZIPInputStream
 // The language stops', stations', towns' and lines' ends' names are shown in, a setting of its own that changes nothing
 // else (Settings, Language and time): English where the timetable has a name's English one (the ministry's), else the
 // Hebrew. Kav keeps working in the ministry's Hebrew names, which its server matches on, and changes them only where a
-// name is shown; Moovit answers in Kav's own language, so its names are changed there the other way too.
+// name is shown.
 object StopNames {
     var english by mutableStateOf(false)
 }
 
-// A name as shown, for a name from the timetable, Kav's server, Moovit or a stop Kav keeps.
+// A name as shown, for a name from the timetable, Kav's server or a stop Kav keeps.
 fun shownName(name: String): String = uk.noammm.kav.Loaded.net?.shown(name) ?: name
 
 private class IntVec(cap: Int = 1 shl 16) {
@@ -78,7 +78,7 @@ class Net private constructor() {
         cityOf(s).let { if (StopNames.english) cityEn.getOrNull(cityOf[s])?.ifEmpty { null } ?: it else it }
 
     // Any name the timetable has, a stop's, a town's or a line's end, as shown: the ministry's Hebrew (Kav's server, a
-    // stop Kav kept) in English, or Moovit's English, when Kav is in English, back in Hebrew. Others stay as they are.
+    // stop Kav kept) in English, or an English one, when Kav is in English, back in Hebrew. Others stay as they are.
     fun shown(name: String): String = when {
         name.isEmpty() -> name
         StopNames.english -> english[name.trim()] ?: name

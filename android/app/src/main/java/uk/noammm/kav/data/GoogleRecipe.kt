@@ -8,7 +8,7 @@ import java.net.URI
 // Vela Maps (github.com/PimpinPumpkin/Vela) keeps them current in a signed calibration.json its app reads at launch,
 // so a fix reaches every install without an update, and Kav reads the same file. It takes a copy only when Vela's key
 // signed it, it points at Google alone and it is newer than Kav's, and it reads just the search recipe from it: none
-// of Vela's notices or scripts. Kav's own recipe (KavRecipe) can patch it for a fix Vela only shipped in its app.
+// of Vela's notices or scripts.
 internal class GoogleRecipe private constructor(
     val version: Int,
     val userAgent: String,
@@ -34,9 +34,9 @@ internal class GoogleRecipe private constructor(
         )
         private val GOOGLE = setOf("www.google.com", "google.com")
         private val SEARCH_KEYS = listOf("results", "single", "name", "address", "lat", "lng")
-        private val SUGGEST_KEYS = listOf("rows", "title", "primary", "secondary", "lat", "lng", "lat2", "lng2")
+        private val SUGGEST_KEYS = listOf("rows", "title", "primary", "secondary", "lat", "lng", "lat2", "lng2", "id", "kinds")
 
-        // Vela's recipe at version 25 (8 October 2026), which Kav uses until Vela signs a newer one.
+        // Vela's recipe at version 25, which Kav uses until Vela signs a newer one.
         val DEFAULT = GoogleRecipe(
             version = 25,
             userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
@@ -67,13 +67,13 @@ internal class GoogleRecipe private constructor(
             suggestPaths = mapOf(
                 "rows" to intArrayOf(0, 1), "title" to intArrayOf(0, 0), "primary" to intArrayOf(1, 0),
                 "secondary" to intArrayOf(2, 0), "lat" to intArrayOf(11, 2), "lng" to intArrayOf(11, 3),
-                "lat2" to intArrayOf(13, 0, 3, 2), "lng2" to intArrayOf(13, 0, 3, 3),
+                "lat2" to intArrayOf(13, 0, 3, 2), "lng2" to intArrayOf(13, 0, 3, 3), "id" to intArrayOf(0, 27),
+                "kinds" to intArrayOf(7, 2),
             ),
         )
 
-        // Vela's newest recipe that verified, and Kav's patch on top of it.
+        // Vela's newest recipe that verified.
         @Volatile private var vela = DEFAULT
-        @Volatile private var patch: JSONObject? = null
 
         @Volatile
         var current = DEFAULT
@@ -81,25 +81,20 @@ internal class GoogleRecipe private constructor(
 
         // The copy kept from an earlier check, then Vela's latest at most once a day, or now when forced. Blocks, so
         // off the main thread.
-        fun refresh(ctx: Context, force: Boolean = false) = VELA.refresh(ctx, force) { body ->
+        fun refresh(ctx: Context, force: Boolean = false) = VELA.refresh(ctx, force, ::take)
+
+        // The copy kept from an earlier check, without the network: Kav opens with it, and the background check (Checks)
+        // asks for Vela's published one.
+        fun load(ctx: Context) = VELA.load(ctx, ::take)
+
+        fun checkedAt(ctx: Context) = VELA.checkedAt(ctx)
+
+        private fun take(body: ByteArray): Boolean {
             val recipe = runCatching { parse(JSONObject(body.toString(Charsets.UTF_8)), DEFAULT) }.getOrNull()
-            if (recipe == null || recipe.version <= vela.version) return@refresh false
+            if (recipe == null || recipe.version <= vela.version) return false
             vela = recipe
-            current = patched()
-            true
-        }
-
-        // Kav's own recipe can carry a fix Vela shipped only in its app, made for the Vela file it names
-        // ("velaVersion"). Once Vela publishes a newer file of its own, Vela's wins.
-        fun patchWith(google: JSONObject?) {
-            patch = google
-            current = patched()
-        }
-
-        private fun patched(): GoogleRecipe {
-            val p = patch?.takeIf { it.length() > 0 } ?: return vela
-            if (vela.version > p.optInt("velaVersion", Int.MAX_VALUE)) return vela
-            return runCatching { parse(p, vela) }.getOrNull() ?: vela
+            current = recipe
+            return true
         }
 
         // Fields left out keep base's. A recipe that would ask anyone but Google, or lacks a slot Kav fills in, is

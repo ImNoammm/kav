@@ -244,7 +244,11 @@ fun KavChip(
 // One choice of a few that changes a view: equal segments in one capsule, the chosen one on an accent thumb that slides
 // to it, as a chosen chip is filled. Text only; five segments at most.
 @Composable
-fun KavSegmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+fun KavSegmented(
+    options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier,
+    // A segment that can't be chosen right now: greyed and not tappable, with the reason said beside the control.
+    enabled: (Int) -> Boolean = { true },
+) {
     BoxWithConstraints(modifier.fillMaxWidth().height(40.dp).clip(K.capsule).background(K.fill).padding(3.dp)) {
         val each = maxWidth / options.size.coerceAtLeast(1)
         val at by animateDpAsState(each * selected, spring(dampingRatio = 1f, stiffness = 500f), label = "thumb")
@@ -254,10 +258,17 @@ fun KavSegmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, 
                 Box(
                     Modifier.weight(1f).fillMaxHeight().clip(K.capsule)
                         .semantics { this.selected = i == selected }
-                        .clickable(role = Role.Tab) { onSelect(i) },
+                        .clickable(enabled = enabled(i), role = Role.Tab) { onSelect(i) },
                     contentAlignment = Alignment.Center,
                 ) {
-                    val ink by animateColorAsState(if (i == selected) K.onAccent else K.textSecondary, tween(150), label = "segmentInk")
+                    val ink by animateColorAsState(
+                        when {
+                            i == selected -> K.onAccent
+                            enabled(i) -> K.textSecondary
+                            else -> K.textTertiary
+                        },
+                        tween(150), label = "segmentInk",
+                    )
                     Text(
                         option, style = K.type.subhead, maxLines = 1, color = ink,
                         fontWeight = if (i == selected) FontWeight.Medium else null,
@@ -466,8 +477,8 @@ fun LinePlateBadge(
     val shape = RoundedCornerShape(K.rBadge)
     val ink = plate?.ink ?: K.text
     val mark = if (dense) 12.dp else 14.dp
-    // Moovit's look, for buses when chosen in Settings: a grey plate over a strip of the operator's colour.
-    if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && mode == Mode.BUS) Column(
+    // The strip look, for buses when chosen in Settings: a grey plate over a strip of the operator's colour.
+    if (K.lineBadgeAppearance == LineBadgeAppearance.STRIP && mode == Mode.BUS) Column(
         modifier
             .widthIn(min = 44.dp)
             .width(IntrinsicSize.Max)

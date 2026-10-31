@@ -21,7 +21,7 @@ import uk.noammm.kav.data.MapFile
 fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
     val ctx = LocalContext.current
     var page by rememberSaveable { mutableIntStateOf(0) }
-    // A custom spot for Moovit to see is picked on the whole screen, as in Settings.
+    // A custom spot for search to see is picked on the whole screen, as in Settings.
     var choosing by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler(enabled = page > 0) { page-- }
 
@@ -147,6 +147,10 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                     is MapFile.State.Failed -> OnboardingButton(T("Try again", "נסו שוב")) { MapFile.startDownload(ctx) }
                     else -> OnboardingButton(T("Download", "הורדה")) { MapFile.startDownload(ctx) }
                 }
+            } else if (p == 5) {
+                AutomaticUpdatesStep()
+                Spacer(Modifier.height(K.gap8))
+                OnboardingButton(T("Next", "הבא")) { page = 6 }
             } else {
                 Text(T("Privacy", "פרטיות"), style = K.type.largeTitle)
                 Text(
@@ -157,8 +161,11 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                     style = K.type.subhead, modifier = Modifier.padding(top = K.gap2),
                 )
                 Spacer(Modifier.height(K.gap3))
-                // The same choice as Settings: Moovit, Kav's server, or the rider's own.
+                // The same choices as Settings, each Kav's server or the rider's own: where live locations come from, and
+                // who plans trips.
                 Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LiveSource() }
+                Spacer(Modifier.height(K.gap3))
+                Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { PlanningSource() }
                 Spacer(Modifier.height(K.gap3))
                 // PrivacyRows brings its own "Search" header.
                 Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { PrivacyRows(model) { choosing = true } }

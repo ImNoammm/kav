@@ -5,14 +5,22 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
@@ -32,12 +40,13 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import kotlin.math.ceil
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.KavLive
+import uk.noammm.kav.data.Transit
 
 private const val ROUTE_HUE_NUDGE = 34f
 private const val ROUTE_HUE_RUNGS = 3
 
-private fun routeBase(ride: Moovit.Leg, r: Moovit.Resolved): Color {
+private fun routeBase(ride: Transit.Leg, r: Transit.Resolved): Color {
     val info = r.line(ride.lineId) ?: return K.route
     val type = r.routeType(info.agencyId)
     return plateFor(type, info.agencyId)?.fill
@@ -54,7 +63,7 @@ private fun turned(base: Color, rung: Int): Color {
     return Color(android.graphics.Color.HSVToColor(hsv))
 }
 
-internal fun routeTints(rides: List<Moovit.Leg>, r: Moovit.Resolved): List<Color> {
+internal fun routeTints(rides: List<Transit.Leg>, r: Transit.Resolved): List<Color> {
     var run = 0
     var last: Color? = null
     return rides.map { ride ->
@@ -72,10 +81,10 @@ internal fun boardingDots(at: Pair<Double, Double>, tint: Color, core: Color = t
 )
 
 internal fun boardingMarkers(
-    rides: List<Moovit.Leg>,
+    rides: List<Transit.Leg>,
     tints: List<Color>,
-    r: Moovit.Resolved,
-    stops: Map<Int, Moovit.StopInfo> = r.stops,
+    r: Transit.Resolved,
+    stops: Map<Int, Transit.StopInfo> = r.stops,
 ): List<MapDot> {
     val board = rides.map { l ->
         (stops[l.fromStop]?.point ?: l.stops.firstOrNull()?.let { stops[it] }?.point ?: l.shape.firstOrNull())
@@ -99,7 +108,7 @@ internal fun boardingMarkers(
     }
 }
 
-// Moovit gives the walk inside a station no path, so each end gets a mark instead of a line.
+// The walk inside a station has no path, so each end gets a mark instead of a line.
 internal enum class StationPoint { ENTRANCE, EXIT, PLATFORM }
 
 internal class StationMark(
@@ -111,21 +120,21 @@ internal class StationMark(
 )
 
 internal fun stationMarks(
-    legs: List<Moovit.Leg>,
-    rides: List<Moovit.Leg>,
+    legs: List<Transit.Leg>,
+    rides: List<Transit.Leg>,
     tints: List<Color>,
-    r: Moovit.Resolved,
+    r: Transit.Resolved,
 ): List<StationMark> {
     val out = ArrayList<StationMark>()
     for (i in legs.indices) {
         if (!legs[i].pathway) continue
-        val before = legs.subList(0, i).lastOrNull { !it.pathway && it.kind != Moovit.LegKind.WAIT }
-        val after = legs.subList(i + 1, legs.size).firstOrNull { !it.pathway && it.kind != Moovit.LegKind.WAIT }
+        val before = legs.subList(0, i).lastOrNull { !it.pathway && it.kind != Transit.LegKind.WAIT }
+        val after = legs.subList(i + 1, legs.size).firstOrNull { !it.pathway && it.kind != Transit.LegKind.WAIT }
         for ((leg, ending) in listOf(before to true, after to false)) {
             if (leg == null) continue
             val (lat, lon) = (if (ending) leg.shape.lastOrNull() else leg.shape.firstOrNull()) ?: continue
             out.add(
-                if (leg.kind == Moovit.LegKind.WALK) {
+                if (leg.kind == Transit.LegKind.WALK) {
                     StationMark(lat, lon, if (ending) StationPoint.ENTRANCE else StationPoint.EXIT)
                 } else StationMark(
                     lat, lon, StationPoint.PLATFORM, modeOf(r.routeType(r.line(leg.lineId)?.agencyId ?: -1)),
@@ -193,7 +202,7 @@ private fun doorIcon(glyph: Painter, out: Boolean, density: Density, dir: Layout
     }
 }
 
-// Moovit's end of trip pin, in 0.8dp units. The image ends at the tip so it stands on the spot.
+// The end of trip pin, in 0.8dp units. The image ends at the tip so it stands on the spot.
 private fun pinIcon(density: Density, dir: LayoutDirection) = with(density) {
     val u = .8f.dp.toPx()
     icon("kav-pin-${K.accent.toArgb()}-${K.bg.toArgb()}", 31.5f * u, 36.75f * u, density, dir) {
@@ -247,31 +256,69 @@ internal fun headingMark(fill: Color, outer: Float, density: Density): Pair<Stri
         }
     }
 
-// Vehicles as the Live tab draws them. alpha fades one out.
+// The rider on a trip's map: their dot, and from it a cone the way the phone faces, which the map turns with itself so it
+// points the same way on the ground. Nothing without a fix, and no cone without a compass. Its images: riderImages.
+internal fun riderGeometry(at: Pair<Double, Double>?, heading: Float?): MapGeometry {
+    val (lat, lon) = at ?: return MapGeometry()
+    return MapGeometry(
+        halos = listOf(MapDot(lat, lon, K.text.copy(alpha = 0.16f), 15f, id = "me:halo")),
+        markers = listOf(MapMarker(lat, lon, riderIcon(cone = heading != null), heading ?: 0f, turns = true, id = "me")),
+    )
+}
+
+private fun riderIcon(cone: Boolean) = "kav-me-${if (cone) "cone" else "dot"}-${K.text.toArgb()}-${K.bg.toArgb()}"
+
+internal fun riderImages(density: Density): Map<String, ImageBitmap> = with(density) {
+    val reach = 40.dp.toPx()
+    listOf(false, true).associate { cone ->
+        icon(riderIcon(cone), 2 * reach, 2 * reach, density, LayoutDirection.Ltr) {
+            val at = Offset(reach, reach)
+            if (cone) {
+                // 70 degrees wide, pointing north for the map to turn, fading out from the dot.
+                val wedge = Path().apply {
+                    moveTo(reach, reach)
+                    arcTo(Rect(at, reach), -125f, 70f, false)
+                    close()
+                }
+                drawPath(wedge, Brush.radialGradient(listOf(K.text.copy(alpha = 0.4f), K.text.copy(alpha = 0f)), at, reach))
+            }
+            drawCircle(K.bg, 8.dp.toPx(), at)
+            drawCircle(K.text, 5.dp.toPx(), at)
+        }
+    }
+}
+
+// Vehicles as the Live tab draws them. alpha fades one out; track is the road it glides along (TileMap), by default its
+// route's where Kav's server has given it.
 internal fun vehicleGeometry(
-    vehicles: List<Pair<Moovit.Arrival, Mode>>,
+    vehicles: List<Pair<Transit.Arrival, Mode>>,
     density: Density,
-    alpha: (Moovit.Arrival) -> Float = { 1f },
+    track: (Transit.Arrival) -> List<Pair<Double, Double>>? = { a -> KavLive.routeOf(a.vehicleId)?.let(KavLive::shapeNow) },
+    alpha: (Transit.Arrival) -> Float = { 1f },
 ): MapGeometry {
     val halos = ArrayList<MapDot>()
     val markers = ArrayList<MapMarker>()
     val images = HashMap<String, ImageBitmap>()
+    val tracks = HashMap<String, List<Pair<Double, Double>>>()
     val now = System.currentTimeMillis() / 1000
     for ((a, mode) in vehicles) {
         val k = alpha(a)
         if (k <= .01f) continue
         val tint = if (a.vehicleStatus == 2) K.problem else freshColour(freshnessOf(a.sampleUtc, now))
-        halos += MapDot(a.lat, a.lon, tint.copy(alpha = .2f * k), 18f)
+        // The vehicle, the same as it moves, so the map glides it (TileMap).
+        val id = "v" + a.vehicleId.ifEmpty { a.tripId.toString() }.replace(':', '.')
+        track(a)?.takeIf { it.size >= 2 }?.let { tracks[id] = it }
+        halos += MapDot(a.lat, a.lon, tint.copy(alpha = .2f * k), 18f, id = "$id:halo")
         val (name, image) = ringedMark(mode, tint, 11f, 9f, density)
         images[name] = image
-        markers += MapMarker(a.lat, a.lon, name, alpha = k)
+        markers += MapMarker(a.lat, a.lon, name, alpha = k, id = id)
         if (a.bearing >= 0) {
             val (heading, arrow) = headingMark(tint, 11f, density)
             images[heading] = arrow
-            markers += MapMarker(a.lat, a.lon, heading, rotation = a.bearing.toFloat(), alpha = k, turns = true)
+            markers += MapMarker(a.lat, a.lon, heading, rotation = a.bearing.toFloat(), alpha = k, turns = true, id = "$id:turn")
         }
     }
-    return MapGeometry(markers = markers, halos = halos, images = images)
+    return MapGeometry(markers = markers, halos = halos, images = images, tracks = tracks)
 }
 
 private fun between(a: Pair<Double, Double>, b: Pair<Double, Double>) =
@@ -280,17 +327,24 @@ private fun between(a: Pair<Double, Double>, b: Pair<Double, Double>) =
 internal fun onRoute(at: Pair<Double, Double>, path: List<Pair<Double, Double>>): Pair<Double, Double> =
     if (path.size < 2) at else pointAlong(path, alongPath(at.first, at.second, path)) ?: at
 
+// me and heading: where the rider is and which way the phone faces (riderGeometry). onShown says whether the map is on
+// screen, scrolled into view, for as long as it's there.
 @Composable
-fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), height: Dp = 190.dp, modifier: Modifier = Modifier) {
+fun RouteMap(
+    trip: Transit.Itinerary, r: Transit.Resolved = Transit.Resolved(), height: Dp = 190.dp, modifier: Modifier = Modifier,
+    me: Pair<Double, Double>? = null, heading: Float? = null, onShown: ((Boolean) -> Unit)? = null,
+) {
     val legs = trip.legs.filter { it.shape.size >= 2 }
     if (legs.isEmpty()) return
+    var inView by remember { mutableStateOf(false) }
+    if (onShown != null) DisposableEffect(inView) { onShown(inView); onDispose { onShown(false) } }
     val points = legs.flatMap { it.shape }
     val vehicles = trip.rides.flatMap { it.options }.mapNotNull { o ->
         r.arrival(o)?.takeIf { it.hasLocation }?.let { it to modeOf(r.routeType(r.line(o.lineId)?.agencyId ?: -1)) }
     }.distinctBy { it.first.tripId }
     val vehicleAlpha = animateFloatAsState(if (vehicles.isEmpty()) 0f else 1f, tween(350), label = "vehicleReveal")
 
-    val rides = legs.filter { it.kind != Moovit.LegKind.WALK }
+    val rides = legs.filter { it.kind != Transit.LegKind.WALK }
     val tints = routeTints(rides, r)
     val marks = remember(trip, tints, r, K.light) { stationMarks(trip.legs, rides, tints, r) }
     val entrance = rememberVectorPainter(Icons.AutoMirrored.Rounded.Login)
@@ -300,7 +354,7 @@ fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), hei
     val geometry = remember(legs, r.stops, tints, marks, K.look, K.accent, dir) {
         val station = tripMarks(marks, legs.last().shape.lastOrNull(), entrance, exit, density, dir)
         MapGeometry(
-            lines = legs.filter { it.kind == Moovit.LegKind.WALK }
+            lines = legs.filter { it.kind == Transit.LegKind.WALK }
                 .map { MapLine(it.shape, K.muted, 2f, dashed = true) } +
                 rides.mapIndexed { i, l -> MapLine(l.shape, tints[i], 4f, casing = 7f) },
             dots = boardingMarkers(rides, tints, r) + listOfNotNull(
@@ -311,10 +365,16 @@ fun RouteMap(trip: Moovit.Itinerary, r: Moovit.Resolved = Moovit.Resolved(), hei
             images = station.images,
         )
     }
+    val moving = vehicleGeometry(vehicles, density, alpha = { vehicleAlpha.value })
+    val rider = riderGeometry(me, heading)
     TileMap(
         points,
-        modifier.fillMaxWidth().height(height).panel(K.rTile),
+        modifier.fillMaxWidth().height(height).panel(K.rTile)
+            .then(if (onShown == null) Modifier else Modifier.onGloballyPositioned { inView = it.boundsInWindow().height > 0f }),
         geometry = geometry,
-        live = vehicleGeometry(vehicles, density) { vehicleAlpha.value },
+        live = moving.copy(
+            halos = moving.halos + rider.halos, markers = moving.markers + rider.markers,
+            images = if (me == null) moving.images else moving.images + riderImages(density),
+        ),
     )
 }

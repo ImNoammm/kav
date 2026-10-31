@@ -31,7 +31,7 @@ import kotlinx.coroutines.launch
 import uk.noammm.kav.ActiveJourney
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.RecentTrip
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -49,7 +49,7 @@ internal fun HomeScreen(
     model: KavModel,
     recentTrips: List<RecentTrip>,
     onSearch: () -> Unit,
-    onFavourite: (Moovit.Place) -> Unit,
+    onFavourite: (Transit.Place) -> Unit,
     onSetFavourite: (Favourite) -> Unit,
     onTrip: (RecentTrip) -> Unit,
     onResume: () -> Unit,
@@ -79,10 +79,6 @@ internal fun HomeScreen(
         return@AnimatedContent
     }
     fun save(list: List<Favourite>) = model.saveFavourites(ctx, list)
-    // AlertRow only works under a LocalServiceAlertOpener, so this screen hosts the sheet itself.
-    var alert by remember { mutableStateOf<Pair<Int, String>?>(null) }
-    androidx.activity.compose.BackHandler(alert != null) { alert = null }
-    CompositionLocalProvider(LocalServiceAlertOpener provides { group, label -> alert = group to label }) {
     val recentNames = remember(recentTrips) {
         recentTrips.map { it.to.name.substringBefore("/").trim() }.filter { it.isNotBlank() }.distinct().take(2)
     }
@@ -158,8 +154,6 @@ internal fun HomeScreen(
             }
             }
         }
-        alert?.let { (group, label) -> ServiceAlertSheet(group, label) { alert = null } }
-    }
     }
 
     if (creating) FavouriteEditor(
@@ -349,7 +343,11 @@ private fun WhereTo(recent: List<String>, modifier: Modifier = Modifier) {
         }
     }
     Row(modifier.clearAndSetSemantics { contentDescription = whereTo }, verticalAlignment = Alignment.CenterVertically) {
-        Text(shown, style = K.type.body, color = K.textTertiary, maxLines = 1, overflow = TextOverflow.Clip)
+        // At rest it's the words in Kav's language now, which can change while Home stays up.
+        Text(
+            if (typing || shown.isEmpty()) shown else whereTo,
+            style = K.type.body, color = K.textTertiary, maxLines = 1, overflow = TextOverflow.Clip,
+        )
         if (typing) TypingCaret()
     }
 }

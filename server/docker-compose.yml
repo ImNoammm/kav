@@ -28,7 +28,7 @@ services:
       - ./eta/out:/eta:ro
     user: "1000:1000"
     read_only: true
-    mem_limit: 512m
+    mem_limit: 1g
     logging:
       options:
         max-size: 1m
@@ -53,8 +53,8 @@ services:
       - ./otp/data/serve:/var/opentripplanner
       - ./otp/realtime:/var/opentripplanner/realtime:ro
     user: "1000:1000"
-    mem_limit: 5g
-    cpus: 2
+    mem_limit: 6g
+    cpus: 4
     logging:
       options:
         max-size: 1m

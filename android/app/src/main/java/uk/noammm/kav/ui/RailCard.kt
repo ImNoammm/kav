@@ -28,6 +28,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.DirectionsWalk
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,6 +46,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -50,16 +56,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.data.IsraelRail
 import uk.noammm.kav.data.KavLive
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.Net
+import uk.noammm.kav.data.RailTrip
 import java.util.Date
 
 // The stations a route's trains take, as the railway numbers them: from the first train's to the last one's.
 internal class RailPair(val from: Int, val to: Int, val fromName: String, val toName: String, val at: Long)
 
-// For the first route that takes the train, the stations Israel Railways can be asked about.
-internal fun railPair(trips: List<Moovit.Itinerary>, r: Moovit.Resolved): RailPair? {
+// For the first route of the list itself that takes the train, the stations Israel Railways can be asked about. A train
+// in the other sections, such as the bike taken along that most plans add, isn't a route the list suggests.
+internal fun railPair(trips: List<Transit.Itinerary>, r: Transit.Resolved): RailPair? {
     for (t in trips) {
+        if (t.sectionId >= 0 && t.sectionId != Transit.SECTION_MAIN) continue
         val trains = t.rides.filter(r::isTrain)
         if (trains.isEmpty()) continue
         val first = trains.first(); val last = trains.last()
@@ -77,7 +86,7 @@ private sealed class RailAnswer {
     class Found(val journeys: List<IsraelRail.Journey>) : RailAnswer()
 }
 
-// Israel Railways' own trains between those stations around the route's time, in a card beside Moovit's
+// Israel Railways' own trains between those stations around the route's time, in a card beside the routes'
 // "View schedules" one, where the results talk about the train. It opens on a tap, and only then asks the railway: it
 // learns the two stations and the day. Once asked, closed, it names the next train.
 @Composable
@@ -118,7 +127,7 @@ internal fun RailCard(net: Net?, pair: RailPair, modifier: Modifier = Modifier, 
                 AnimatedContent(
                     if (!open && next != null) T("Next train ${clock.format(Date(next.dep * 1000))}",
                         "הרכבת הבאה ב־${clock.format(Date(next.dep * 1000))}")
-                    else T("Trains from $from to $to", "רכבות מ$from אל $to"),
+                    else scheduleTitle(true, "", from, to),
                     transitionSpec = {
                         (fadeIn(tween(220)) togetherWith fadeOut(tween(150)))
                             .using(SizeTransform(clip = false) { _, _ -> spring(dampingRatio = 1f, stiffness = 500f) })
@@ -203,7 +212,7 @@ private fun RailJourney(net: Net?, j: IsraelRail.Journey) {
                 if (t.samePlatform) Tag(T("Same platform", "באותו רציף")) else PlatformTag(t.fromPlatform)
             }
             val late = j.trains.mapNotNull { it.late }.maxOrNull()
-            if (late != null && late > 0) Tag(T("$late min late", "באיחור של $late דק׳"), late = true)
+            if (late != null && late > 0) Tag(lateLabel(late), late = true)
         }
     }
 }
@@ -231,3 +240,56 @@ private fun stationName(net: Net?, station: Int): String {
     val stop = IsraelRail.codeOf(station)?.let { KavLive.stopOfCode(timetable, it) }?.takeIf { it >= 0 } ?: return ""
     return timetable.stopName(stop)
 }
+
+// Changing from one train to another at a station, as Better Rail tells it: the platform the next one leaves from, set
+// against the one the first comes in at, whether that's across the same platform (the railway says so of its own
+// journeys), and the wait between them.
+internal class TrainChange(val station: String, val inAt: String, val out: String, val across: Boolean, val waitMin: Int)
+
+internal fun trainChange(arriving: Transit.Leg, next: Transit.Leg, nextWait: Transit.Leg?, r: Transit.Resolved): TrainChange? {
+    if (!r.isTrain(arriving) || !r.isTrain(next)) return null
+    val code = r.stop(next.fromStop)?.code
+    val alight = r.stop(arriving.toStop)?.code
+    if (next.fromStop != arriving.toStop && (code.isNullOrBlank() || code != alight)) return null
+    val inAt = r.alightPlatform(arriving)
+    val out = r.platform(next, nextWait)
+    val leaves = r.departures(next, nextWait).firstOrNull { it.tripId == next.tripId }?.timeUtc ?: next.dep
+    return TrainChange(
+        r.stopName(arriving.toStop).orEmpty(), inAt, out,
+        across = inAt.isNotBlank() && out.isNotBlank() && inAt != out && RailTrip.across(next),
+        waitMin = ((leaves - r.alightAt(arriving)) / 60).toInt().coerceAtLeast(1),
+    )
+}
+
+// A change of trains: the station, then a line each for the platform, the way across and the wait.
+@Composable
+internal fun ChangeBlock(c: TrainChange, modifier: Modifier = Modifier) {
+    Column(
+        modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.fill).padding(K.gap3),
+        verticalArrangement = Arrangement.spacedBy(K.gap1),
+    ) {
+        if (c.station.isNotBlank()) Text(T("Change at ${c.station}", "החלפה ב${c.station}"), style = K.type.bodyStrong)
+        when {
+            c.out.isBlank() -> null
+            c.inAt == c.out -> T("Stay at platform ${c.out}", "יש להישאר ברציף ${c.out}")
+            c.inAt.isBlank() -> T("Your next train leaves from platform ${c.out}", "הרכבת הבאה יוצאת מרציף ${c.out}")
+            else -> T("Switch to platform ${c.out}", "יש לעבור לרציף ${c.out}")
+        }?.let { ChangeLine(Icons.Rounded.SwapHoriz, it) }
+        if (c.across) ChangeLine(Icons.AutoMirrored.Rounded.DirectionsWalk, T("Across the platform", "בצד השני של הרציף"))
+        ChangeLine(Icons.Rounded.Schedule, T("Wait about ${durMinutes(c.waitMin)}", "זמן המתנה כ-${durMinutes(c.waitMin)}"))
+    }
+}
+
+@Composable
+private fun ChangeLine(icon: ImageVector, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+        Icon(icon, contentDescription = null, tint = K.textSecondary, modifier = Modifier.size(18.dp))
+        Text(text, style = K.type.subhead, color = K.text)
+    }
+}
+
+// How late a departure runs against its timetable time, in whole minutes, when it does.
+internal fun lateBy(d: Transit.Departure): Int? =
+    d.takeIf { it.rtUtc > 0 && it.staticUtc > 0 }?.let { ((it.rtUtc - it.staticUtc) / 60).toInt() }?.takeIf { it > 0 }
+
+internal fun lateLabel(minutes: Int): String = T("$minutes min late", "באיחור של $minutes דק׳")

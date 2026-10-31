@@ -59,7 +59,11 @@ prepare() {
 build() {
   [ -s $B/israel-gtfs.zip ] || { echo "no timetable in $B"; return 1; }
   [ data/serve/graph.obj -nt "$1" ] || { echo "the main planner was not rebuilt from tonight's timetable"; return 1; }
-  # Low priority and capped like rebuild.sh's build, and the first to go if memory runs out.
+  # Low priority and capped like rebuild.sh's build, and the first to go if memory runs out. The official planner steps
+  # aside for it too; the EXIT trap starts it again.
+  if [ "$(docker inspect -f '{{.State.Running}}' kav-otp-official 2>/dev/null)" = true ]; then
+    docker stop kav-otp-official >/dev/null
+  fi
   avail=$(awk '/MemAvailable/ {print int($2 / 1048576)}' /proc/meminfo)
   [ "$avail" -ge 12 ] || { echo "only $avail GB of memory free"; return 1; }
   # The streets as rebuild.sh left them, walks.py's mending in.
@@ -90,7 +94,9 @@ wait_rebuild() {
 
 # Plain calls, not an && chain: set -e works inside the functions only then.
 ok=
-trap '[ -n "$ok" ] || echo "$(date -Is) official planner not rebuilt: the old one stays"' EXIT
+trap '[ -n "$ok" ] || echo "$(date -Is) official planner not rebuilt: the old one stays"
+[ "$(docker inspect -f "{{.State.Running}}" kav-otp-official 2>/dev/null)" != false ] ||
+  docker start kav-otp-official >/dev/null || echo "kav-otp-official did not start"' EXIT
 if [ "${1:-}" = prepare ]; then
   wait_rebuild
   prepare

@@ -87,7 +87,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import uk.noammm.kav.data.KavLive
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.RavPass
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -106,6 +106,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 
 // Reporting a driver, a bus or an inspector to the National Public Transport Authority, on its own online form, which
 // takes every bus company's lines. Kav walks the rider through it a step at a time from what it knows about the ride,
@@ -141,17 +142,16 @@ internal class ReportStop(val id: Int, val name: String = "", val code: String? 
 // What Kav knows about the bus being reported, from a ride or from Live.
 internal class ReportFor(
     val line: String,
-    // Moovit's name for the operator, Hebrew first: "מטרופולין (Metropoline)".
+    // The operator's name, Hebrew first: "מטרופולין (Metropoline)".
     val agency: String,
-    // The towns the line runs between in its direction, as Moovit names them.
+    // The towns the line runs between in its direction.
     val origin: String,
     val destination: String,
     // The stops of the ride, or of the bus's line, in order, and where the rider got on and off among them (-1 when
-    // Kav doesn't know). Moovit's ids, unless Kav's server gave them.
+    // Kav doesn't know).
     val stops: List<ReportStop> = emptyList(),
     val boarded: Int = -1,
     val alighted: Int = -1,
-    val moovitStops: Boolean = true,
     val plate: String? = null,
     // When it happened, in seconds.
     val at: Long,
@@ -161,6 +161,9 @@ internal class ReportFor(
     val towns: Pair<String, String>? = null,
     val operatorId: Int? = null,
     val direction: Pair<String, String>? = null,
+    // A train, which goes to the railway's channels: the form Kav fills in knows buses only. line is then its number,
+    // origin and destination the stations ridden between.
+    val train: Boolean = false,
 )
 
 // The direction and alternative at the end of a line's name in the ministry's data, "...-2#" being ("2", "#").
@@ -283,7 +286,7 @@ internal class Answers(
 )
 
 // How the rider paid for a fare or fine report, as the form numbers it (1 Rav-Kav, 2 an app, 3 a credit card; apps 1
-// Rav-Pass, 2 Moovit, 3 Pango, 4 Cello), when they paid or got on, and an appeal's demand number.
+// Rav-Pass, 3 Pango, 4 Cello), when they paid or got on, and an appeal's demand number.
 internal class Payment(
     val means: String = "", val ravKav: String = "", val cardholder: String = "", val app: String = "",
     val appPhone: String = "", val paidAt: Long = 0, val demand: String = "",
@@ -340,7 +343,7 @@ internal fun formPhone(p: String): String? {
 internal fun validEmail(s: String): Boolean = s.trim().length in 6..50 &&
     Regex("^\\w+([-+.]\\w+)*@\\w+([-.]\\w+)*\\.[a-zA-Z0-9-]{2,9}$").matches(s.trim())
 
-// The operator as the authority's list writes it, without Moovit's English in brackets.
+// The operator as the authority's list writes it, without the English in brackets.
 internal fun formOperator(agency: String): String = agency.substringBefore(" (").trim()
 
 // The line's number as the form takes it: digits only, 1 to 998.
@@ -421,7 +424,13 @@ internal fun paidWith(r: ReportFor, tickets: List<RavPass.Ticket>): Long? {
 
 // A report about the bus of a ride, the one the rider is on when Kav knows it, from where they got on to where they
 // got off.
-internal fun rideReport(ride: Moovit.Leg, r: Moovit.Resolved, bus: Moovit.Arrival?, at: Long): ReportFor? {
+internal fun rideReport(ride: Transit.Leg, r: Transit.Resolved, bus: Transit.Arrival?, at: Long): ReportFor? {
+    if (legMode(ride, r) == Mode.TRAIN) return ReportFor(
+        line = ride.shortName.ifBlank { r.line(ride.lineId)?.number.orEmpty() }.ifBlank { return null },
+        agency = r.agencyName(r.line(ride.lineId)?.agencyId ?: -1).orEmpty(),
+        origin = r.stopName(ride.fromStop).orEmpty(), destination = r.stopName(ride.toStop).orEmpty(),
+        at = at, train = true,
+    )
     if (legMode(ride, r) != Mode.BUS) return null
     val line = r.line(ride.lineId)
     val stops = ride.stops.map { id -> r.stop(id).let { ReportStop(id, it?.name.orEmpty(), it?.code?.ifBlank { null }) } }
@@ -605,17 +614,12 @@ private class Draft(val report: ReportFor, saved: Reporter?, account: RavPass.Ac
 
 @Composable
 internal fun ReportScreen(report: ReportFor, onClose: () -> Unit) {
+    if (report.train) { TrainReportScreen(report, onClose); return }
     val ctx = LocalContext.current
     val d = remember(report) { Draft(report, Reporter.load(ctx), Payer.account) }
     var filling by remember { mutableStateOf<Filling?>(null) }
-    // The names of stops that came without one, and the code on the sign of the stop chosen, asked of Moovit.
-    val asked = rememberStopNames(
-        if (!report.moovitStops) emptyList()
-        else report.stops.filterIndexed { i, s -> s.name.isBlank() || (s.code == null && i == d.boardedAt) }.map { it.id },
-    )
-    val named: (ReportStop) -> ReportStop = { s ->
-        asked[s.id]?.let { ReportStop(s.id, s.name.ifBlank { it.name }, s.code ?: it.code.ifBlank { null }) } ?: s
-    }
+    // Stops as the trip names them.
+    val named: (ReportStop) -> ReportStop = { it }
     DisposableEffect(Unit) {
         clearPhotos(ctx)
         onDispose { clearPhotos(ctx) }
@@ -727,7 +731,7 @@ private fun Paying(d: Draft) {
     AnimatedVisibility(d.means == "2", enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
         Column(verticalArrangement = Arrangement.spacedBy(K.gap3)) {
             Dropdown(T("App", "יישומון"), appName(d.app), T("Choose the app", "בחרו יישומון"),
-                listOf("1", "2", "3", "4").map { it to appName(it).orEmpty() }, d.errors["app"]) { d.app = it }
+                listOf("1", "3", "4").map { it to appName(it).orEmpty() }, d.errors["app"]) { d.app = it }
             Field(T("Phone number in the app", "מספר הטלפון ביישומון"), d.appPhone,
                 { d.appPhone = it.filter { c -> c.isDigit() || c == '-' || c == '+' }.take(16) },
                 error = d.errors["appPhone"], keyboard = KeyboardType.Phone)
@@ -746,7 +750,7 @@ private fun meansName(code: String) = when (code) {
 }
 
 private fun appName(code: String) = when (code) {
-    "1" -> T("Rav-Pass", "רב-פס"); "2" -> T("Moovit", "מוביט"); "3" -> T("Pango", "פנגו"); "4" -> T("Cello", "סלו"); else -> null
+    "1" -> T("Rav-Pass", "רב-פס"); "3" -> T("Pango", "פנגו"); "4" -> T("Cello", "סלו"); else -> null
 }
 
 @Composable
@@ -1432,6 +1436,58 @@ private fun MinistryForm(filling: Filling, onBack: () -> Unit, onDone: () -> Uni
                     it.destroy()
                 },
             )
+        }
+    }
+}
+
+// A train's report: the ministry's form Kav fills in for buses asks other questions for a train, so this gives the
+// train's details to hand and the ways to the railway and the ministry, which take a train's complaints.
+private const val RAIL_PHONE = "*5770"
+
+private fun complaintPage() =
+    "https://www.gov.il/${if (T.rtl) "he" else "en"}/service/complaint_about_conduct_in_public_transportation"
+
+@Composable
+private fun TrainReportScreen(report: ReportFor, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    BackHandler(onBack = onClose)
+    val day = SimpleDateFormat("EEE d.M.yyyy HH:mm", T.locale).apply { timeZone = ISRAEL }
+    val details = listOfNotNull(
+        T("Israel Railways, train ${report.line}", "רכבת ישראל, רכבת ${report.line}"),
+        day.format(Date(report.at * 1000)),
+        listOf(report.origin, report.destination).filter { it.isNotBlank() }.takeIf { it.size == 2 }
+            ?.let { (a, b) -> T("$a → $b", "$a ← $b") },
+    )
+    Box(Modifier.fillMaxSize().background(K.bg)) {
+        Column(Modifier.fillMaxSize()) {
+            ScreenHeader(T("Report", "דיווח"), T("a train", "על רכבת"), back = onClose)
+            StepPage(
+                T("Report a problem on this train", "דיווח על בעיה ברכבת הזו"),
+                T("A driver, an inspector, the train itself or the station: the National Public Transport Authority takes " +
+                    "complaints about Israel Railways on its own page, and the railway on its service line. Kav fills in the " +
+                    "form for buses only, so here's what to tell them.",
+                    "נהג, פקח, הרכבת עצמה או התחנה: הרשות הארצית לתחבורה ציבורית מקבלת תלונות על רכבת ישראל בעמוד שלה, " +
+                        "והרכבת במוקד השירות שלה. Kav ממלאת את הטופס רק לאוטובוסים, אז הנה מה לספר להם."),
+            ) {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.plateStrong)
+                    .padding(horizontal = K.gap4, vertical = K.gap3), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    details.forEachIndexed { i, line ->
+                        Text(line, style = if (i == 0) K.type.bodyStrong else K.type.subhead)
+                    }
+                }
+                KavButton(T("Open the complaint page", "לעמוד התלונות"), {
+                    runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(complaintPage()))) }
+                }, Modifier.fillMaxWidth(), icon = Icons.AutoMirrored.Rounded.OpenInNew)
+                KavButton(T("Copy these details", "העתקת הפרטים"), {
+                    val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clip.setPrimaryClip(android.content.ClipData.newPlainText(T("Train", "רכבת"), details.joinToString("\n")))
+                }, Modifier.fillMaxWidth(), style = ButtonStyle.Secondary)
+                KavButton(T("Call Israel Railways ($RAIL_PHONE)", "התקשרות לרכבת ישראל ($RAIL_PHONE)"), {
+                    runCatching {
+                        ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(RAIL_PHONE))))
+                    }
+                }, Modifier.fillMaxWidth(), style = ButtonStyle.Secondary)
+            }
         }
     }
 }

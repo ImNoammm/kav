@@ -38,6 +38,12 @@ docker run --rm --user 1000:1000 --memory=4g -v "$PWD:/otp" -v "$PWD/../history:
 docker run --rm --user 1000:1000 -v "$PWD:/otp" -w /otp python:3.12-slim python3 clocks.py data/build
 cp build-config.json router-config.json data/build/
 rm -f data/build/graph.obj
+# The official planner steps aside while the graph builds, which doesn't fit beside it. It serves again however this
+# ends, unless official-build.sh is waiting to build it next (it holds its lock then) and starts it itself.
+if [ "$(docker inspect -f '{{.State.Running}}' kav-otp-official 2>/dev/null)" = true ]; then
+  docker stop kav-otp-official >/dev/null
+  trap 'if flock -n data/official-build.lock true; then docker start kav-otp-official >/dev/null || echo "kav-otp-official did not start"; fi' EXIT
+fi
 # Low priority and capped: the server's other services come first. The timetable with the predicted bus times needs more
 # than 9 GB; 14 builds it in about 12 minutes.
 docker run --rm --user 1000:1000 --memory=15g --memory-swap=15g --cpus=4 --cpu-shares=128 -e JAVA_OPTS=-Xmx14g \

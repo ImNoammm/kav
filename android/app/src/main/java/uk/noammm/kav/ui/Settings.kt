@@ -48,8 +48,9 @@ import uk.noammm.kav.data.GoogleRecipe
 import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.KavPlan
 import uk.noammm.kav.data.MapFile
-import uk.noammm.kav.data.KavRecipe
 import uk.noammm.kav.data.SignedFile
+import uk.noammm.kav.data.Source
+import uk.noammm.kav.data.Sources
 import uk.noammm.kav.data.StopNames
 import uk.noammm.kav.data.Updates
 import androidx.compose.material.icons.rounded.NewReleases
@@ -57,6 +58,9 @@ import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.spring
 import androidx.compose.ui.input.pointer.pointerInput
@@ -82,7 +86,8 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
             LiveSource()
-            ServerUses()
+            PlanningSource()
+            TimetableUpdates()
         }
     }
 
@@ -168,28 +173,14 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         "privacy",
         T("Privacy", "פרטיות"),
         when {
-            !Prefs.privateSearch(ctx) -> T("Moovit sees where you are", "Moovit רואה איפה אתם")
-            model.seen == Seen.CITY -> T("Private search: Moovit sees your town", "חיפוש פרטי: Moovit רואה את היישוב שלכם")
-            model.seen == Seen.PLACE -> T("Private search: Moovit sees a place you picked", "חיפוש פרטי: Moovit רואה מקום שבחרתם")
-            else -> T("Private search: Moovit sees no location", "חיפוש פרטי: Moovit לא רואה מיקום")
+            !Prefs.privateSearch(ctx) -> T("Google sees where you are", "Google רואה איפה אתם")
+            model.seen == Seen.CITY -> T("Private search: Google sees your town", "חיפוש פרטי: Google רואה את היישוב שלכם")
+            model.seen == Seen.PLACE -> T("Private search: Google sees a place you picked", "חיפוש פרטי: Google רואה מקום שבחרתם")
+            else -> T("Private search: Google sees no location", "חיפוש פרטי: Google לא רואה מיקום")
         },
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
             PrivacyRows(model) { choosing = true }
-            InfoHeader(
-                T("Stops", "תחנות"),
-                T(
-                    "Moovit learns which stops you look at. Street View loads from Google only when you open it: Google then sees that spot and your IP address.",
-                    "Moovit לומדת באילו תחנות אתם צופים. Street View נטען מ-Google רק כשפותחים אותו: Google רואה אז את המקום הזה ואת כתובת ה-IP שלכם.",
-                ),
-            )
-            ListGroup {
-                row {
-                    ToggleRow(T("Photos from Moovit", "תמונות מ-Moovit"), StopPhotos.enabled, { PhotoGlyph(if (StopPhotos.enabled) K.text else K.dim) }) { on ->
-                        StopPhotos.chosen = on; Prefs.setMoovitPhotos(ctx, on)
-                    }
-                }
-            }
         }
     }
 
@@ -240,13 +231,13 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
             InfoHeader(
                 T("Line badges", "סמלי הקווים"),
                 T(
-                    "How bus lines look on boards, plans and trips. Kav: the operator's colour fills the badge. Moovit inspired: a grey badge with the operator's colour as a strip under it.",
-                    "איך קווי האוטובוס נראים בלוחות, במסלולים ובנסיעות. Kav: צבע המפעיל ממלא את הסמל. בסגנון Moovit: סמל אפור עם פס בצבע המפעיל מתחתיו.",
+                    "How bus lines look on boards, plans and trips. Kav: the operator's colour fills the badge. Strip: a grey badge with the operator's colour as a strip under it.",
+                    "איך קווי האוטובוס נראים בלוחות, במסלולים ובנסיעות. Kav: צבע המפעיל ממלא את הסמל. פס: סמל אפור עם פס בצבע המפעיל מתחתיו.",
                 ),
             )
-            val badges = listOf(LineBadgeAppearance.KAV, LineBadgeAppearance.MOOVIT)
+            val badges = listOf(LineBadgeAppearance.KAV, LineBadgeAppearance.STRIP)
             KavSegmented(
-                listOf("Kav", T("Moovit inspired", "בסגנון Moovit")), badges.indexOf(K.lineBadgeAppearance),
+                listOf("Kav", T("Strip", "פס")), badges.indexOf(K.lineBadgeAppearance),
                 { i -> K.lineBadgeAppearance = badges[i]; Prefs.setLineBadges(ctx, badges[i]) },
             )
         }
@@ -275,6 +266,7 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
                     ) { on -> Shown.updatePrompts = on; Prefs.setUpdatePrompts(ctx, on) }
                 }
             }
+            AutomaticUpdates()
         }
     }
 
@@ -294,11 +286,9 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         Absent(
             T("No adverts", "אין פרסומות"),
             T(
-                "Moovit's app carries Vungle video ads (1,038 class references), " +
-                    "AdMob and Facebook Audience Network. Kav calls none of the ad endpoints, and never " +
+                "Vungle, AdMob and Facebook Audience Network are all absent. Kav calls no ad endpoint, and never " +
                     "requests ad targeting.",
-                "האפליקציה של Moovit כוללת פרסומות וידאו של Vungle (1,038 הפניות למחלקות), " +
-                    "AdMob ו־Facebook Audience Network. Kav לא פונה לאף אחת מנקודות הקצה הפרסומיות, " +
+                "Vungle, ‏AdMob ו־Facebook Audience Network: כולם לא נמצאים כאן. Kav לא פונה לאף נקודת קצה פרסומית, " +
                     "ולעולם לא מבקשת מיקוד פרסומי.",
             ),
         )
@@ -368,14 +358,14 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     }
 }
 
-// Picking the place Moovit sees: it slides up over the page it was asked from and back down onto it, which stays.
+// Picking the place search sees: it slides up over the page it was asked from and back down onto it, which stays.
 @Composable
 internal fun SeenPlacePicker(model: KavModel, open: Boolean, onClose: () -> Unit) {
     val ctx = LocalContext.current
     androidx.compose.animation.AnimatedVisibility(open, enter = modalIn(), exit = modalOut()) {
         var q by remember { mutableStateOf("") }
         PlacePicker(
-            title = T("A place for Moovit to see", "מקום ש-Moovit יראה"),
+            title = T("A place for Google to see", "מקום ש-Google יראה"),
             here = null,
             allowMyLocation = false,
             onMyLocation = {},
@@ -509,28 +499,123 @@ internal fun PlanChoices(model: KavModel) {
     }
 }
 
-// Where live times come from, one choice of three: Kav's server, Moovit, or the rider's own copy of the server
-// (server/selfhost) with its address and key. Under it, while a server is used, how it's doing, checked when Settings
-// opens; tapped, what each part of it answers.
+// Where live locations come from, and who plans trips: each its own choice of two, Kav's server or the rider's own copy
+// of it (server/selfhost), so a rider can plan on their own server and take live times from Kav's, or the other way
+// round. The own server is set up once, under the first choice that picks it, and both use it. Under a choice that
+// uses a server, how that server is doing, checked when Settings opens; tapped, what each part of it answers.
 @Composable
 internal fun LiveSource() {
     val ctx = LocalContext.current
+    SourceChoice(
+        T("Live locations and arrival times", "מיקומים וזמני הגעה בזמן אמת"),
+        { s ->
+            when (s) {
+                Source.KAV -> T("Buses and trains straight from the Ministry of Transport, with Kav's own arrival times. ",
+                    "אוטובוסים ורכבות ישירות ממשרד התחבורה, עם זמני ההגעה של Kav. ")
+                Source.OWN -> T("Your own copy of Kav's server, from server/selfhost: nothing goes to Kav's. ",
+                    "עותק משלכם של השרת של Kav, מ-server/selfhost: שום דבר לא נשלח לשרת של Kav. ")
+            } + T(
+                "A server sees only the lines and area you look at, never your IP address, and keeps no logs.",
+                "השרת רואה רק את הקווים והאזור שאתם צופים בהם, אף פעם לא את כתובת ה-IP שלכם, ולא שומר יומנים.",
+            )
+        },
+        KavLive.source, { s -> KavLive.source = s; Prefs.setLiveSource(ctx, s) },
+        // Own picked but not set up yet: its address and key come first, Kav's server answers until then.
+        server = KavLive.server.takeUnless { KavLive.source == Source.OWN && KavLive.ownServer.isEmpty() },
+        fields = true,
+    ) { c ->
+        val answers = c as? KavLive.Check.Answers
+        when {
+            c == null -> K.textTertiary to T("Checking the connection", "בודקים את החיבור")
+            answers?.live == true -> K.realtime to T(
+                "Connected · ${"%,d".format(answers.vehicles)} buses live",
+                "מחובר · ${"%,d".format(answers.vehicles)} אוטובוסים בזמן אמת",
+            )
+            answers != null -> K.problem to T("Connected, but no live buses yet", "מחובר, אבל עוד אין אוטובוסים בזמן אמת")
+            else -> K.problem to T("Not reachable. Tap for details", "לא זמין. הקישו לפרטים")
+        }
+    }
+}
+
+// Who plans trips. The rider's own server plans once it's set up, and Kav's until then; one that lists no planner plans
+// nothing, and says so.
+@Composable
+internal fun PlanningSource() {
+    val ctx = LocalContext.current
+    SourceChoice(
+        T("Trip planning", "תכנון מסלולים"),
+        { s ->
+            when (s) {
+                Source.KAV -> T(
+                    "Kav's planner works out the trips you search for on Kav's server, on the ministry's timetable. It sees each trip's two points and time, never your IP address, and keeps no logs.",
+                    "המתכנן של Kav מחשב את המסלולים שאתם מחפשים בשרת של Kav, לפי לוח הזמנים של משרד התחבורה. הוא רואה את שתי הנקודות והשעה של כל מסלול, אף פעם לא את כתובת ה-IP שלכם, ולא שומר יומנים.",
+                )
+                Source.OWN -> T("Your own copy of Kav's server works out the trips you search for, with its planner on: nothing goes to Kav's.",
+                    "עותק משלכם של השרת של Kav מחשב את המסלולים שאתם מחפשים, עם המתכנן שלו: שום דבר לא נשלח לשרת של Kav.")
+            } + T(
+                " The trips it finds get their live times from the choice above.",
+                " המסלולים שהוא מוצא מקבלים את הזמנים בזמן אמת מהבחירה שלמעלה.",
+            )
+        },
+        KavPlan.source, { s -> KavPlan.source = s; Prefs.setPlanSource(ctx, s) },
+        // Own picked but not set up yet: its address and key come first, Kav's server plans until then.
+        server = KavPlan.server.takeUnless { KavPlan.source == Source.OWN && KavLive.ownServer.isEmpty() },
+        // Set up above already when live locations come from it too.
+        fields = KavLive.source != Source.OWN,
+        checked = { at, c ->
+            KavPlan.up = c is KavLive.Check.Answers
+            KavPlan.offered = at == KavLive.KAV_SERVER || (c as? KavLive.Check.Answers)?.planner != null
+        },
+        note = when {
+            KavPlan.source == Source.OWN && KavLive.ownServer.isEmpty() ->
+                if (KavLive.source == Source.OWN) T("Set up your server above, under live locations. Until then, Kav's server plans trips.",
+                    "הגדירו את השרת שלכם למעלה, תחת מיקומים בזמן אמת. עד אז, השרת של Kav מתכנן מסלולים.")
+                else T("Until your server is set up, Kav's server plans trips.", "עד שהשרת שלכם מוגדר, השרת של Kav מתכנן מסלולים.")
+            !KavPlan.offered ->
+                T("Your server doesn't plan trips yet. Turn its planner on, or pick Kav's server.",
+                    "השרת שלכם עוד לא מתכנן מסלולים. הפעילו את המתכנן שלו, או בחרו בשרת של Kav.")
+            else -> null
+        },
+    ) { c ->
+        val answers = c as? KavLive.Check.Answers
+        when {
+            c == null -> K.textTertiary to T("Checking the connection", "בודקים את החיבור")
+            answers != null && (KavPlan.server == KavLive.KAV_SERVER || answers.planner == true) ->
+                K.realtime to T("Connected · trip planner ready", "מחובר · מתכנן המסלולים מוכן")
+            answers?.planner == false -> K.problem to T("Connected, but its trip planner isn't ready yet", "מחובר, אבל מתכנן המסלולים שלו עוד לא מוכן")
+            answers != null -> K.problem to T("Connected, but it doesn't plan trips", "מחובר, אבל הוא לא מתכנן מסלולים")
+            else -> K.problem to T("Not reachable. Tap for details", "לא זמין. הקישו לפרטים")
+        }
+    }
+}
+
+// One choice of where something comes from: Kav's server or the rider's own. server: the one it asks, null
+// while the rider's own is picked but not set up; fields: the own server's address and key show under it when it's
+// picked; status: the line under the server for what its check found (null while checking); checked: what that check
+// found, for the choice's own use; note: why the choice isn't in use, under it.
+@Composable
+private fun SourceChoice(
+    title: String, about: (Source) -> String, source: Source, onSource: (Source) -> Unit, server: String?,
+    fields: Boolean, checked: (String, KavLive.Check) -> Unit = { _, _ -> }, note: String? = null,
+    status: (KavLive.Check?) -> Pair<Color, String>,
+) {
+    val ctx = LocalContext.current
+    val app = ctx.applicationContext
     val scope = rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
-    // 0 Kav's server, 1 Moovit, 2 the rider's own server: the last can be picked before one is set up.
-    var mode by remember { mutableStateOf(if (!KavLive.chosen) 1 else if (KavLive.own) 2 else 0) }
-    var address by remember { mutableStateOf(if (KavLive.own) KavLive.server.removePrefix("https://") else "") }
-    var key by remember { mutableStateOf(if (KavLive.own) KavLive.key else "") }
+    var address by remember { mutableStateOf(KavLive.ownServer.removePrefix("https://")) }
+    var key by remember { mutableStateOf(KavLive.ownKey) }
     var checking by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<KavLive.Check?>(null) }
     var problem by remember { mutableStateOf<String?>(null) }
     // The server in use, checked again whenever it changes.
-    var round by remember { mutableStateOf(0) }
     var inUse by remember { mutableStateOf<KavLive.Check?>(null) }
-    LaunchedEffect(round) {
+    LaunchedEffect(server, source) {
         inUse = null
-        inUse = withContext(Dispatchers.IO) { KavLive.check(KavLive.server, KavLive.key) }
-        (inUse as? KavLive.Check.Answers)?.let { KavPlan.offered = !KavLive.own || it.planner != null }
+        val at = server ?: return@LaunchedEffect
+        val c = withContext(Dispatchers.IO) { KavLive.check(at, KavLive.keyFor(at)) }
+        inUse = c
+        checked(at, c)
     }
     // A check of another address under way, called off when another starts.
     var check by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -543,64 +628,41 @@ internal fun LiveSource() {
             checking = false
         }
     }
-    fun use(at: String, with: String, bundleKey: String) {
-        KavLive.server = at; KavLive.key = with
-        Prefs.setKavServer(ctx, at, with, bundleKey); KavLive.recheck.trySend(Unit)
-        val app = ctx.applicationContext
-        scope.launch(Dispatchers.IO) { runCatching { uk.noammm.kav.data.Timetable.serverChanged(app) } }
-        result = null
-        round++
+    // A change of server or choice that moves where the daily timetable comes from asks the new one at once.
+    fun moving(change: () -> Unit) {
+        val before = KavLive.timetableServer
+        change()
+        if (KavLive.timetableServer != before) scope.launch(Dispatchers.IO) { runCatching { uk.noammm.kav.data.Timetable.serverChanged(app) } }
     }
-    // Only the source changes: the rider's own switches below keep what they were set to (Kav plans only while a server
-    // that plans gives the live times anyway, KavPlan.wanted).
-    fun live(on: Boolean) {
-        KavLive.chosen = on; Prefs.setLiveFromKav(ctx, on)
+    fun use(at: String, with: String, bundleKey: String) = moving {
+        KavLive.ownServer = at; KavLive.ownKey = with
+        Prefs.setOwnServer(ctx, at, with, bundleKey); KavLive.recheck.trySend(Unit)
+        result = null
     }
     Column(Modifier.animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
-    InfoHeader(
-        T("Live buses and times", "אוטובוסים וזמנים בזמן אמת"),
-        when (mode) {
-            0 -> T("Buses and trains straight from the Ministry of Transport, with Kav's own arrival times. ",
-                "אוטובוסים ורכבות ישירות ממשרד התחבורה, עם זמני ההגעה של Kav. ")
-            1 -> T("Buses, times and trips all come from Moovit. ", "האוטובוסים, הזמנים והמסלולים מגיעים כולם מ-Moovit. ")
-            else -> T("Your own copy of Kav's server, from server/selfhost: nothing goes to Kav's. ",
-                "עותק משלכם של השרת של Kav, מ-server/selfhost: שום דבר לא נשלח לשרת של Kav. ")
-        } + T(
-            "A server sees only the lines and area you look at, never your IP address, and keeps no logs. If it's offline, Kav uses Moovit until it's back.",
-            "השרת רואה רק את הקווים והאזור שאתם צופים בהם, אף פעם לא את כתובת ה-IP שלכם, ולא שומר יומנים. אם הוא לא זמין, Kav משתמשת ב-Moovit עד שהוא חוזר.",
-        ),
-    )
-    // Moovit first, as it is the default; then Kav's server and the rider's own.
-    val order = listOf(1, 0, 2)
+    InfoHeader(title, about(source))
+    // Kav's server first, as it is the default; then the rider's own.
+    val order = listOf(Source.KAV, Source.OWN)
     KavSegmented(
-        listOf("Moovit", T("Kav's server", "השרת של Kav"), T("My own", "שרת משלי")), order.indexOf(mode),
-        { i ->
-            mode = order[i]
-            when (mode) {
-                0 -> { live(true); if (KavLive.own) use(KavLive.KAV_SERVER, "", "") }
-                1 -> live(false)
-                else -> live(true)
-            }
-        },
+        listOf(T("Kav's server", "השרת של Kav"), T("My own", "שרת משלי")), order.indexOf(source),
+        { i -> moving { onSource(order[i]) }; KavLive.recheck.trySend(Unit) },
     )
-    if (mode == 1) return@Column
+    var said by remember { mutableStateOf(note) }
+    if (note != null) said = note
+    AnimatedVisibility(
+        note != null,
+        enter = expandVertically(spring(dampingRatio = 1f, stiffness = 500f)) + fadeIn(tween(200, delayMillis = 60)),
+        exit = shrinkVertically(spring(dampingRatio = 1f, stiffness = 500f)) + fadeOut(tween(120)),
+    ) { NoteCard(said.orEmpty(), Modifier.padding(top = K.gap2)) }
+    val settingUp = server == null
+    val showFields = source == Source.OWN && fields
+    if (settingUp && !showFields) return@Column
     Spacer(Modifier.height(K.gap3))
-    val answers = inUse as? KavLive.Check.Answers
-    val (dot, status) = when {
-        inUse == null -> K.textTertiary to T("Checking the connection", "בודקים את החיבור")
-        answers?.live == true -> K.realtime to T(
-            "Connected · ${"%,d".format(answers.vehicles)} buses live",
-            "מחובר · ${"%,d".format(answers.vehicles)} אוטובוסים בזמן אמת",
-        )
-        answers != null -> K.problem to T("Connected, but no live buses yet", "מחובר, אבל עוד אין אוטובוסים בזמן אמת")
-        else -> K.problem to T("Not reachable. Tap for details", "לא זמין. הקישו לפרטים")
-    }
-    // Own picked but not set up yet: its address and key come first, Kav's server answers until then.
-    val settingUp = mode == 2 && !KavLive.own
+    val (dot, line) = status(inUse)
     Column(Modifier.fillMaxWidth().panel(K.rCard).animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
         if (!settingUp) ListRow(
-            if (KavLive.own) T.ltr(KavLive.server.removePrefix("https://")) else T("Kav's server", "השרת של Kav"),
-            subtitle = status,
+            if (server != KavLive.KAV_SERVER) T.ltr(server.orEmpty().removePrefix("https://")) else T("Kav's server", "השרת של Kav"),
+            subtitle = line,
             leading = { Box(Modifier.size(10.dp).clip(CircleShape).background(dot)) },
             onClick = { open = !open },
         )
@@ -608,7 +670,7 @@ internal fun LiveSource() {
             Separator()
             Column(Modifier.fillMaxWidth().padding(start = K.gap4, end = K.gap4, bottom = K.gap4)) { CheckLines(it) }
         }
-        if (mode == 2) {
+        if (showFields) {
             if (!settingUp) Separator()
             Column(Modifier.fillMaxWidth().padding(K.gap4), verticalArrangement = Arrangement.spacedBy(K.gap3)) {
                 KavField(address, { address = it; result = null; problem = null }, "kav.example.com", Modifier.fillMaxWidth(),
@@ -686,69 +748,57 @@ private fun CheckLines(c: KavLive.Check) {
     }
 }
 
-// What the rider has the server do, each on its own: live buses, planning trips, the week's timetable. Whatever is off
-// comes from Moovit (the timetable: the week Kav came with), and the server stays set for the rest.
+// The week of scheduled departures kept on the phone: updated daily from a server (the rider's own when a choice uses it,
+// else Kav's: Sources.timetableFrom), else the week Kav came with.
 @Composable
-private fun ServerUses() {
+private fun TimetableUpdates() {
     val ctx = LocalContext.current
-    var timetable by remember(KavLive.chosen) { mutableStateOf(Prefs.timetableUpdates(ctx)) }
-    val planning = KavPlan.chosen && KavLive.chosen
-    @Composable
-    fun use(title: String, subtitle: String, on: Boolean, toggle: (Boolean) -> Unit) {
-        ListRow(
-            title, Modifier.semantics { toggleableState = if (on) ToggleableState.On else ToggleableState.Off },
-            subtitle = subtitle, trailing = { KavSwitch(on) }, onClick = { toggle(!on) }, chevron = false,
-        )
-    }
-    InfoHeader(T("Use the server for", "להשתמש בשרת בשביל"), T(
-            "Anything turned off comes from Moovit instead. The server stays set for the rest.",
-            "מה שכבוי מגיע מ-Moovit במקום. השרת נשאר מוגדר לשאר.",
-        ))
-    ListGroup(Modifier.animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
-        // Kav's planner plans on the server's live buses, so it's offered only while those come from a server that plans.
-        if (KavLive.chosen && KavPlan.offered) row {
-            use(
-                T("Planning trips", "תכנון מסלולים"),
-                T("Off: Moovit plans", "כבוי: Moovit מתכננת"), planning,
-            ) { on -> KavPlan.chosen = on; Prefs.setPlanWithKav(ctx, on) }
-        }
+    var on by remember { mutableStateOf(Prefs.timetableUpdates(ctx)) }
+    InfoHeader(T("Timetable on your phone", "לוח הזמנים בטלפון"), T(
+        "The week of scheduled departures Kav keeps on your phone, for stop boards and planning without signal. Off, Kav uses the week it came with.",
+        "שבוע היציאות המתוכננות ש-Kav שומרת בטלפון, ללוחות התחנות ולתכנון בלי קליטה. כשכבוי, Kav משתמשת בשבוע שהגיע איתה.",
+    ))
+    ListGroup {
         row {
-            use(
-                T("The week's timetable", "לוח הזמנים של השבוע"),
-                T("Daily, on Wi-Fi", "פעם ביום, ב-Wi-Fi"), timetable,
-            ) { on -> timetable = on; Prefs.setTimetableUpdates(ctx, on) }
+            ListRow(
+                T("Update it every day", "לעדכן אותו כל יום"),
+                Modifier.semantics { toggleableState = if (on) ToggleableState.On else ToggleableState.Off },
+                subtitle = if (KavLive.timetableServer != KavLive.KAV_SERVER) T("From your server, on Wi-Fi", "מהשרת שלכם, ב-Wi-Fi")
+                    else T("From Kav's server, on Wi-Fi", "מהשרת של Kav, ב-Wi-Fi"),
+                trailing = { KavSwitch(on) }, onClick = { on = !on; Prefs.setTimetableUpdates(ctx, on) }, chevron = false,
+            )
         }
     }
 }
 
-// The section's summary line: what the server is used for.
+// The section's summary line: where each part comes from.
 @Composable
 private fun serverUses(): String {
     val ctx = LocalContext.current
-    val parts = listOfNotNull(
-        if (KavLive.chosen) T("live times", "זמנים בזמן אמת") else null,
-        if (KavPlan.chosen && KavLive.chosen && KavPlan.offered) T("trips", "מסלולים") else null,
-        if (Prefs.timetableUpdates(ctx)) T("timetable", "לוח זמנים") else null,
-    )
-    val server = if (KavLive.own) T("Your server", "השרת שלכם") else T("Kav's server", "השרת של Kav")
-    return if (parts.isEmpty()) T("Not used: all from Moovit", "לא בשימוש: הכול מ-Moovit")
-    else server + T(" for ", " בשביל ") + parts.joinToString(", ")
+    fun named(at: String?) = when (at) {
+        null -> T("unavailable", "לא זמין")
+        KavLive.KAV_SERVER -> T("Kav's server", "השרת של Kav")
+        else -> T("your server", "השרת שלכם")
+    }
+    val live = named(KavLive.server)
+    val trips = named(KavPlan.planner())
+    return T("Live: ", "זמן אמת: ") + live + " · " + T("trips: ", "מסלולים: ") + trips +
+        (if (Prefs.timetableUpdates(ctx)) T(" · timetable updated daily", " · לוח זמנים מתעדכן כל יום") else "")
 }
 
-// Private search and what Moovit sees instead, in Settings and the last step of setting Kav up.
+// Private search and what Google sees instead, in Settings and the last step of setting Kav up.
 @Composable
 internal fun PrivacyRows(model: KavModel, onChoose: () -> Unit) {
     val ctx = LocalContext.current
     var priv by remember(model.prefsVersion) { mutableStateOf(Prefs.privateSearch(ctx)) }
     InfoHeader(T("Search", "חיפוש"), T(
-            "Your exact location stays off search and off Kav's anonymous sign-up with Moovit. A trip still sends its two points.",
-            "המיקום המדויק שלכם לא נשלח בחיפוש וברישום האנונימי של Kav מול Moovit. מסלול עדיין שולח את שתי הנקודות שלו.",
+            "Your exact location stays off search. A trip still sends its two points. Street View loads from Google only when you open it: Google then sees that spot and your IP address.",
+            "המיקום המדויק שלכם לא נשלח בחיפוש. מסלול עדיין שולח את שתי הנקודות שלו. Street View נטען מ-Google רק כשפותחים אותו: Google רואה אז את המקום הזה ואת כתובת ה-IP שלכם.",
         ))
     ListGroup {
         row {
             ToggleRow(T("Private search", "חיפוש פרטי"), priv, { ShieldGlyph(if (priv) K.text else K.dim, 18.dp) }) { on ->
-                priv = on; uk.noammm.kav.Prefs.setPrivateSearch(ctx, on); uk.noammm.kav.data.Moovit.shareLocation = !on
-                Online.reset()
+                priv = on; uk.noammm.kav.Prefs.setPrivateSearch(ctx, on); uk.noammm.kav.data.GoogleMaps.shareLocation = !on
             }
         }
     }
@@ -763,7 +813,7 @@ internal fun PrivacyRows(model: KavModel, onChoose: () -> Unit) {
 
 // A row that turns something on or off: tapping anywhere on it flips the switch at its end.
 @Composable
-private fun ToggleRow(
+internal fun ToggleRow(
     title: String, on: Boolean, glyph: @Composable () -> Unit, subtitle: String? = null, onChange: (Boolean) -> Unit,
 ) = ListRow(
     title, subtitle = subtitle,
@@ -788,7 +838,8 @@ private fun FilterGlyph(f: ResultFilter, on: Boolean) {
     }
 }
 
-// What Moovit is told about where you are: one choice of three, what it means under it, and the place when it's one.
+// What Google's search is told about where you are: one choice of three, what it means under it, and the place when
+// it's one.
 @Composable
 private fun SeenChoice(model: KavModel, onChoose: () -> Unit) {
     val ctx = LocalContext.current
@@ -800,7 +851,7 @@ private fun SeenChoice(model: KavModel, onChoose: () -> Unit) {
     }
     val seens = listOf(Seen.CITY, Seen.PLACE, Seen.NONE)
     Column {
-        SectionHeader(T("What Moovit sees", "מה Moovit רואה"))
+        SectionHeader(T("What Google sees", "מה Google רואה"))
         KavSegmented(
             listOf(T("Your town", "היישוב שלכם"), T("A place", "מקום"), T("Nothing", "כלום")),
             seens.indexOf(model.seen).coerceAtLeast(0),
@@ -837,7 +888,7 @@ private fun SeenChoice(model: KavModel, onChoose: () -> Unit) {
                 row {
                     ListRow(
                         place ?: T("Pick a place", "בחירת מקום"),
-                        subtitle = T("Moovit sees this instead of you", "Moovit רואה אותו במקומכם"),
+                        subtitle = T("Google sees this instead of you", "Google רואה אותו במקומכם"),
                         leading = { Icon(Icons.Rounded.Place, contentDescription = null, tint = K.textSecondary, modifier = Modifier.size(24.dp)) },
                         onClick = onChoose,
                     )
@@ -987,21 +1038,6 @@ private fun PipGlyph(tint: Color, size: Dp = 18.dp) {
 }
 
 @Composable
-private fun PhotoGlyph(tint: Color, size: Dp = 18.dp) {
-    Canvas(Modifier.size(size)) {
-        val w = this.size.width; val h = this.size.height; val sw = w * .09f
-        drawRoundRect(tint, Offset(w * .08f, h * .16f), androidx.compose.ui.geometry.Size(w * .84f, h * .68f),
-            androidx.compose.ui.geometry.CornerRadius(w * .1f), style = Stroke(sw))
-        drawCircle(tint, w * .08f, Offset(w * .34f, h * .38f))
-        val hill = Path().apply {
-            moveTo(w * .14f, h * .78f); lineTo(w * .42f, h * .52f); lineTo(w * .58f, h * .66f); lineTo(w * .68f, h * .56f)
-            lineTo(w * .86f, h * .78f)
-        }
-        drawPath(hill, tint, style = Stroke(sw, cap = StrokeCap.Round))
-    }
-}
-
-@Composable
 private fun ShieldGlyph(tint: Color, size: Dp = 18.dp) {
     Canvas(Modifier.size(size)) {
         val w = this.size.width; val h = this.size.height; val sw = w * .09f
@@ -1020,8 +1056,8 @@ private fun ShieldGlyph(tint: Color, size: Dp = 18.dp) {
     }
 }
 
-// Kav's fixes for Moovit and Google are signed files it checks once a day. This asks now, for when something has just
-// stopped working and a fix may already be out.
+// Kav's fixes for Google are signed files it checks once a day. This asks now, for when something has just stopped
+// working and a fix may already be out.
 @Composable
 private fun FixCheck() {
     val ctx = LocalContext.current
@@ -1029,9 +1065,9 @@ private fun FixCheck() {
     var result by remember { mutableStateOf<SignedFile.Check?>(null) }
     var checking by remember { mutableStateOf(false) }
     InfoHeader(
-        T("Fixes for Moovit and Google", "תיקונים ל-Moovit ול-Google"),
-        T("Small signed updates Kav fetches when Moovit or Google change how they answer, so it keeps working between releases.",
-            "עדכונים קטנים וחתומים ש-Kav מורידה כש-Moovit או Google משנות את אופן התשובה, כדי שתמשיך לעבוד בין גרסאות."),
+        T("Fixes for Google", "תיקונים ל-Google"),
+        T("Small signed updates Kav fetches when Google changes how it answers, so it keeps working between releases.",
+            "עדכונים קטנים וחתומים ש-Kav מורידה כש-Google משנה את אופן התשובה, כדי שתמשיך לעבוד בין גרסאות."),
     )
     Row(
         Modifier.fillMaxWidth().panel(K.rCard).padding(horizontal = K.gap4, vertical = K.gap3),
@@ -1054,16 +1090,9 @@ private fun FixCheck() {
             if (checking) return@KavButton
             scope.launch {
                 checking = true
-                val (kav, google) = withContext(Dispatchers.IO) {
-                    runCatching { KavRecipe.refresh(ctx, force = true) }.getOrDefault(SignedFile.Check.FAILED) to
-                        runCatching { GoogleRecipe.refresh(ctx, force = true) }.getOrDefault(SignedFile.Check.FAILED)
+                result = withContext(Dispatchers.IO) {
+                    runCatching { GoogleRecipe.refresh(ctx, force = true) }.getOrDefault(SignedFile.Check.FAILED)
                 }
-                result = when {
-                    kav == SignedFile.Check.NEWER || google == SignedFile.Check.NEWER -> SignedFile.Check.NEWER
-                    kav == SignedFile.Check.FAILED || google == SignedFile.Check.FAILED -> SignedFile.Check.FAILED
-                    else -> SignedFile.Check.SAME
-                }
-                if (result == SignedFile.Check.NEWER) Online.retryNow()
                 checking = false
             }
         })

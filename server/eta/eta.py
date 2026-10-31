@@ -469,7 +469,7 @@ def predict(day, rows, model, now, on_road=None, motion=None):
 
 
 class RailModel:
-    """A train or light-rail model (the lab's gbdt_nonbus.py, as score_moovit_rail.booster loads it): LightGBM trees
+    """A train or light-rail model (the lab's gbdt_nonbus.py): LightGBM trees
     correcting the history's time from now until the train reaches the station, blended with it by alpha."""
 
     def __init__(self, folder, agency):
@@ -524,7 +524,7 @@ def set_out(day, rows, on_road, now):
     """The buses on the road that haven't reached a stop in Kav's history yet, just set out, which the model can't
     time: each stop ahead within the hour at the timetable's first departure plus the usual time to it (the history
     medians), less on a day the route runs quicker (quicker()). For them that beats the ministry's own times at every
-    distance."""
+    distance. A stop whose time has gone by gets none: the bus is late setting out, and the ministry's time stays."""
     if on_road is None:
         return None
     first = day.plan.filter(pl.col("route").is_in(sorted(day.buses)) & (pl.col("order") == 1)).select(I.RUN)
@@ -536,7 +536,7 @@ def set_out(day, rows, on_road, now):
     return (day.plan.join(runs, on=I.RUN).filter((pl.col("order") > 1) & (pl.col("sched") <= 3600))
             .join(quicker(day, rows, now), on="route", how="left")
             .with_columns((pl.col("first") + (pl.coalesce(I.HIST) * pl.col("share").fill_null(1.0)).round().cast(pl.Int64)).alias("eta"))
-            .filter(pl.col("eta").is_not_null())
+            .filter(pl.col("eta") > now)
             .select(I.RUN + ["first", pl.col("order").alias("order_j"), pl.col("code").alias("code_j"),
                              pl.lit(now).cast(pl.Int64).alias("t"), "eta"]))
 
@@ -653,13 +653,51 @@ def keep_log(now, made, rail=None, started=None):
         pl.concat(got).with_columns(pl.lit(int(now)).alias("t")).write_parquet(os.path.join(folder, name + "-mot.parquet"))
 
 
+POOLED_AHEAD = 1800  # a run's times due this soon, up to its first stop due later, are put in order (in_order_ahead())
+NOT_THE_BUS = 600  # a time this much before an earlier stop's on the run isn't the bus's: left out of the pooling
+
+
+def in_order(times):
+    """The nearest times (least squares) that never go back along the trip: each stop is timed on its own, so a later
+    stop can come out sooner than the one before, and live.py, which gives the planner a trip's times only in order,
+    moves each such stop up to the one before. Pooling only up to POOLED_AHEAD brings the near times a little closer to
+    when buses came; further on, where Kav's times already run early, it makes them worse."""
+    blocks = []
+    for t in times:
+        blocks.append([t, 1])
+        while len(blocks) > 1 and blocks[-2][0] * blocks[-1][1] > blocks[-1][0] * blocks[-2][1]:
+            total, n = blocks.pop()
+            blocks[-1][0] += total
+            blocks[-1][1] += n
+    return [int(round(total / n)) for total, n in blocks for _ in range(n)]
+
+
+def in_order_ahead(stops, now):
+    """A run's stops ([place on the trip, stop code, when], earliest place first), their times put in order (in_order())
+    from the first on up to the first due later than POOLED_AHEAD. A time NOT_THE_BUS or more before an earlier stop's
+    is left out as it is (live.py moves it up to the stop before): 4% of the runs have one, mostly at their last stop,
+    and pooled with the others it would pull them sooner."""
+    near, latest = [], None
+    for stop in stops:
+        if stop[2] > now + POOLED_AHEAD:
+            break
+        if latest is None or stop[2] > latest - NOT_THE_BUS:
+            near.append(stop)
+            latest = stop[2] if latest is None else max(latest, stop[2])
+    for stop, eta in zip(near, in_order([eta for _, _, eta in near])):
+        stop[2] = eta
+
+
 def hand_over(made, buses, now):
     """The buses' predictions for live.py, which gives them to the planner and to the app instead of the ministry's
-    expected times: each journey's stops ahead by route and first departure, as [place on the trip, stop code, when]."""
+    expected times: each journey's stops ahead by route and first departure, as [place on the trip, stop code, when],
+    the nearest in order along the trip (in_order_ahead())."""
     runs = {}
     for route, first, order, code, eta in (made.filter(pl.col("route").is_in(sorted(buses))).sort("route", "first", "order_j")
                                            .select("route", "first", "order_j", "code_j", "eta").iter_rows()):
         runs.setdefault("%s_%d" % (route, first), []).append([order, code, eta])
+    for stops in runs.values():
+        in_order_ahead(stops, now)
     path = os.path.join(OUT, "now.json")
     with open(path + ".part", "w") as f:
         json.dump({"at": int(now), "runs": runs}, f, separators=(",", ":"))

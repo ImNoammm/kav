@@ -26,8 +26,6 @@ fun Net.stopOfKey(key: String): Int {
 // Israel. A window that ends before it starts runs past midnight; one that ends as it starts lasts the whole day.
 class LineAlert(
     val id: Long, val stop: String, val name: String, val lines: List<String>, val days: Int, val from: Int, val to: Int,
-    // Moovit's id for the stop, for live times from Moovit, where it was known.
-    val moovit: Int = -1,
     // At a train station, which numbers no line, the trains it's for by where they end.
     val toward: List<End> = emptyList(),
 ) {
@@ -39,7 +37,7 @@ class LineAlert(
     val code: Int get() = stop.substringBefore('/').toIntOrNull() ?: 0
 
     fun json(): JSONObject = JSONObject().put("id", id).put("stop", stop).put("name", name)
-        .put("lines", JSONArray(lines)).put("days", days).put("from", from).put("to", to).put("moovit", moovit)
+        .put("lines", JSONArray(lines)).put("days", days).put("from", from).put("to", to)
         .apply { if (toward.isNotEmpty()) put("toward", JSONArray(toward.map { it.json() })) }
 
     // The days' windows around now, as epoch seconds, from the day before (one running past midnight) to a week on.
@@ -78,7 +76,7 @@ class LineAlert(
             if ((lines.isEmpty() && toward.isEmpty()) || o.optString("stop").isBlank()) return null
             return LineAlert(
                 o.optLong("id"), o.optString("stop"), o.optString("name"), lines, o.optInt("days", WEEKDAYS) and 0x7F,
-                o.optInt("from").coerceIn(0, 1439), o.optInt("to").coerceIn(0, 1439), o.optInt("moovit", -1), toward,
+                o.optInt("from").coerceIn(0, 1439), o.optInt("to").coerceIn(0, 1439), toward = toward,
             )
         }
 

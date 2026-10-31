@@ -5,6 +5,7 @@ import android.os.Build
 import java.net.URLEncoder
 import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.KavPlan
+import uk.noammm.kav.data.Source
 import uk.noammm.kav.data.StopNames
 import uk.noammm.kav.data.Updates
 
@@ -18,7 +19,7 @@ internal fun feedbackLink(ctx: Context, bug: Boolean): String =
             "version" to Updates.installedVersion(ctx),
             "android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
             "device" to deviceName(Build.MANUFACTURER.orEmpty(), Build.MODEL.orEmpty()),
-            "setup" to setupLine(KavLive.chosen, KavLive.own, KavPlan.chosen, T.lang, StopNames.english),
+            "setup" to setupLine(KavLive.source, KavPlan.source, T.lang, StopNames.english),
         ),
     )
     else issueLink("feature_request.yml", listOf("version" to Updates.installedVersion(ctx)))
@@ -35,10 +36,10 @@ internal fun deviceName(maker: String, model: String): String {
     return if (m.isEmpty() || model.startsWith(m, ignoreCase = true)) model.trim() else "$m ${model.trim()}"
 }
 
-// In English, for whoever reads the issue.
-internal fun setupLine(live: Boolean, own: Boolean, kavPlans: Boolean, lang: Lang, englishNames: Boolean): String {
-    val server = if (own) "own server" else "Kav's server"
-    return "Live: ${if (live) server else "Moovit"}. " +
-        "Trips: ${if (live && kavPlans) (if (own) "own server's planner" else "Kav's planner") else "Moovit"}. " +
+// In English, for whoever reads the issue: where live times and trips are set to come from, each its own choice.
+internal fun setupLine(live: Source, plan: Source, lang: Lang, englishNames: Boolean): String {
+    fun from(s: Source, server: String, own: String) = when (s) { Source.KAV -> server; Source.OWN -> own }
+    return "Live: ${from(live, "Kav's server", "own server")}. " +
+        "Trips: ${from(plan, "Kav's planner", "own server's planner")}. " +
         "Language: ${if (lang == Lang.HE) "Hebrew" else "English"}, stop names in ${if (englishNames) "English" else "Hebrew"}."
 }

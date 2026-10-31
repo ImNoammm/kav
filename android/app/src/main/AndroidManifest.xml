@@ -14,7 +14,7 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
-    <!-- Routing goes through Moovit's own servers, so planning a trip needs a
+    <!-- Live times and trips planned online come from Kav's server, so those need a
          connection. The map is the part that does not: its tiles are bundled and
          read from disk, so the map still draws with the radio off. -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -23,6 +23,10 @@
     <!-- Updates come from GitHub releases and are handed to the system installer;
          Android asks you once, per app, before it will take an APK from one. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Install now, in Kav's own popup for an update it downloaded, installs it on
+         Android 12 and newer without a second confirmation from Android; Android or
+         Play Protect still ask whenever they decide to. -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <!-- A trip under way lives in the shade as an ongoing notification. Its service
          follows your location so the steps move with the phone, "special use" keeps it
@@ -41,6 +45,11 @@
            ADVERTISING_ID            - there is no advertising
            ACCESS_BACKGROUND_LOCATION- nothing tracks you between sessions
            GET_ACCOUNTS / CONTACTS   - there are no accounts -->
+
+    <!-- Gett, to open a taxi ride in it when it's installed (Gett.kt), else its Play Store page. -->
+    <queries>
+        <package android:name="com.gettaxi.android" />
+    </queries>
 
     <application
         android:label="@string/app_name"
@@ -61,58 +70,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Shared trips use Moovit's itinerary links, including its OneLink wrappers.
-                 Legacy directions links still work. singleTask above routes a
-                 link into the running copy instead of stacking a second one. The
-                 https form belongs to their site, so Android will not hand it over
-                 without being told to; the moovit: scheme has no owner to verify,
-                 and that one offers Kav in the chooser as it should. -->
-            <intent-filter>
+            <!-- Kav's own links: a trip shared from Kav (/t/), and a line's or a stop's (/l/, /s/). kav.noammm.uk's
+                 assetlinks.json verifies them for this app, so they open here at once; without Kav the server sends
+                 the browser to Kav's releases. singleTask above routes a link into the running copy. -->
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="moovit" android:host="directions" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="moovitapp.com" android:path="/directions" />
-                <data android:scheme="https" android:host="www.moovitapp.com" android:path="/directions" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="moovitapp.com" android:pathPrefix="/i/" />
-                <data android:scheme="https" android:host="www.moovitapp.com" android:pathPrefix="/i/" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="moovit" android:host="i" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="moovit.onelink.me" />
-            </intent-filter>
-            <!-- Lines and stops shared from Moovit. -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="moovit" android:host="line" />
-                <data android:scheme="moovit" android:host="station" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="moovitapp.com" android:path="/line" />
-                <data android:scheme="https" android:host="moovitapp.com" android:pathPrefix="/station/" />
+                <data android:scheme="https" android:host="kav.noammm.uk" />
+                <data android:pathPrefix="/t/" />
+                <data android:pathPrefix="/l/" />
+                <data android:pathPrefix="/s/" />
             </intent-filter>
             <!-- geo: points and place names, so Kav is offered as a navigation app. -->
             <intent-filter>
@@ -181,6 +149,16 @@
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
             </intent-filter>
         </receiver>
+
+        <!-- the background check that asks GitHub for Kav's recipes and a new version, never
+             because Kav opened, and what Android's installer says about an update Kav handed it -->
+        <service
+            android:name=".Checks"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <receiver
+            android:name=".InstallStatus"
+            android:exported="false" />
 
         <!-- the downloaded update, readable by the installer and nobody else -->
         <provider

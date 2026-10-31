@@ -2,15 +2,15 @@
 
 OTP reads GTFS strictly and the ministry's feed breaks five of its rules: an operator without a website, a
 translations.txt in a layout from before the standard, a route type (8, its shared taxis) that isn't GTFS, station
-records used as stops in trips, and trips whose times go back along their stops. Moovit files those taxis as buses, so
-they become buses here; the stations become stops, and those trips' times are put in order as Moovit's are (see
-untangle). Trains and light rail take bikes, as Moovit plans them. The Carmelit gets its real ride time (see
+records used as stops in trips, and trips whose times go back along their stops. Those taxis run as buses, so
+they become buses here; the stations become stops, and those trips' times are put in order (see
+untangle). Trains and light rail take bikes. The Carmelit gets its real ride time (see
 CARMELIT), a train passing Tel Aviv Savidor Center its stop there (see DWELL_AT), and the next days' trains Israel
 Railways' own timetable runs otherwise go its way (see RAILWAY_URL). Tel Aviv's weekend lines, in no
 ministry feed, come from the city's own timetable (see NAIM_URL). Everything else streams through untouched.
 
-Moovit walks into a train or light rail station through its own entrances and then spends a fixed time inside
-(stations.tsv). The same goes in as GTFS pathways, so trips here start and end at a station the way Moovit's do.
+A walk into a train or light rail station goes through its entrances and then spends a fixed time inside
+(stations.tsv). That goes in as GTFS pathways, so trips here start and end at a station that way.
 
     python3 prepare.py <dir>
 
@@ -53,11 +53,11 @@ CARMELIT_RIDE = 8 * 60
 DWELL_AT = {"17038": 120}
 # The least time from one train to another at a station, which the planner itself must know: told only after the search
 # (live.py's TRAIN_CHANGE), a 2-minute change it found could push out the right route, which was then left out.
-# Moovit's own plans change trains in 3 minutes at the least.
+# A change between trains takes 3 minutes at the least.
 TRAIN_CHANGE = 180
 # Israel Railways' own timetable (rail-api.rail.co.il, with the public key its website sends, as server/live.py asks it
 # for platforms) for the next RAILWAY_DAYS days puts right the trains the ministry's feed has otherwise (a line cut
-# short for works, evening specials the feed hasn't), as Moovit has them. On a day the railway runs a train otherwise,
+# short for works, evening specials the feed hasn't). On a day the railway runs a train otherwise,
 # its run goes on a copy of the trip for that day alone; a train only it has is added; every other train, and every day
 # it didn't answer, stays the ministry's (rail_plan).
 RAILWAY_URL = "https://rail-api.rail.co.il/rjpa/api/v1/timetable/searchTrain"
@@ -350,7 +350,7 @@ def far(a, b):
 def untangle(calls):
     """A trip's times, [(arrival, departure, (lat, lon))] in stop_sequence order in seconds, as [(arrival, departure)]
     that never go back, which OTP needs (it leaves such a trip out: NegativeHopTime); None when its first stop is left
-    after its last is reached. They go in order as Moovit puts them: a stop whose time is out of order with the stop
+    after its last is reached. They go in order: a stop whose time is out of order with the stop
     before or after it loses it, again until those left are in order, and is placed between them by its straight-line
     distance along the trip. The first and last stops keep theirs."""
     if len(calls) < 2 or calls[0][1] > calls[-1][0]:
@@ -377,7 +377,7 @@ def untangle(calls):
 
 def once(calls):
     """A trip's calls, (stop sequence, arrival, departure, stop, ...) in stop_sequence order, with a stop listed twice or
-    more in a row as one, from the first's arrival to the last's departure, as Moovit lists it. Never the first stop:
+    more in a row as one, from the first's arrival to the last's departure. Never the first stop:
     its departure names the trip, and two routes are nothing but their first stop twice, 6-9 minutes apart (Qalandiya's
     281, Holon's taxi 9). The planner keeps every copy, the live updates naming stops by the ministry's sequence; the
     app's timetable takes this (tools/export_web_bundle.py)."""
@@ -421,7 +421,7 @@ def tangled_times(src, points):
     """{(trip, stop sequence): (arrival, departure)} for every stop of the trips whose rows aren't in stop_sequence
     order or whose times go back along it, put in order (untangle); points: stop id: (lat, lon) as text. Such trips
     (Metropoline's 2 round Sheba hospital) have their rows in time order, stop_sequence and distances in the order the
-    bus calls, as Moovit's stops go. OTP sorted them by stop_sequence and left every one out. Their rows go in that
+    bus calls. OTP sorted them by stop_sequence and left every one out. Their rows go in that
     order too (retime): predict.py takes a trip's rows as they come."""
     out = {}
 
@@ -513,7 +513,7 @@ def read_stations(path=STATIONS):
 def pathways(stops, entrances):
     """The stations' entrances and the walks inside them, as GTFS stops and pathways. A station's platforms are its
     stops sharing the code; they get a parent station unless the feed has one (Tel Aviv's light rail does), an
-    entrance where Moovit walks in, and a pathway each way between every entrance and platform."""
+    entrance where the walk goes in (stations.tsv), and a pathway each way between every entrance and platform."""
     head = stops[0]
     sid, code, name = head.index("stop_id"), head.index("stop_code"), head.index("stop_name")
     lat, lon = head.index("stop_lat"), head.index("stop_lon")
@@ -845,7 +845,7 @@ def clean(raw, out, entrances=None, extra=None, railway=None):
         routes += in_order(routes[0], fixed["routes.txt"] + naim.get("routes.txt", []))
         dst.writestr("routes.txt", text(routes))
 
-        # Moovit takes a bike along on trains and light rail, so their trips carry one here.
+        # A bike goes along on trains and light rail, so their trips carry one here.
         carry = {r[routes[0].index("route_id")] for r in routes[1:] if r[mode] in BIKES_ON}
         trips = rows(src, "trips.txt")
         if "bikes_allowed" not in trips[0]:

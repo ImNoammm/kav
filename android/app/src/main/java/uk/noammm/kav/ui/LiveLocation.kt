@@ -17,16 +17,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.KavPlan
-import uk.noammm.kav.data.Moovit
-import uk.noammm.kav.data.MoovitSession
+import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.shownName
 import java.util.Date
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -42,59 +36,6 @@ fun whenLabel(t: Long, now: Long = System.currentTimeMillis() / 1000): String {
         m < 60 -> T("in $m min", "בעוד $m דק׳")
         else -> hm.format(Date(t * 1000))
     }
-}
-
-private suspend fun onlineSession(): MoovitSession? = runCatching { Online.open() }.getOrNull()
-
-// Moovit names stops one lookup at a time, and on a weak connection some fail: those are asked again, less and less
-// often, for as long as they're on screen.
-@Composable
-fun rememberStopNames(ids: List<Int>): Map<Int, Moovit.StopInfo> {
-    // A trip Kav planned names its own stops, and Moovit has never heard of their ids.
-    val wanted = ids.filter { it > 0 && !KavPlan.isKav(it) }.distinct()
-    val key = wanted.sorted().joinToString(",")
-    var out by remember(key) { mutableStateOf(emptyMap<Int, Moovit.StopInfo>()) }
-    LaunchedEffect(key) {
-        var wait = 2_000L
-        while (true) {
-            val missing = wanted.filter { it !in out }
-            if (missing.isEmpty()) break
-            onlineSession()?.let { s ->
-                for (batch in missing.chunked(6)) {
-                    val resolved = coroutineScope {
-                        batch.map { id -> async(Dispatchers.IO) {
-                            runCatching { Moovit.stopInfo(s, id) }.getOrNull()?.let { id to it }
-                        } }.awaitAll().filterNotNull().toMap()
-                    }
-                    out = out + resolved
-                }
-            }
-            if (wanted.all { it in out }) break
-            delay(wait)
-            wait = (wait * 2).coerceAtMost(60_000L)
-        }
-    }
-    return out
-}
-
-@Composable
-fun rememberLineRoute(shapeId: Int): List<Pair<Double, Double>> =
-    rememberLineRoutes(listOf(shapeId))[shapeId].orEmpty()
-
-@Composable
-fun rememberLineRoutes(shapeIds: List<Int>): Map<Int, List<Pair<Double, Double>>> {
-    val wanted = shapeIds.filter { it > 0 }.distinct().sorted()
-    val key = wanted.joinToString(",")
-    var out by remember(key) { mutableStateOf(emptyMap<Int, List<Pair<Double, Double>>>()) }
-    LaunchedEffect(key) {
-        if (wanted.isEmpty()) return@LaunchedEffect
-        val s = onlineSession() ?: return@LaunchedEffect
-        out = withContext(Dispatchers.IO) {
-            wanted.associateWith { runCatching { Moovit.tripShape(s, it) }.getOrDefault(emptyList()) }
-                .filterValues { it.isNotEmpty() }
-        }
-    }
-    return out
 }
 
 // compact: the small size, for a card that's already inside another.
@@ -117,15 +58,22 @@ fun LiveLocationButton(live: Boolean, tint: Color = K.realtime, compact: Boolean
 
 @Composable
 fun LiveLocationScreen(
-    leg: Moovit.Leg,
+    leg: Transit.Leg,
     boardStopId: Int,
-    r: Moovit.Resolved,
+    r: Transit.Resolved,
     onBack: () -> Unit,
 ) {
-    val arrival = r.arrival(leg)
+    val own = r.arrival(leg)
+    // Without a position of its own, where Kav's server has its trip: it places a train under way by its times though a
+    // station's answer can have the train without one, and a train that has left the rider's station is still its run.
+    val route = own?.vehicleId?.let(KavLive::routeOf) ?: KavPlan.routeOf(leg.lineId)?.takeIf { own == null && r.isTrain(leg) }
+    val spots = rememberKavSpots(listOfNotNull(route?.takeIf { own?.hasLocation != true }))
+    val arrival = route?.let { KavLive.followed(own, spots, it, leg.dep) } ?: own
     val info = r.line(leg.lineId)
-    val now = System.currentTimeMillis() / 1000
-    val fetched = rememberLineRoute(arrival?.tripShapeId ?: -1)
+    // Every second, for how long ago the position came.
+    val now by produceState(System.currentTimeMillis() / 1000) {
+        while (true) { delay(1000); value = System.currentTimeMillis() / 1000 }
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(bottom = LocalBottomBarInset.current)) {
@@ -167,7 +115,7 @@ fun LiveLocationScreen(
 
         VehicleMap(
             leg, arrival, modeOf(if (info != null) r.routeType(info.agencyId) else 3),
-            approach = lineRoute(arrival, r).ifEmpty { fetched },
+            approach = lineRoute(arrival, r),
             modifier = Modifier.padding(horizontal = K.gap3),
         )
 
@@ -176,15 +124,15 @@ fun LiveLocationScreen(
     }
 }
 
-fun lineRoute(a: Moovit.Arrival?, r: Moovit.Resolved): List<Pair<Double, Double>> {
+fun lineRoute(a: Transit.Arrival?, r: Transit.Resolved): List<Pair<Double, Double>> {
     if (a == null || a.tripShapeId <= 0) return emptyList()
-    return r.shapes[a.tripShapeId] ?: Moovit.cachedShape(a.tripShapeId)
+    return r.shapes[a.tripShapeId].orEmpty()
 }
 
 @Composable
 private fun VehicleMap(
-    leg: Moovit.Leg,
-    a: Moovit.Arrival?,
+    leg: Transit.Leg,
+    a: Transit.Arrival?,
     mode: Mode,
     approach: List<Pair<Double, Double>> = emptyList(),
     modifier: Modifier = Modifier,
@@ -222,10 +170,10 @@ private fun VehicleMap(
 
 @Composable
 private fun StatusBlock(
-    leg: Moovit.Leg,
+    leg: Transit.Leg,
     boardStopId: Int,
-    a: Moovit.Arrival?,
-    r: Moovit.Resolved,
+    a: Transit.Arrival?,
+    r: Transit.Resolved,
     now: Long,
 ) {
     Column(
@@ -236,6 +184,7 @@ private fun StatusBlock(
         val (headline, tint) = when {
             a?.status == 3 -> T("Canceled for this station", "מבוטל עבור תחנה זו") to K.critical
             a?.vehicleStatus == 3 -> T("Line not departed yet", "הקו טרם יצא") to K.dim
+            a != null && !a.hasLocation && a.rtUtc > 0 -> T("There's a live time, but no position right now", "יש זמן בזמן אמת, אבל אין מיקום כרגע") to K.dim
             (a == null || !a.hasLocation) && lineLive -> T("Your bus hasn't set out yet", "האוטובוס שלכם עוד לא יצא לדרך") to K.dim
             a == null || !a.hasLocation -> T("This line doesn’t have a live location", "לקו הזה אין מיקום בזמן אמת") to K.dim
             a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
@@ -260,10 +209,8 @@ private fun StatusBlock(
 
         Spacer(Modifier.height(K.gap4))
         val nextStop = nextStopOnLeg(leg, a)
-        // The trip only carries the names of the stops it boards and leaves at.
-        val asked = rememberStopNames(listOfNotNull(nextStop?.takeIf { r.stopName(it) == null }))
         if (nextStop != null) {
-            Fact(T("Next stop", "התחנה הבאה"), r.stopName(nextStop) ?: asked[nextStop]?.name ?: "…")
+            Fact(T("Next stop", "התחנה הבאה"), r.stopName(nextStop) ?: "…")
         }
         val away = a?.stopsAway ?: -1
         if (away >= 0) Fact(if (away == 1) T("1 stop away", "תחנה אחת") else T("Stops away", "תחנות"), if (away == 1) "" else "$away")
@@ -275,7 +222,7 @@ private fun StatusBlock(
     }
 }
 
-internal fun nextStopOnLeg(leg: Moovit.Leg, arrival: Moovit.Arrival?): Int? {
+internal fun nextStopOnLeg(leg: Transit.Leg, arrival: Transit.Arrival?): Int? {
     if (arrival == null || arrival.nextStopIndex < 0 || arrival.stopIndex < 0) return null
     return leg.stops.getOrNull(arrival.nextStopIndex - arrival.stopIndex)
 }

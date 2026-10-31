@@ -1,0 +1,15 @@
+{
+  "id": "3.2-letter",
+  "en": {
+    "title": "A note about this update",
+    "text": "moovit sent me a cease and desist, so everything in kav that used moovit is gone. kav now plans your trips and shows live times only with its own server, built on the ministry of transport's data.\n\nknown problems, coming in the next updates:\n- adding a stop on the way often finds no routes\n- on friday nights and saturdays a search can come back empty, searching again usually works\n- the \"after shabbat\" label is sometimes missing\n- long trips can take up to 10 seconds to plan\n- trips more than two weeks ahead can't be planned yet\n- \"last trip\" sometimes shows on a bus that isn't the last of the day\n- some walks are longer than they need to be\n- service alerts, train cancellations and stop photos are missing for now",
+    "helpTitle": "kav needs your help",
+    "help": "now that moovit is gone, kav's own server does all the trip planning and live times, and running it costs money every month. kav has no ads and never will, so if kav helps you, buying me a coffee keeps it running."
+  },
+  "he": {
+    "title": "הודעה על העדכון הזה",
+    "text": "מוביט שלחו לי מכתב התראה, אז כל מה שב-Kav השתמש במוביט הוסר. עכשיו Kav מתכננת מסלולים ומציגה זמנים בזמן אמת רק דרך השרת שלה, שמבוסס על הנתונים של משרד התחבורה.\n\nבעיות ידועות, שיתוקנו בעדכונים הבאים:\n- הוספת עצירה בדרך הרבה פעמים לא מוצאת מסלולים\n- בשישי בערב ובשבת חיפוש יכול לחזור ריק, חיפוש נוסף בדרך כלל עובד\n- התווית \"אחרי שבת\" לפעמים חסרה\n- מסלולים ארוכים יכולים לקחת עד 10 שניות\n- עוד אי אפשר לתכנן נסיעה ליותר משבועיים קדימה\n- \"נסיעה אחרונה\" מופיעה לפעמים על אוטובוס שהוא לא האחרון ביום\n- חלק מההליכות ארוכות ממה שצריך\n- התראות שירות, ביטולי רכבות ותמונות תחנות חסרים בינתיים",
+    "helpTitle": "Kav צריכה את העזרה שלכם",
+    "help": "עכשיו כשמוביט ירד, השרת של Kav עושה את כל תכנון המסלולים והזמנים בזמן אמת, ולהריץ אותו עולה כסף כל חודש. ב-Kav אין פרסומות ולא יהיו, אז אם Kav עוזרת לכם, קפה עוזר לה להמשיך לעבוד."
+  }
+}

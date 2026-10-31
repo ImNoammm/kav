@@ -15,6 +15,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -52,9 +54,20 @@ fun PipOverlay(model: KavModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val plate = remember(n.glyph, n.tint) { plateIcon(n.glyph, n.tint).asImageBitmap() }
                 Image(plate, contentDescription = null, modifier = Modifier.size(30.dp))
+                // When the bus leaves your stop, or gets you to yours, in the search results' colours for that time.
+                val due = n.due?.let { depColour(it) }
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        n.title, style = K.type.subhead, color = K.text, fontWeight = FontWeight.SemiBold,
+                    LiveText(
+                        buildAnnotatedString {
+                            append(n.title)
+                            val at = when {
+                                due == null || n.dueText.isEmpty() -> -1
+                                n.title.startsWith(n.dueText) -> 0
+                                else -> n.title.lastIndexOf(n.dueText)
+                            }
+                            if (at >= 0 && due != null) addStyle(SpanStyle(color = due), at, at + n.dueText.length)
+                        },
+                        style = K.type.subhead.copy(color = K.text, fontWeight = FontWeight.SemiBold),
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
@@ -62,8 +75,8 @@ fun PipOverlay(model: KavModel) {
                         style = K.type.caption, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                if (n.chip.isNotBlank()) Text(
-                    n.chip, style = K.type.caption, color = K.text, maxLines = 1,
+                if (n.chip.isNotBlank()) LiveText(
+                    n.chip, style = K.type.caption, color = due ?: K.text, maxLines = 1,
                     modifier = Modifier.clip(K.capsule).background(K.plate).padding(horizontal = 7.dp, vertical = 2.dp),
                 )
             }

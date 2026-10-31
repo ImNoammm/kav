@@ -13,6 +13,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.composed
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -115,6 +118,41 @@ fun Modifier.popIn(index: Int, key: Any?): Modifier {
         translationY = (1f - p) * 22.dp.toPx()
         scaleX = 0.97f + 0.03f * p
         scaleY = 0.97f + 0.03f * p
+    }
+}
+
+// List keys that are each used once: a repeat gets the count of those before it, as a list can't show one key twice.
+fun uniqueKeys(keys: List<String>): List<String> {
+    val seen = HashMap<String, Int>()
+    return keys.map { k -> seen.merge(k, 1, Int::plus)!!.let { n -> if (n == 1) k else "$k#$n" } }
+}
+
+// Eases a move within its parent instead of jumping there: a departure that moves along its row glides over. Off
+// (enabled false), it's placed where it's put, as a row being dragged is, and glides again from there once on.
+fun Modifier.glide(enabled: Boolean = true): Modifier = composed {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val shift = remember { Animatable(androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Offset.VectorConverter) }
+    val last = remember { arrayOfNulls<androidx.compose.ui.geometry.Offset>(1) }
+    layout { measurable, constraints ->
+        val p = measurable.measure(constraints)
+        layout(p.width, p.height) {
+            val at = coordinates?.positionInParent()
+            val before = last[0]
+            var offset = shift.value
+            if (at != null) {
+                last[0] = at
+                // Drawn where it was this frame, then on its way.
+                if (enabled && before != null && before != at) {
+                    offset += before - at
+                    val from = offset
+                    scope.launch {
+                        shift.snapTo(from)
+                        shift.animateTo(androidx.compose.ui.geometry.Offset.Zero, spring(dampingRatio = 1f, stiffness = 500f))
+                    }
+                }
+            }
+            p.place(offset.x.roundToInt(), offset.y.roundToInt())
+        }
     }
 }
 

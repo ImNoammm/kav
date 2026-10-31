@@ -8,20 +8,15 @@ import android.content.Intent
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import kotlinx.coroutines.runBlocking
 import uk.noammm.kav.data.Coming
 import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.LineAlert
-import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.comingText
 import uk.noammm.kav.data.shownName
 import uk.noammm.kav.data.nextWake
-import uk.noammm.kav.ui.Online
 import uk.noammm.kav.ui.Shown
-import uk.noammm.kav.ui.StopPhotos
 import uk.noammm.kav.ui.T
 import uk.noammm.kav.ui.clockFormat
-import uk.noammm.kav.ui.metres
 import java.util.Date
 
 // The phone's alarm, a restart, a new clock or an alert swiped away: the alerts' notifications brought up to date and the
@@ -43,8 +38,8 @@ class LineAlertReceiver : BroadcastReceiver() {
 }
 
 // Line alerts: between the times and on the days a rider chose, the next buses of their lines at a stop in
-// the notification shade, refreshed about every minute from Kav's server or Moovit, wherever the app's live times come
-// from. The wake is an inexact alarm, which a sleeping phone may hold back a few minutes.
+// the notification shade, refreshed about every minute from Kav's server. The wake is an inexact alarm, which a sleeping
+// phone may hold back a few minutes.
 object LineAlerts {
     const val ACT_WAKE = "uk.noammm.kav.LINE_ALERTS"
     const val ACT_QUIET = "uk.noammm.kav.LINE_ALERT_QUIET"
@@ -102,14 +97,10 @@ object LineAlerts {
 
     private fun notificationId(a: LineAlert) = a.id.hashCode()
 
-    // The alert's lines due at its stop, from Kav's server while it's chosen and answering, else from Moovit.
+    // The alert's lines due at its stop, from the server live locations come from. Null when it can't be asked.
     private fun coming(ctx: Context, a: LineAlert): List<Coming>? {
-        if (Prefs.liveFromKav(ctx)) {
-            KavLive.server = Prefs.kavServer(ctx)
-            KavLive.key = Prefs.kavServerKey(ctx)
-            runCatching { fromKav(a) }.getOrNull()?.let { return it }
-        }
-        return fromMoovit(ctx, a)
+        Prefs.loadSources(ctx)
+        return runCatching { fromKav(a) }.getOrNull()
     }
 
     private fun fromKav(a: LineAlert): List<Coming> {
@@ -119,22 +110,6 @@ object LineAlerts {
             val label = if (a.toward.isNotEmpty()) board.lines[d.route]?.to?.takeIf { to -> a.toward.any { it.name == to } }?.let(::shownName)
                 else d.number.takeIf { it in a.lines }
             label?.let { Coming(it, d.expected, d.underWay) }
-        }
-    }
-
-    private fun fromMoovit(ctx: Context, a: LineAlert): List<Coming>? {
-        val id = a.moovit.takeIf { it > 0 } ?: StopPhotos.idOfCode(ctx, a.code) ?: return null
-        if (Online.session == null) Online.init(ctx)
-        val s = runBlocking { Online.open() }
-        return Moovit.stopArrivals(s, listOf(id)).first.values.mapNotNull { arrival ->
-            val label = if (a.toward.isNotEmpty()) {
-                // A train goes by its pattern's last stop; one that can't be looked up leaves the times untold.
-                if (arrival.patternId <= 0) return@mapNotNull null
-                val last = Moovit.tripPattern(s, arrival.patternId).lastOrNull()?.let { Moovit.stopInfo(s, it) } ?: return null
-                a.endOf(last)?.name?.let(::shownName)
-            } else Moovit.lineInfo(s, arrival.lineId)?.number?.takeIf { it in a.lines }
-            val live = arrival.rtUtc > 0
-            Coming(label ?: return@mapNotNull null, if (live) arrival.rtUtc else arrival.staticUtc, live)
         }
     }
 
@@ -190,10 +165,4 @@ object LineAlerts {
         )
         if (at == null) am.cancel(pi) else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at * 1000, pi)
     }
-}
-
-// The alert's end a train with this last stop goes to: the same stop code, or a stop within 300 m, as one station can
-// have two codes (Hamifrats Central has). Never by name: Moovit's "רכבת נתניה-ספיר" would pass for "נתניה".
-internal fun LineAlert.endOf(last: Moovit.StopInfo): LineAlert.End? = toward.firstOrNull { e ->
-    (e.code > 0 && last.code.toIntOrNull() == e.code) || metres(e.lat, e.lon, last.lat, last.lon) <= 300
 }

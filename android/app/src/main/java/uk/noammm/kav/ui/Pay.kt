@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -83,7 +84,7 @@ import org.json.JSONObject
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.LOCATION_PERMISSIONS
 import uk.noammm.kav.TripService
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.RavPass
 import uk.noammm.kav.hasLocationPermission
@@ -239,8 +240,6 @@ object Payer {
     fun init(ctx: Context) {
         app = ctx.applicationContext
         if (store != null) return
-        // Kav paid through Moovit before; that paying user's sealed tokens go.
-        ctx.deleteSharedPreferences("moovit-pay")
         val s = ctx.getSharedPreferences("rav-pass", Context.MODE_PRIVATE)
         store = s
         // "Skip for now" holds until the account changes, not just for this run of the app.
@@ -509,10 +508,10 @@ private fun ConnectAbout(onNext: () -> Unit) {
         }
         AboutCard(T("What HopOn sees", "מה הופ-און רואה")) {
             Note(T(
-                "Everything else in Kav, from planning and live times to search, stations and lines, goes through an " +
-                    "anonymous Moovit ID that isn't tied to you.",
-                "כל השאר ב-Kav, מתכנון מסלול וזמנים בזמן אמת ועד חיפוש, תחנות וקווים, עובר דרך מזהה Moovit " +
-                    "אנונימי שלא קשור אליכם.",
+                "Everything else in Kav, from planning and live times to search, stations and lines, comes from Kav's " +
+                    "own server, the timetable on your phone or a map search, and none of it is tied to you.",
+                "כל השאר ב-Kav, מתכנון מסלול וזמנים בזמן אמת ועד חיפוש, תחנות וקווים, מגיע מהשרת של Kav, מלוח " +
+                    "הזמנים שבטלפון או מחיפוש במפה, ושום דבר מזה לא קשור אליכם.",
             ), color = K.muted)
             Note(T(
                 "Only paying uses your Rav-Pass account. Then HopOn knows the bus you scanned, the stop you board at and " +
@@ -1090,7 +1089,7 @@ private fun Paying(model: KavModel) {
     var found by remember { mutableStateOf<List<RavPass.Nearby>?>(null) }
     // A bus of the company paid for minutes ago, waiting for the rider to say it's a new ride.
     var again by remember { mutableStateOf<RavPass.Bus?>(null) }
-    // The fare's reach, as Moovit's fare picker chooses it: 15 km unless the rider picks more. Kav turns it into the stop
+    // The fare's reach: 15 km unless the rider picks more. Kav turns it into the stop
     // HopOn prices the ride to.
     var band by remember { mutableIntStateOf(15) }
     // Paying at a station: the mode, the station HopOn placed the rider at, and the list to choose it from when HopOn
@@ -1801,7 +1800,7 @@ private fun StopCard(label: String, name: String) {
     }
 }
 
-// The fare's reach, one line that opens into HopOn's others, as Moovit's fare picker: "Up to 15 km · ₪8".
+// The fare's reach, one line that opens into HopOn's others: "Up to 15 km · ₪8".
 @Composable
 private fun BandDropdown(bands: List<RavPass.Band>, chosen: Int, onChoose: (Int) -> Unit) {
     var open by remember { mutableStateOf(false) }
@@ -2005,10 +2004,16 @@ internal fun LtrText(
 ) = Text(text, fontSize = size, color = color, fontWeight = weight, textDecoration = decoration, maxLines = 1,
     softWrap = false, style = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr))
 
+// The time, every second, while its screen shows: a tab behind another, or Kav away, doesn't tick.
 @Composable
-internal fun rememberNow(): Long = produceState(System.currentTimeMillis()) {
-    while (true) { value = System.currentTimeMillis(); delay(1000) }
-}.value
+internal fun rememberNow(): Long {
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    return produceState(System.currentTimeMillis(), lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) { value = System.currentTimeMillis(); delay(1000) }
+        }
+    }.value
+}
 
 // The free transfer after a ride, while it lasts.
 @Composable
@@ -2150,7 +2155,7 @@ internal fun PendingFloat(model: KavModel, modifier: Modifier = Modifier) {
 internal class PayFor(val leg: Int, val station: StationMode?, val at: Pair<Double, Double>?, val journey: String?)
 
 // The key a trip's tickets go by, the same before and after it starts.
-internal val Moovit.Itinerary.paymentKey get() = "$guid:$dep"
+internal val Transit.Itinerary.paymentKey get() = "$guid:$dep"
 
 // Tickets bought from a trip's own page, by trip and leg, so its ride shows them there and once the trip starts.
 // For as long as Kav runs; the tickets themselves are kept by Payer.
@@ -2162,7 +2167,7 @@ internal object TripTickets {
 // Carmelit at the station. Once bought, its ticket, as on the home screen. trip: the trip shown, when it isn't the one
 // under way.
 @Composable
-internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit.Resolved, trip: Moovit.Itinerary? = null) {
+internal fun TripPay(model: KavModel, legIndex: Int, ride: Transit.Leg, r: Transit.Resolved, trip: Transit.Itinerary? = null) {
     val agency = r.line(ride.lineId)?.agencyId ?: -1
     val type = r.routeType(agency)
     val station = when {
@@ -2205,7 +2210,7 @@ internal fun TripPay(model: KavModel, legIndex: Int, ride: Moovit.Leg, r: Moovit
                     StationMode.CARMELIT -> T("Pay at the Carmelit station", "תשלום בתחנת הכרמלית")
                 }, style = K.type.bodyStrong)
                 Text(if (station == null) T("Scan the QR code on the bus", "סורקים את קוד ה-QR באוטובוס")
-                    else board?.name ?: T("Kav finds the station you're at", "Kav מאתרת את התחנה שבה אתם נמצאים"),
+                    else board?.shown() ?: T("Kav finds the station you're at", "Kav מאתרת את התחנה שבה אתם נמצאים"),
                     style = K.type.subhead)
             }
         }
@@ -2310,7 +2315,7 @@ private fun crow(a: RavPass.Stop, b: RavPass.Stop): Double {
 private fun ahead(run: List<RavPass.Stop>, start: RavPass.Stop) = run.filter { maxOf(it.sequence, 0) >= maxOf(start.sequence, 0) }
 
 // HopOn's app lets the run's farthest stop decide: within 15 km of the boarding stop it prices the ride to the run's
-// last stop without asking, and beyond that it asks where the ride ends. Kav asks how far instead, as Moovit does:
+// last stop without asking, and beyond that it asks where the ride ends. Kav asks how far instead:
 // HopOn's fares up to the first that reaches the farthest stop, or none when HopOn's app wouldn't ask.
 internal fun bandsFor(
     bands: List<RavPass.Band>, run: List<RavPass.Stop>, from: String,
@@ -2369,7 +2374,14 @@ private fun TicketView(t: RavPass.Ticket, onExit: () -> Unit, onAgain: () -> Uni
             color = K.muted)
         HorizontalPager(pager, Modifier.fillMaxWidth()) { i ->
             val code = t.codes.getOrNull(i)
-            if (valid && code != null) QrCode(code, Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)))
+            // A station's gate reads a code the size HopOn's own app shows a train's at, 180 dp with a white border; one
+            // as wide as the screen is too big for the gate's window and only scans held further off.
+            if (valid && code != null && t.agencyCode == RavPass.RAILWAYS) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(180.dp).clip(RoundedCornerShape(K.rTile)).background(Color.White).padding(10.dp)) {
+                    QrCode(code, Modifier.fillMaxSize())
+                }
+            }
+            else if (valid && code != null) QrCode(code, Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)))
             else Box(Modifier.fillMaxWidth().heightIn(min = 120.dp).panel(K.rTile), contentAlignment = Alignment.Center) {
                 Text(T("This ticket is no longer valid", "הכרטיס הזה כבר לא בתוקף"), fontSize = 16.sp, color = K.dim)
             }

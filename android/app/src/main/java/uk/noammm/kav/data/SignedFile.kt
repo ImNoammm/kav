@@ -15,6 +15,17 @@ import java.util.Base64
 internal class SignedFile(private val name: String, private val url: String, private val key: String) {
     enum class Check { NEWER, SAME, FAILED }
 
+    // The kept copy, when its signature checks out, handed to take without asking the network.
+    fun load(ctx: Context, take: (ByteArray) -> Boolean) {
+        val dir = File(ctx.filesDir, name)
+        val kept = File(dir, "recipe.json")
+        val keptSignature = File(dir, "recipe.json.sig")
+        runCatching { if (kept.exists() && keptSignature.exists() && verify(kept.readBytes(), keptSignature.readText())) take(kept.readBytes()) }
+    }
+
+    // When the network last answered about it, 0 for never.
+    fun checkedAt(ctx: Context): Long = File(File(ctx.filesDir, name), "checked").lastModified()
+
     // Hands every copy that verifies to take, the kept one first, then the published one at most once a day, or now
     // when forced. take answers whether it used the copy, and only a used copy is kept. Blocks, so off the main thread.
     fun refresh(ctx: Context, force: Boolean = false, take: (ByteArray) -> Boolean): Check {
@@ -22,7 +33,7 @@ internal class SignedFile(private val name: String, private val url: String, pri
         val kept = File(dir, "recipe.json")
         val keptSignature = File(dir, "recipe.json.sig")
         val checked = File(dir, "checked")
-        runCatching { if (kept.exists() && keptSignature.exists() && verify(kept.readBytes(), keptSignature.readText())) take(kept.readBytes()) }
+        load(ctx, take)
         if (!force && checked.exists() && System.currentTimeMillis() - checked.lastModified() < DAY_MS) return Check.SAME
         val body = get(url) ?: return Check.FAILED
         val signature = get("$url.sig")?.toString(Charsets.UTF_8) ?: return Check.FAILED
@@ -58,7 +69,13 @@ internal class SignedFile(private val name: String, private val url: String, pri
         }
     }
 
-    private companion object {
-        const val DAY_MS = 24 * 60 * 60 * 1000L
+    companion object {
+        private const val DAY_MS = 24 * 60 * 60 * 1000L
+        // Past this age the background check (Checks), which asks daily, can't have been running (phone off or offline,
+        // background work held back), so the copy is asked for as Kav opens, the one request an opening can make.
+        // Counted from Kav's own install or update when that's later, its built-in values being new then.
+        private const val STALE_MS = 3 * DAY_MS
+
+        fun stale(checkedAt: Long, installedAt: Long, now: Long): Boolean = now - maxOf(checkedAt, installedAt) > STALE_MS
     }
 }

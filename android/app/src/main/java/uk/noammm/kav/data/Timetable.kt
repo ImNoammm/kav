@@ -123,7 +123,9 @@ internal object Timetable {
 
     // A copy counts with Kav's key, pinned above, or with the one the rider's own server gave (server/selfhost makes its
     // own); a copy of the other server's then doesn't check out, and the shipped week is read until the chosen one's comes.
-    fun store(ctx: Context) = TimetableStore(File(ctx.filesDir, "timetable"), if (KavLive.own) Prefs.kavServerBundleKey(ctx) else KEY)
+    fun store(ctx: Context) = TimetableStore(
+        File(ctx.filesDir, "timetable"), if (KavLive.timetableServer != KavLive.KAV_SERVER) Prefs.kavServerBundleKey(ctx) else KEY,
+    )
 
     // Another server chosen: its copy is asked for now rather than a day after the last server's.
     fun serverChanged(ctx: Context) {
@@ -154,8 +156,9 @@ internal object Timetable {
         val have = s.staged() ?: s.installed()
         if (metered(ctx) && ChronoUnit.DAYS.between(have?.from ?: shipped(ctx), LocalDate.now(israel)) < STALE_DAYS) return
         // The rider's own server's key, taken from the server the first time it's wanted, if it wasn't when it was chosen.
-        if (KavLive.own && Prefs.kavServerBundleKey(ctx).isEmpty()) {
-            val told = (KavLive.check(KavLive.server, KavLive.key) as? KavLive.Check.Answers)?.bundleKey ?: return
+        val at = KavLive.timetableServer
+        if (at != KavLive.KAV_SERVER && Prefs.kavServerBundleKey(ctx).isEmpty()) {
+            val told = (KavLive.check(at, KavLive.keyFor(at)) as? KavLive.Check.Answers)?.bundleKey ?: return
             Prefs.setKavServerBundleKey(ctx, told)
             return refresh(ctx)
         }
@@ -177,14 +180,15 @@ internal object Timetable {
     private fun metered(ctx: Context): Boolean =
         (ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered
 
-    // The chosen server, asked as KavLive asks it. Null when it didn't answer, empty when it answered without the file.
+    // The timetable's server, asked as KavLive asks it. Null when it didn't answer, empty when it answered without the file.
     private fun fetch(path: String, long: Boolean = false): ByteArray? {
-        val c = runCatching { URL("${KavLive.server}/live/v1/$path").openConnection() as HttpURLConnection }.getOrNull() ?: return null
+        val at = KavLive.timetableServer
+        val c = runCatching { URL("$at/live/v1/$path").openConnection() as HttpURLConnection }.getOrNull() ?: return null
         return try {
             c.connectTimeout = 10_000
             c.readTimeout = if (long) 120_000 else 15_000
             c.setRequestProperty("User-Agent", "Kav")
-            KavLive.sign(c, "/live/v1/$path", KavLive.keyFor(KavLive.server))
+            KavLive.sign(c, "/live/v1/$path", KavLive.keyFor(at))
             if (c.responseCode == 200) c.inputStream.use { it.readBytes() } else ByteArray(0)
         } catch (e: Exception) {
             null

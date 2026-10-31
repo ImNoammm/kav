@@ -15,6 +15,9 @@ import uk.noammm.kav.data.MapFile
 // "Later" lasts until the app restarts.
 private var dismissed by mutableStateOf(false)
 
+// Whether it would show: StartPopups decides when.
+internal val mapPromptWanted: Boolean get() = !dismissed && MapFile.state !is MapFile.State.Ready
+
 @Composable
 fun MapPrompt() {
     val state = MapFile.state

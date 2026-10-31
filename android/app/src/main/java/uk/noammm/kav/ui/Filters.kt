@@ -1,6 +1,6 @@
 package uk.noammm.kav.ui
 
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 
 enum class ResultFilter {
     BUS, TRAIN, LIGHT_RAIL, CARMELIT_RAKAVLIT, SHUTTLE, TAXI, BIKE, WALK;
@@ -40,17 +40,17 @@ fun routeTypesFor(on: Set<ResultFilter>): List<Int> {
     return all.filterNot { it in off }
 }
 
-fun filterResults(list: List<Moovit.Itinerary>, on: Set<ResultFilter>, r: Moovit.Resolved): List<Moovit.Itinerary> {
+fun filterResults(list: List<Transit.Itinerary>, on: Set<ResultFilter>, r: Transit.Resolved): List<Transit.Itinerary> {
     if (on.size == ResultFilter.entries.size) return list
     return list.filter { it ->
         val legs = it.legs
-        val hasRide = legs.any { l -> l.kind == Moovit.LegKind.RIDE }
-        val hasTaxi = legs.any { l -> l.kind == Moovit.LegKind.TAXI }
-        val hasBike = legs.any { l -> l.kind == Moovit.LegKind.BIKE }
+        val hasRide = legs.any { l -> l.kind == Transit.LegKind.RIDE }
+        val hasTaxi = legs.any { l -> l.kind == Transit.LegKind.TAXI }
+        val hasBike = legs.any { l -> l.kind == Transit.LegKind.BIKE }
         if (ResultFilter.TAXI !in on && hasTaxi) return@filter false
         if (ResultFilter.BIKE !in on && hasBike) return@filter false
         if (ResultFilter.WALK !in on && !hasRide && !hasTaxi && !hasBike) return@filter false
-        legs.filter { l -> l.kind == Moovit.LegKind.RIDE }.all { ride ->
+        legs.filter { l -> l.kind == Transit.LegKind.RIDE }.all { ride ->
             val info = r.line(ride.lineId) ?: return@all true
             val rt = r.routeType(info.agencyId)
             if (rt == 711) return@all ResultFilter.SHUTTLE in on

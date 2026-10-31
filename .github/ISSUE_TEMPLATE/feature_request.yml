@@ -30,8 +30,8 @@ body:
     attributes:
       label: Does another app do it? / אפליקציה אחרת עושה את זה?
       description: >-
-        Moovit, Google Maps, Rav-Pass or any other: how it looks there. Screenshots are welcome.
-        / Moovit, Google Maps, רב-פס או כל אחרת: איך זה נראה שם. צילומי מסך יתקבלו בשמחה.
+        Google Maps, Rav-Pass or any other: how it looks there. Screenshots are welcome.
+        / Google Maps, רב-פס או כל אחרת: איך זה נראה שם. צילומי מסך יתקבלו בשמחה.
   - type: input
     id: version
     attributes:

@@ -33,6 +33,8 @@ class TripService : Service() {
     private var foreground = false
     private var tracking: (() -> Unit)? = null
     private var fix: Fix? = null
+    // Too rough for the notice, but the trip's steps allow for how rough a fix is.
+    private var rough: Fix? = null
     private var shown: TripNotice? = null
     private var postedAt = 0L
 
@@ -105,7 +107,7 @@ class TripService : Service() {
             start(first, special or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         if (!located && !start(first, special)) return false
         foreground = true
-        if (located) tracking = trackLocation(this, ::onFix, every = need.every, quality = need.quality)
+        if (located) tracking = trackLocation(this, ::onFix, ::onRough, every = need.every, quality = need.quality)
         return true
     }
 
@@ -115,7 +117,7 @@ class TripService : Service() {
         val n = notice()?.let { build(this, it) } ?: return
         val special = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
         if (start(n, special or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)) {
-            tracking = trackLocation(this, ::onFix, every = need.every, quality = need.quality)
+            tracking = trackLocation(this, ::onFix, ::onRough, every = need.every, quality = need.quality)
         }
     }
 
@@ -127,10 +129,19 @@ class TripService : Service() {
     }
 
     private fun onFix(location: Location) {
-        val f = Fix(location.latitude, location.longitude, location.fixTime(), location.speed)
+        val f = Fix(location.latitude, location.longitude, location.fixTime(), location.speed, location.fixAccuracy())
         fix = f
         // The watch timer stops while the screen sleeps, and the fix can carry the trip past the last stop's
         // window before it runs again: every fix checks first, so "get off" isn't skipped.
+        alertIfDue()
+        val shell = TripBridge.fix
+        if (shell != null) shell(f) else advance()
+        post()
+    }
+
+    private fun onRough(location: Location) {
+        val f = Fix(location.latitude, location.longitude, location.fixTime(), location.speed, location.fixAccuracy())
+        rough = f
         alertIfDue()
         val shell = TripBridge.fix
         if (shell != null) shell(f) else advance()
@@ -171,7 +182,7 @@ class TripService : Service() {
         need = wanted
         val stop = tracking ?: return
         stop()
-        tracking = trackLocation(this, ::onFix, every = need.every, quality = need.quality)
+        tracking = trackLocation(this, ::onFix, ::onRough, every = need.every, quality = need.quality)
     }
 
     private fun journey(): Pair<ActiveJourney, Int>? {
@@ -224,8 +235,8 @@ class TripService : Service() {
         val (journey, step) = journey() ?: return
         val steps = buildSteps(journey.trip, journey.fromLabel, journey.toLabel)
         val moved = journeyProgress(
-            steps, step, journey.resolved, journey.chosen, System.currentTimeMillis() / 1000, fix, canLocate(this),
-            Prefs.beginTripsImmediately(this),
+            steps, step, journey.resolved, journey.chosen, System.currentTimeMillis() / 1000,
+            listOfNotNull(fix, rough).maxByOrNull { it.at }, canLocate(this), Prefs.beginTripsImmediately(this),
         )
         if (moved == step) return
         JourneyFile.save(this, journey, moved)

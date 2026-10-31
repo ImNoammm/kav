@@ -76,7 +76,7 @@ object K {
     var routeIdle by mutableStateOf(Color(0xFF7E7E87))
     var problem by mutableStateOf(Color(0xFFE7C17A))
     var critical by mutableStateOf(Color(0xFFEE929A))
-    // Moovit's green for a time or position measured live, and nothing else.
+    // Green for a time or position measured live, and nothing else.
     var realtime by mutableStateOf(Color(0xFF04C876))
     val scheduled get() = textSecondary
 
@@ -84,7 +84,7 @@ object K {
     val gap4 = 16.dp; val gap5 = 20.dp; val gap6 = 24.dp; val gap8 = 32.dp
 
     val type = KType
-    // Bus line badges in Kav's look or Moovit's, as chosen in Settings.
+    // Bus line badges in Kav's look or the strip, as chosen in Settings.
     var lineBadgeAppearance by mutableStateOf(LineBadgeAppearance.KAV)
 
     // Every colour has to be set for every look, or a switch leaves strays from the last one.

@@ -10,7 +10,7 @@ import uk.noammm.kav.ui.Lang
 import uk.noammm.kav.ui.T
 import java.util.Locale
 
-// Trip alerts said out loud, as Moovit's app does ("your bus is arriving"): the phone's own text-to-speech, in Kav's
+// Trip alerts said out loud ("your bus is arriving"): the phone's own text-to-speech, in Kav's
 // language, over music the way a navigation app talks. A phone with no voice for that language keeps to the sound.
 internal object Speaker {
     private var tts: TextToSpeech? = null

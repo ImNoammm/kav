@@ -22,9 +22,9 @@ An Android app for getting around on public transport in Israel. No ads, no
 account, no analytics, nothing phoning home about where you go. Hebrew and
 English, and it lays itself out right to left when you pick Hebrew.
 
-I built it because Moovit is the only app that really covers Israeli transit and
-it has become unusable: full-screen ads, a subscription nag, and a permissions
-list that has nothing to do with catching a bus. Kav is the same job done
+I built it because the app everyone uses for Israeli transit has become
+unusable: full-screen ads, a subscription nag, and a permissions list that has
+nothing to do with catching a bus. Kav is the same job done
 plainly: it plans a trip, tells you which bus, and walks you through it while
 you're on the way.
 
@@ -36,15 +36,12 @@ you're on the way.
   floating window.
 - Shows where your bus actually is. The trip stays in the notification shade
   while you're on the way, and on Android 16 it shows up as a live update.
-- Live bus locations on the map, free. Moovit now charges for them in its own
-  app (Moovit+), but in Kav they stay free. They come from Moovit unless you
-  switch on Kav's own server ([server/](server)), which takes them straight from
-  the Ministry of Transport's real-time feed, often fresher than Moovit's. With
-  it on, you can also turn on Kav's own planner in Settings, which plans your
-  trips on the ministry's timetable with OpenTripPlanner instead of Moovit. It
-  only learns the lines, stops or rough area you're looking at and the start
-  and end of a trip you plan, through Cloudflare, and keeps no logs. If it's ever down, Kav goes
-  back to Moovit until it's up again.
+- Live bus locations on the map, free. They come from Kav's own server
+  ([server/](server)), which takes them straight from the Ministry of
+  Transport's real-time feed, and it plans your trips too, on the ministry's
+  timetable with OpenTripPlanner. It only learns the lines, stops or rough area
+  you're looking at and the start and end of a trip you plan, through
+  Cloudflare, and keeps no logs.
 - A live screen with every stop around you and the buses reporting their
   position.
 - Departure boards for every station, and a page for every line with its route
@@ -53,8 +50,7 @@ you're on the way.
 - Favourite places on the home screen, and backups of your places and settings
   to a `.kav` file.
 - Private search, on by default, keeps your exact location out of searches:
-  Moovit and Google only see the centre of the town you're in, or a place you
-  pick.
+  Google only sees the centre of the town you're in, or a place you pick.
 - Pays for bus, train, light rail and Carmelit rides, if you want it to, with a
   Rav-Pass account you sign up or sign in to right in Kav. Only payments use
   it, and Rav-Pass gets your location only at the moment you scan or pay, as in
@@ -72,7 +68,7 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-3.1.apk --repo ImNoammm/kav
+gh attestation verify kav-3.2.apk --repo ImNoammm/kav
 ```
 
 First launch fetches the map, about 176 MB once. It lives on the phone from then
@@ -97,7 +93,7 @@ tools/fetch.sh
 KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
 ```
 
-A build of your own gets its live buses from Moovit, or from a server of your own
+A build of your own needs a server of your own for live buses and trips
 (below): Kav's server only answers the APKs from Releases.
 
 ## Running your own server
@@ -111,18 +107,16 @@ Coming soon: everything Kav's server does, on a machine of your own.
 - The liquid glass shaders come from Kyant0's
   [AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache
   License 2.0).
-- Timetables, and live buses when Kav's server is on, from the Israel Ministry
-  of Transport. With Kav's own planner on, trips are planned on that timetable
-  and OpenStreetMap by [OpenTripPlanner](https://github.com/opentripplanner/OpenTripPlanner);
-  otherwise trip plans come from Moovit, and live buses too with the server off.
+- Timetables and live buses from the Israel Ministry of Transport. Trips are
+  planned on that timetable and OpenStreetMap by
+  [OpenTripPlanner](https://github.com/opentripplanner/OpenTripPlanner).
 - Places and exact addresses from Google Maps' public web search, asked the way
   a logged-out browser asks it: no key, no account, no cookies. It gets the typed
   text and the area above. The request recipe is
   [Vela Maps](https://github.com/PimpinPumpkin/Vela)' (GPL-3.0). Once a day Kav
-  reads Vela's signed recipe and its own (`recipe/kav.json`, for Moovit) from
-  GitHub, so a fix for Google or Moovit reaches it without an update. A file
-  without the right signature, or pointing anywhere but Google or Moovit, is
-  ignored. See [recipe/README.md](recipe/README.md).
+  reads Vela's signed recipe from GitHub, so a fix for Google reaches it without
+  an update. A file without the right signature, or pointing anywhere but
+  Google, is ignored.
 - Addresses Google doesn't have from GovMap, the Survey of Israel's map, sent
   just the typed text.
 - Street View from Google, shown inside Kav only when you open it on a stop.
@@ -133,8 +127,7 @@ Coming soon: everything Kav's server does, on a machine of your own.
 - The operator colours come from [@szaionz](https://github.com/szaionz)'s
   route_colors branch.
 - Thanks to the amazing team at [HTTP Toolkit](https://httptoolkit.com), who
-  kindly gave Kav a free Pro licence. It's what Kav uses to study how Moovit's
-  app talks to its servers.
+  kindly gave Kav a free Pro licence.
 - A huge thanks to [@yair-654](https://github.com/yair-654) for all the support
   for Kav, and for the bug reports and ideas behind a lot of it.
 

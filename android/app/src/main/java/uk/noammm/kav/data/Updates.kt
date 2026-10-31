@@ -55,6 +55,32 @@ object Updates {
         )
     }
 
+    // The newest release the background check (Checks) found, kept on the phone so Kav can tell of it as it opens without
+    // asking GitHub then. GitHub is asked at most once a day.
+    private const val DAY_MS = 24 * 3600_000L
+
+    private fun storeFile(ctx: Context) = File(ctx.filesDir, "release.json")
+
+    fun stored(ctx: Context): Release? = runCatching { fromJson(JSONObject(storeFile(ctx).readText())) }.getOrNull()
+
+    fun store(ctx: Context, release: Release) = storeFile(ctx).writeText(toJson(release).toString())
+
+    // GitHub's newest release when the last answer is a day old, or there's none yet; null when it isn't time. Blocks,
+    // so off the main thread.
+    fun checkIfDue(ctx: Context): Release? =
+        if (!due(storeFile(ctx).lastModified(), System.currentTimeMillis())) null else latest().also { store(ctx, it) }
+
+    // A clock set back counts as due too, rather than waiting for it to catch up.
+    internal fun due(checkedAt: Long, now: Long) = now - checkedAt >= DAY_MS || checkedAt > now
+
+    internal fun toJson(r: Release): JSONObject = JSONObject().put("version", r.version).put("name", r.name).put("notes", r.notes)
+        .put("apkUrl", r.apkUrl).put("apkBytes", r.apkBytes).put("pageUrl", r.pageUrl)
+
+    internal fun fromJson(o: JSONObject) = Release(
+        o.getString("version"), o.optString("name"), o.optString("notes"), o.optString("apkUrl").ifBlank { null },
+        o.optLong("apkBytes", -1L), o.optString("pageUrl").ifBlank { PAGE },
+    )
+
     fun isNewer(remote: String, installed: String): Boolean {
         val a = segments(remote); val b = segments(installed)
         for (i in 0 until maxOf(a.size, b.size)) {

@@ -8,13 +8,13 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicInteger
 
-// Google Maps' own web search, asked the way a logged-out browser asks it: no key, no account, no cookies.
-// Moovit's app gets its places from Google too, through a key only it may use. How to ask, and where the answers sit,
-// is the recipe Vela Maps keeps current (GoogleRecipe). Only the typed text and the area Moovit is told go out.
+// Google Maps' own web search, asked the way a logged-out browser asks it: no key, no account, no cookies. How to ask,
+// and where the answers sit, is the recipe Vela Maps keeps current (GoogleRecipe). Only the typed text and the area
+// search is told (where) go out.
 object GoogleMaps {
     private val sequence = AtomicInteger(1)
 
-    class Suggestions(val places: List<Moovit.Place>, val queries: List<String>)
+    class Suggestions(val places: List<Transit.Place>, val queries: List<String>)
 
     private val NONE = Suggestions(emptyList(), emptyList())
 
@@ -32,7 +32,7 @@ object GoogleMaps {
         // {"c":0,"d":")]}'\n[[query, [rows...]]]"} and a comment after it.
         val d = (JSONTokener(body).nextValue() as? JSONObject)?.optString("d") ?: return NONE
         val rows = at(JSONArray(d.substringAfter('\n')), recipe.suggest("rows")) as? JSONArray ?: return NONE
-        val places = ArrayList<Moovit.Place>()
+        val places = ArrayList<Transit.Place>()
         val queries = ArrayList<String>()
         for (i in 0 until rows.length()) {
             val row = rows.optJSONArray(i) ?: continue
@@ -43,17 +43,19 @@ object GoogleMaps {
             val la = number(block, recipe.suggest("lat")) ?: number(block, recipe.suggest("lat2"))
             val lo = number(block, recipe.suggest("lng")) ?: number(block, recipe.suggest("lng2"))
             if (la == null || lo == null) { queries.add(title); continue }
-            places.add(Moovit.Place(
+            places.add(Transit.Place(
                 name = (at(block, recipe.suggest("primary")) as? String)?.ifBlank { null } ?: title,
                 detail = (at(block, recipe.suggest("secondary")) as? String).orEmpty(),
                 lat = la, lon = lo,
+                type = if (isTown(at(block, recipe.suggest("kinds")))) Transit.PLACE_TOWN else 5,
+                googleId = placeId(at(block, recipe.suggest("id"))),
             ))
         }
         return Suggestions(places, queries)
     }
 
     // The house a typed address names, as Google's map search places it, or null when it only knows the street.
-    fun geocode(query: String, at: Pair<Double, Double>?): Moovit.Place? {
+    fun geocode(query: String, at: Pair<Double, Double>?): Transit.Place? {
         val typed = TypedAddress.parse(query) ?: return null
         val recipe = GoogleRecipe.current
         val (lat, lon) = where(at)
@@ -75,10 +77,25 @@ object GoogleMaps {
         val town = parts.drop(house + 1).firstOrNull { p -> p.any { !it.isDigit() } }.orEmpty()
         // Google answers with the nearest street of that name when the typed town has none.
         if (!typed.townIs(town)) return null
-        return Moovit.Place(name = parts[house], detail = town, lat = la, lon = lo)
+        return Transit.Place(name = parts[house], detail = town, lat = la, lon = lo)
     }
 
-    private fun where(at: Pair<Double, Double>?) = (if (Moovit.shareLocation) at else Moovit.standIn()) ?: Moovit.NEUTRAL
+    // A suggestion names its Google place as "BChIJ...=".
+    private val PLACE_ID = Regex("ChIJ[A-Za-z0-9_-]+")
+    internal fun placeId(token: Any?): String? = (token as? String)?.let { PLACE_ID.find(it)?.value }
+
+    // A suggestion's kinds hold 444 for a town (and a regional council); 429 is a neighbourhood, 446 a district, 426 a
+    // business, 463 a station, 427 a street.
+    private const val TOWN = 444
+    internal fun isTown(kinds: Any?): Boolean = (kinds as? JSONArray)?.let { k -> (0 until k.length()).any { k.optInt(it) == TOWN } } == true
+
+    // Whether search is told where the rider is (private search off); while it's on, it's told the stand-in instead: a
+    // town's centre or a chosen place (Seen), else a neutral point.
+    @Volatile var shareLocation = true
+    @Volatile var standIn: () -> Pair<Double, Double>? = { null }
+    internal val NEUTRAL = 32.0755 to 34.7755
+
+    private fun where(at: Pair<Double, Double>?) = (if (shareLocation) at else standIn()) ?: NEUTRAL
 
     private fun language(query: String) = if (query.any { it in 'א'..'ת' }) "iw" else "en"
 

@@ -30,6 +30,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -84,10 +85,13 @@ import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.KavPlan
 import uk.noammm.kav.data.LineAlert
 import uk.noammm.kav.data.MapFile
-import uk.noammm.kav.data.Moovit
-import uk.noammm.kav.data.MoovitLink
+import uk.noammm.kav.data.GoogleMaps
+import uk.noammm.kav.data.Transit
+import uk.noammm.kav.data.TripLink
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.RecentRoutes
+import uk.noammm.kav.data.Source
+import uk.noammm.kav.data.Sources
 import uk.noammm.kav.data.StopNames
 import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.data.stopOfKey
@@ -126,7 +130,7 @@ object Pip {
 }
 
 object PendingLink {
-    var plan by mutableStateOf<MoovitLink.Plan?>(null)
+    var plan by mutableStateOf<TripLink.Plan?>(null)
 }
 
 // A line alert's stop, opened on the Stations tab when the alert is tapped.
@@ -158,18 +162,12 @@ class MainActivity : ComponentActivity() {
         Shown.payments = Prefs.showPayments(this)
         Shown.updatePrompts = Prefs.updatePrompts(this)
         Pip.allowed = Prefs.pipNavigation(this)
-        StopPhotos.chosen = Prefs.moovitPhotos(this)
         Shown.twelveHour = Prefs.twelveHour(this)
-        Moovit.shareLocation = !Prefs.privateSearch(this)
-        KavLive.chosen = Prefs.liveFromKav(this)
-        KavLive.server = Prefs.kavServer(this)
-        KavLive.key = Prefs.kavServerKey(this)
+        GoogleMaps.shareLocation = !Prefs.privateSearch(this)
+        Prefs.loadSources(this)
         StopNames.english = Prefs.stopNamesEnglish(this)
-        KavPlan.chosen = Prefs.planWithKav(this)
         MapFile.type = Prefs.mapType(this)
         MapFile.init(this)
-        StopPhotos.init(this)
-        Online.init(this)
         KavPlan.init(this)
         Payer.init(this)
         // The trip notification's QUICK PAY button follows the ride kept with Asshole mode.
@@ -183,11 +181,13 @@ class MainActivity : ComponentActivity() {
         // Restored, or reopened from Recents: the link or backup was already handled.
         val fresh = savedInstanceState == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
         if (fresh && !PendingBackup.offer(this, intent?.data)) {
-            MoovitLink.parse(intent?.dataString)?.let { PendingLink.plan = it }
+            TripLink.parse(intent?.dataString)?.let { PendingLink.plan = it }
         }
         if (fresh) intent?.getStringExtra(LineAlerts.EXTRA_STOP)?.let { PendingStop.key = it }
         // A force stop drops the line alerts' alarm.
         LineAlerts.reschedule(this)
+        // Updates in the background, which must know when Kav is in front so as not to run then.
+        Checks.watch(this)
         setContent {
             val light = K.light
             val bg = K.bg
@@ -232,13 +232,13 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         intent.getStringExtra(LineAlerts.EXTRA_STOP)?.let { PendingStop.key = it; return }
         if (PendingBackup.offer(this, intent.data)) return
-        MoovitLink.parse(intent.dataString)?.let { PendingLink.plan = it }
+        TripLink.parse(intent.dataString)?.let { PendingLink.plan = it }
     }
 }
 
 data class ActiveJourney(
-    val trip: Moovit.Itinerary,
-    val resolved: Moovit.Resolved,
+    val trip: Transit.Itinerary,
+    val resolved: Transit.Resolved,
     val fromLabel: String,
     val toLabel: String,
     val chosen: Map<Int, Int> = emptyMap(),
@@ -248,15 +248,15 @@ data class ActiveJourney(
     val paymentKey get() = trip.paymentKey
 }
 
-// A search that found routes, like Moovit's Recent Journeys. The routes themselves are in RecentRoutes.
+// A search that found routes. The routes themselves are in RecentRoutes.
 data class RecentTrip(
-    val from: Moovit.Place?,
-    val to: Moovit.Place,
+    val from: Transit.Place?,
+    val to: Transit.Place,
     val at: Long,
-    val stopovers: List<Moovit.Place> = emptyList(),
+    val stopovers: List<Transit.Place> = emptyList(),
 )
 
-// What Moovit is told about where the user is while private search is on.
+// What search is told about where the user is while private search is on.
 enum class Seen { NONE, CITY, PLACE }
 
 class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
@@ -281,9 +281,9 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
 
     var journeyStep by mutableIntStateOf(0)
 
-    var pendingFrom by mutableStateOf<Moovit.Place?>(null)
-    var pendingTo by mutableStateOf<Moovit.Place?>(null)
-    var pendingLink by mutableStateOf<MoovitLink.Plan?>(null)
+    var pendingFrom by mutableStateOf<Transit.Place?>(null)
+    var pendingTo by mutableStateOf<Transit.Place?>(null)
+    var pendingLink by mutableStateOf<TripLink.Plan?>(null)
     var settingFavourite by mutableStateOf<uk.noammm.kav.ui.Favourite?>(null)
 
     var favourites by mutableStateOf(ctx?.let { Prefs.favourites(it) } ?: emptyList())
@@ -307,7 +307,6 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     var lineRoute by mutableIntStateOf(-1)
     // The stop to open on the line shown, when it was opened from a trip.
     var lineFocusStop by mutableIntStateOf(-1)
-    var moovitLine by mutableStateOf<Moovit.LineGroup?>(null)
 
     var stopQuery by mutableStateOf("")
     var lineQuery by mutableStateOf("")
@@ -318,6 +317,8 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     private var hereAt by mutableLongStateOf(0L)
     var restored by mutableStateOf(false)
     var heading by mutableStateOf<Float?>(null)
+    // A trip's map is on screen before the trip starts: it shows where you are and which way you face.
+    var tripMapShown by mutableStateOf(false)
 
     var filters by mutableStateOf(ctx?.let { Prefs.filters(it) } ?: ResultFilter.entries.toSet())
         private set
@@ -345,19 +346,15 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         Shown.co2 = Prefs.showCo2(ctx)
         Shown.payments = Prefs.showPayments(ctx)
         Shown.updatePrompts = Prefs.updatePrompts(ctx)
+        Checks.ensure(ctx)
         Pip.allowed = Prefs.pipNavigation(ctx)
-        StopPhotos.chosen = Prefs.moovitPhotos(ctx)
         Shown.twelveHour = Prefs.twelveHour(ctx)
-        Moovit.shareLocation = !Prefs.privateSearch(ctx)
-        KavLive.chosen = Prefs.liveFromKav(ctx)
-        KavLive.server = Prefs.kavServer(ctx)
-        KavLive.key = Prefs.kavServerKey(ctx)
+        GoogleMaps.shareLocation = !Prefs.privateSearch(ctx)
+        Prefs.loadSources(ctx)
         StopNames.english = Prefs.stopNamesEnglish(ctx)
-        KavPlan.chosen = Prefs.planWithKav(ctx)
         MapFile.type = Prefs.mapType(ctx)
         seen = Prefs.seen(ctx)
         seenPlace = Prefs.seenPlace(ctx)
-        Online.reset()
         T.switchTo(Prefs.lang(ctx))
     }
 
@@ -368,21 +365,27 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         roughFix = Fix(lat, lon, hereAt)
     }
 
-    fun track(lat: Double, lon: Double, speed: Float, at: Long) {
+    fun track(lat: Double, lon: Double, speed: Float, at: Long, accuracy: Float) {
         here = lat to lon
         hereAt = at
-        fix = Fix(lat, lon, at, speed)
+        fix = Fix(lat, lon, at, speed, accuracy)
+        stepFix = fix
     }
 
-    // A one-off or rough position can guide the camera without advancing the trip's steps.
+    // A one-off or rough position can guide the camera. Only a rough one that was tracked moves the trip's steps on (stepFix).
     var roughFix by mutableStateOf<Fix?>(null)
         private set
 
-    fun glimpse(lat: Double, lon: Double, speed: Float, at: Long) {
+    fun glimpse(lat: Double, lon: Double, speed: Float, at: Long, accuracy: Float) {
         here = lat to lon
         hereAt = at
-        roughFix = Fix(lat, lon, at, speed)
+        roughFix = Fix(lat, lon, at, speed, accuracy)
+        stepFix = roughFix
     }
+
+    // What moves the trip's steps on: the latest tracked fix, a rough one too, as the steps allow for how rough it is.
+    var stepFix: Fix? = null
+        private set
 
     // Recent enough to plan a trip from.
     val hereFresh: Boolean get() = System.currentTimeMillis() / 1000 - hereAt <= 120
@@ -391,13 +394,12 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         private set
     var seenPlace by mutableStateOf(ctx?.let { Prefs.seenPlace(it) })
         private set
-    @Volatile private var city: Moovit.Place? = null
+    @Volatile private var city: Transit.Place? = null
 
-    fun setSeen(ctx: Context, how: Seen, place: Moovit.Place? = seenPlace) {
+    fun setSeen(ctx: Context, how: Seen, place: Transit.Place? = seenPlace) {
         seen = how
         seenPlace = place
         Prefs.setSeen(ctx, how, place)
-        Online.reset()
     }
 
     fun standIn(ctx: Context): Pair<Double, Double>? = when (seen) {
@@ -408,7 +410,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
 
     // The centre of the town or city the user is in, found on the phone from the nearest stops'
     // locality, or of the closest one when none of those has a locality. Needs the timetable loaded.
-    fun cityAround(ctx: Context): Moovit.Place? {
+    fun cityAround(ctx: Context): Transit.Place? {
         val net = Loaded.net
         val at = here
         if (net != null && at != null) {
@@ -418,7 +420,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
                 .minByOrNull { net.cityCentre[it]!!.let { p -> metres(at.first, at.second, p.first, p.second) } }
             val centre = c?.let { net.cityCentre.getOrNull(it) }
             if (c != null && centre != null) {
-                val found = Moovit.Place(net.city[c], "", centre.first, centre.second)
+                val found = Transit.Place(net.city[c], "", centre.first, centre.second)
                 if (found.name != city?.name) Prefs.setSeenCity(ctx, found)
                 city = found
                 return found
@@ -427,7 +429,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         return lastCity(ctx)
     }
 
-    fun lastCity(ctx: Context): Moovit.Place? = city ?: Prefs.seenCity(ctx).also { city = it }
+    fun lastCity(ctx: Context): Transit.Place? = city ?: Prefs.seenCity(ctx).also { city = it }
 
     var update by mutableStateOf<Updates.Release?>(null)
     var updateDismissed by mutableStateOf(false)
@@ -436,10 +438,11 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     var updateChecked by mutableStateOf(false)
     var updateFailed by mutableStateOf(false)
 
+    // Check for updates: asks GitHub now, as the rider asked, and keeps the answer as the background check does.
     suspend fun checkForUpdate(ctx: Context) {
         try {
             val installed = Updates.installedVersion(ctx)
-            val latest = withContext(Dispatchers.IO) { Updates.latest() }
+            val latest = withContext(Dispatchers.IO) { Updates.latest().also { Updates.store(ctx, it) } }
             update = latest.takeIf { Updates.isNewer(it.version, installed) }
             updateFailed = false
         } catch (e: CancellationException) {
@@ -450,6 +453,13 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         } finally {
             updateChecked = true
         }
+    }
+
+    // As Kav opens: the newest release the background check (Checks) found, from the phone. Nothing is asked of GitHub.
+    suspend fun loadUpdate(ctx: Context) {
+        val kept = withContext(Dispatchers.IO) { Updates.stored(ctx) } ?: return
+        update = kept.takeIf { Updates.isNewer(it.version, Updates.installedVersion(ctx)) }
+        updateChecked = true
     }
 
     // Outlives the dialog, so closing it doesn't drop the download.
@@ -507,44 +517,57 @@ private fun Root() {
         OnboardingScreen(model) { Prefs.setOnboarded(ctx); onboarded = true }
         return
     }
-    LaunchedEffect(model) { if (!model.updateChecked && Shown.updatePrompts) model.checkForUpdate(app) }
-    // Kav's recipe and Vela's: fixes for Moovit or Google that need no update. And the timetable for the seven days from
-    // today, taken in at the next start.
+    // Nothing is asked of GitHub because Kav opened: a new version, read again at each opening as the background check
+    // (Checks) runs while Kav is away, and Vela's recipe (fixes for Google that need no update) comes
+    // from what that check kept. And the timetable for the seven days from today, taken in at the next start.
+    LaunchedEffect(model, Openings.count) { model.loadUpdate(app) }
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            runCatching { uk.noammm.kav.data.KavRecipe.refresh(app) }
-            runCatching { uk.noammm.kav.data.GoogleRecipe.refresh(app) }
+            runCatching { Checks.recipesAtOpen(app) }
             runCatching { uk.noammm.kav.data.Timetable.refresh(app) }
         }
     }
-    // Kav's server tells a bus on its way by the trip the timetable has it on, so the timetable loads with it.
-    LaunchedEffect(KavLive.enabled) { if (KavLive.enabled) runCatching { loadNet(app) } }
-    // Kav's server chosen but not answering: Moovit's live data meanwhile, said once when the app opens, and the
-    // server's again as soon as it answers. Without internet it isn't the server, and nothing changes. The ministry can
-    // also stop answering the server about stations while its snapshot is fine: those screens take Moovit's live times,
-    // said once, until a station's answer comes again.
+    // Kav's server tells a bus on its way by the trip the timetable has it on, so the timetable loads with it; as it does
+    // for Kav's planner, whose trips' buses are matched to it wherever their live times come from.
+    LaunchedEffect(Unit) { runCatching { loadNet(app) } }
+    // The server chosen for live times not answering: said once when the app opens, and its live times again as soon as
+    // it answers. Without internet it isn't the server, and nothing changes. The ministry can also stop answering the
+    // server about stations while its snapshot is fine: said once, until a station's answer comes again.
+    // The same for the server chosen to plan, checked with it when it's the same one: while it isn't answering, or
+    // doesn't plan, no trip is planned.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(KavLive.chosen) {
-        if (!KavLive.chosen) { KavLive.up = true; return@LaunchedEffect }
+    LaunchedEffect(KavLive.source, KavPlan.source, KavLive.ownServer) {
         var opening = true
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 if (hasNetwork(app)) {
-                    val answering = withContext(Dispatchers.IO) { KavLive.answering() }
+                    val asked = HashMap<String, KavLive.Check>()
+                    suspend fun check(at: String) = asked.getOrPut(at) {
+                        withContext(Dispatchers.IO) { KavLive.check(at, KavLive.keyFor(at)) }
+                    }
+                    val live = KavLive.server
+                    val answering = (check(live) as? KavLive.Check.Answers)?.live == true
                     if (!answering && opening) android.widget.Toast.makeText(
                         app,
-                        if (KavLive.own) T("Your server isn't answering · using Moovit", "השרת שלכם לא עונה · משתמשים ב-Moovit")
-                        else T("Kav's server is offline · using Moovit", "השרת של Kav לא זמין · משתמשים ב-Moovit"),
+                        if (KavLive.own) T("Your server isn't answering", "השרת שלכם לא עונה")
+                        else T("Kav's server is offline", "השרת של Kav לא זמין"),
                         android.widget.Toast.LENGTH_LONG,
                     ).show()
                     KavLive.up = answering
-                    if (answering) KavPlan.offered = !KavLive.own || withContext(Dispatchers.IO) {
-                        (KavLive.check(KavLive.server, KavLive.key) as? KavLive.Check.Answers)?.planner != null
-                    }
-                    opening = false
                     if (answering && !KavLive.stopsUp) withContext(Dispatchers.IO) { KavLive.stopsAnswering() }
+                    val plans = KavPlan.server
+                    val c = check(plans) as? KavLive.Check.Answers
+                    if (c == null && opening && plans != live) android.widget.Toast.makeText(
+                        app,
+                        if (plans != KavLive.KAV_SERVER) T("Your server isn't answering · no trip planning", "השרת שלכם לא עונה · אין תכנון מסלולים")
+                        else T("Kav's server is offline · no trip planning", "השרת של Kav לא זמין · אין תכנון מסלולים"),
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                    KavPlan.up = c != null
+                    KavPlan.offered = plans == KavLive.KAV_SERVER || c?.planner != null
+                    opening = false
                 }
-                kotlinx.coroutines.withTimeoutOrNull(if (KavLive.up) 30_000L else 15_000L) { KavLive.recheck.receive() }
+                kotlinx.coroutines.withTimeoutOrNull(if (KavLive.up && KavPlan.up) 30_000L else 15_000L) { KavLive.recheck.receive() }
             }
         }
     }
@@ -553,22 +576,15 @@ private fun Root() {
         if (KavLive.stopsUp || !KavLive.enabled || toldStops) return@LaunchedEffect
         toldStops = true
         android.widget.Toast.makeText(
-            app, T("The ministry isn't answering · using Moovit", "משרד התחבורה לא עונה · משתמשים ב-Moovit"),
+            app, T("The ministry isn't answering", "משרד התחבורה לא עונה"),
             android.widget.Toast.LENGTH_LONG,
         ).show()
     }
-    var pickLook by remember { mutableStateOf(Prefs.pickLook(ctx)) }
-    var pickSupport by remember { mutableStateOf(Prefs.pickSupport(ctx)) }
     Box(Modifier.fillMaxSize()) {
         Shell(model)
+        // Popups as Kav opens go through StartPopups only, one at a time: none of their own here.
         if (Pip.active) PipOverlay(model)
-        else if (pickLook) LookPrompt { Prefs.lookPicked(ctx); pickLook = false }
-        else if (pickSupport) SupportPrompt { Prefs.supportShown(ctx); pickSupport = false }
-        else if (PendingBackup.uri != null) ImportPrompt(model)
-        else {
-            UpdatePrompt(model)
-            if (model.update == null || model.updateDismissed || !Shown.updatePrompts) MapPrompt()
-        }
+        else StartPopups(model)
     }
 }
 
@@ -577,10 +593,10 @@ private fun Shell(model: KavModel) {
     val ctx = LocalContext.current
     DisposableEffect(model) {
         val app = ctx.applicationContext
-        Moovit.standIn = { model.standIn(app) }
-        onDispose { Moovit.standIn = { null } }
+        GoogleMaps.standIn = { model.standIn(app) }
+        onDispose { GoogleMaps.standIn = { null } }
     }
-    // Keeps the town Moovit sees current. The timetable is only loaded for it when the last town
+    // Keeps the town search sees current. The timetable is only loaded for it when the last town
     // found is unknown or a few kilometres away.
     val roughly = model.here?.let { (it.first * 100).toInt() to (it.second * 100).toInt() }
     LaunchedEffect(model.seen, roughly) {
@@ -657,12 +673,8 @@ private fun Shell(model: KavModel) {
         snapshotFlow { PendingLink.plan }.collect { plan ->
             if (plan == null) return@collect
             PendingLink.plan = null
-            if (plan.lineGroup != null || plan.stopId != null) {
-                openMoovitEntity(ctx, model, plan)
-                return@collect
-            }
             val somewhere = plan.toLat != null && plan.toLon != null
-            if (!somewhere && plan.sharedId == null && plan.shortUrl == null && plan.toName == null) return@collect
+            if (!somewhere && plan.toName == null) return@collect
             model.pendingLink = plan
             model.settingsOpen = false
             model.tab = Tab.Directions
@@ -673,56 +685,15 @@ private fun Shell(model: KavModel) {
     LaunchedEffect(model, model.activeJourney?.trip) {
         while (true) {
             val journey = model.activeJourney ?: break
-            // A trip Kav planned has its names already, and its live times come from Kav's server: no Moovit at all.
-            if (KavPlan.owns(journey.trip)) {
-                delay(journey.resolved.pollSecs.coerceIn(15, 120) * 1000L)
-                val current = model.activeJourney?.takeIf { it.trip == journey.trip } ?: break
-                val refreshed = withContext(Dispatchers.IO) { KavPlan.live(listOf(current.trip), current.resolved, ending = true) }
-                val spots = withContext(Dispatchers.IO) { KavLive.tripSpots(current.trip, refreshed) }
-                model.activeJourney?.takeIf { it.trip == journey.trip }?.let {
-                    model.activeJourney = it.copy(resolved = refreshed.withLive(KavLive.fresher(refreshed.live, spots)))
-                }
-                continue
-            }
-            val session = try {
-                Online.open(journey.trip.legs.firstOrNull { it.shape.isNotEmpty() }?.shape?.first() ?: model.here ?: (32.0759 to 34.7745))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                null
-            }
-            if (session == null) { delay(15_000L); continue }
-            val needsNames = journey.trip.rides.flatMap { it.options }.any { ride ->
-                (ride.lineId > 0 && journey.resolved.line(ride.lineId) == null) ||
-                    (ride.fromStop > 0 && journey.resolved.stop(ride.fromStop) == null) ||
-                    (ride.toStop > 0 && journey.resolved.stop(ride.toStop) == null)
-            }
-            if (needsNames) {
-                val names = withContext(Dispatchers.IO) { Moovit.hydrate(session, listOf(journey.trip), ending = true) }
-                model.activeJourney?.takeIf { it.trip == journey.trip }?.let { current ->
-                    val previous = current.resolved
-                    model.activeJourney = current.copy(resolved = Moovit.Resolved(
-                        previous.lines + names.lines, previous.stops + names.stops,
-                        previous.routeTypes + names.routeTypes, previous.live + names.live,
-                        previous.shapes + names.shapes, names.pollSecs, previous.patterns + names.patterns,
-                        previous.delays + names.delays,
-                    ))
-                }
-            }
+            // A trip Kav planned has its names already, and its live times come from where live locations do: a server.
+            // Any other trip keeps what it was saved with.
+            if (!KavPlan.owns(journey.trip)) break
             delay(journey.resolved.pollSecs.coerceIn(15, 120) * 1000L)
             val current = model.activeJourney?.takeIf { it.trip == journey.trip } ?: break
-            val refreshed = withContext(Dispatchers.IO) {
-                Moovit.refreshLive(session, listOf(current.trip), current.resolved, ending = true)
-            }
-            // With the same refresh, so the notification and the floating window move with the server's positions too.
+            val refreshed = withContext(Dispatchers.IO) { KavPlan.live(listOf(current.trip), current.resolved, ending = true) }
             val spots = withContext(Dispatchers.IO) { KavLive.tripSpots(current.trip, refreshed) }
             model.activeJourney?.takeIf { it.trip == journey.trip }?.let {
-                model.activeJourney = it.copy(resolved = Moovit.Resolved(
-                    refreshed.lines + it.resolved.lines, refreshed.stops + it.resolved.stops,
-                    refreshed.routeTypes + it.resolved.routeTypes, KavLive.fresher(refreshed.live, spots),
-                    refreshed.shapes + it.resolved.shapes, refreshed.pollSecs, refreshed.patterns,
-                    it.resolved.delays + refreshed.delays,
-                ))
+                model.activeJourney = it.copy(resolved = refreshed.withLive(KavLive.fresher(refreshed.live, spots)))
             }
         }
     }
@@ -734,8 +705,8 @@ private fun Shell(model: KavModel) {
         // Only while Kav is in front: the small window lives on the trip service's fixes (TripBridge.fix), which it
         // asks for only as often as the step needs.
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            val stop = trackLocation(ctx, onFix = { model.track(it.latitude, it.longitude, it.speed, it.fixTime()) },
-                onRough = { model.glimpse(it.latitude, it.longitude, it.speed, it.fixTime()) })
+            val stop = trackLocation(ctx, onFix = { model.track(it.latitude, it.longitude, it.speed, it.fixTime(), it.fixAccuracy()) },
+                onRough = { model.glimpse(it.latitude, it.longitude, it.speed, it.fixTime(), it.fixAccuracy()) })
             try { awaitCancellation() } finally { stop() }
         }
     }
@@ -746,7 +717,7 @@ private fun Shell(model: KavModel) {
             val current = model.activeJourney?.takeIf { it.trip === journey.trip } ?: break
             val next = journeyProgress(
                 steps, model.journeyStep, current.resolved, current.chosen,
-                System.currentTimeMillis() / 1000, model.fix, canLocate(ctx), Prefs.beginTripsImmediately(ctx),
+                System.currentTimeMillis() / 1000, model.stepFix, canLocate(ctx), Prefs.beginTripsImmediately(ctx),
             )
             if (next != model.journeyStep) model.journeyStep = next
             delay(2000)
@@ -772,7 +743,10 @@ private fun Shell(model: KavModel) {
         if (model.restored) {
             TripBridge.end = { model.activeJourney = null }
             TripBridge.journey = { model.activeJourney?.let { it to model.journeyStep } }
-            TripBridge.fix = { model.track(it.lat, it.lon, it.speed, it.at) }
+            TripBridge.fix = {
+                if (it.accuracy > ROUGH_FIX_M) model.glimpse(it.lat, it.lon, it.speed, it.at, it.accuracy)
+                else model.track(it.lat, it.lon, it.speed, it.at, it.accuracy)
+            }
             TripBridge.fixNow = { model.fix }
             TripBridge.paid = { leg, key ->
                 model.activeJourney?.let { model.activeJourney = it.copy(paid = it.paid + (leg to key)) }
@@ -786,13 +760,25 @@ private fun Shell(model: KavModel) {
             TripBridge.paid = null
         }
     }
-    LaunchedEffect(model.navigating, Pip.allowed, lifecycle) {
+    LaunchedEffect(model.navigating, Pip.allowed, lifecycle, model.tripMapShown) {
         Pip.wanted = model.navigating && Pip.allowed
         (ctx as? MainActivity)?.updatePipParams()
-        if (!model.navigating) { model.heading = null; return@LaunchedEffect }
+        if (!model.navigating && !model.tripMapShown) { model.heading = null; return@LaunchedEffect }
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             val stop = trackHeading(ctx) { model.heading = it }
             try { awaitCancellation() } finally { stop() }
+        }
+    }
+    // The trip's map before it starts follows you as the Live tab's does, while it's on screen; a trip under way does
+    // already.
+    LaunchedEffect(model.tripMapShown && !journeyActive, lifecycle) {
+        if (!model.tripMapShown || journeyActive) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            val first = requestLocationOnce(ctx) { model.locate(it.first, it.second) }
+            val follow = trackLocation(
+                ctx, onFix = { model.locate(it.latitude, it.longitude) }, onRough = { model.locate(it.latitude, it.longitude) },
+            )
+            try { awaitCancellation() } finally { first(); follow() }
         }
     }
 
@@ -803,7 +789,7 @@ private fun Shell(model: KavModel) {
             model.payOpen -> model.payOpen = false
             model.settingsOpen -> { model.settingsOpen = false; model.tab = Tab.Directions }
             model.tab != Tab.Directions -> {
-                model.stationStop = -1; model.lineRoute = -1; model.moovitLine = null
+                model.stationStop = -1; model.lineRoute = -1
                 model.tab = Tab.Directions
             }
             else -> exitAsk = true
@@ -849,7 +835,7 @@ private fun Shell(model: KavModel) {
             // Not while Street View is open: the bar is away, and glass must never record Google's moving frame.
             .then(if (K.liquid && liquid != null && StreetViewer.open == null) Modifier.liquidSource(liquid) else Modifier)) {
         CompositionLocalProvider(LocalLiquidBackdrop provides null) {
-            androidx.compose.animation.Crossfade(model.tab, label = "tab") { tab ->
+            TabStack(model.tab) { tab ->
                 when (tab) {
                     Tab.Directions -> DirectionsOnline(model)
                     Tab.Stations -> StationsScreen(model)
@@ -901,8 +887,63 @@ private fun Shell(model: KavModel) {
     }
 }
 
+// Back on a tab, it's where it was left: each tab once opened keeps its page, scroll and map while another is in front.
+// Behind another it isn't laid out or drawn, and its own lifecycle waits at CREATED, so what it polls, its map and its
+// back handlers pause until it's back.
 @Composable
-private fun ImportPrompt(model: KavModel) {
+private fun TabStack(current: Tab, content: @Composable (Tab) -> Unit) {
+    // The tabs opened so far, in the order they were first opened.
+    val seen = remember { ArrayList<Tab>() }
+    val opened = remember(current) { seen.apply { if (current !in this) add(current) }.toList() }
+    val fades = remember { HashMap<Tab, androidx.compose.animation.core.Animatable<Float, androidx.compose.animation.core.AnimationVector1D>>() }
+    // A field typed into on the tab left doesn't keep the keyboard up on the next.
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    LaunchedEffect(current) { focus.clearFocus() }
+    androidx.compose.ui.layout.Layout(
+        content = {
+            opened.forEach { tab ->
+                key(tab) {
+                    val shown = tab == current
+                    // The first tab shows at once; any opened after it fades in.
+                    val fade = fades.getOrPut(tab) { androidx.compose.animation.core.Animatable(if (fades.isEmpty()) 1f else 0f) }
+                    LaunchedEffect(shown) { fade.animateTo(if (shown) 1f else 0f, tween(300)) }
+                    TabLifecycle(shown) {
+                        Box(Modifier.fillMaxSize().graphicsLayer { alpha = fade.value }) { content(tab) }
+                    }
+                }
+            }
+        },
+    ) { measurables, constraints ->
+        // The tab in front last, over the one fading out; the rest stay as they were laid out.
+        val showing = opened.indices.filter { opened[it] != current && (fades[opened[it]]?.value ?: 0f) > 0f } +
+            opened.indexOf(current)
+        val placeables = showing.map { measurables[it].measure(constraints) }
+        layout(constraints.maxWidth, constraints.maxHeight) { placeables.forEach { it.place(0, 0) } }
+    }
+}
+
+// A tab's own lifecycle: the screen's while the tab is in front, held at CREATED behind another one.
+private class TabLife : androidx.lifecycle.LifecycleOwner {
+    val registry = androidx.lifecycle.LifecycleRegistry(this)
+    override val lifecycle: Lifecycle get() = registry
+}
+
+@Composable
+private fun TabLifecycle(shown: Boolean, content: @Composable () -> Unit) {
+    val screen = LocalLifecycleOwner.current.lifecycle
+    val life = remember { TabLife() }
+    DisposableEffect(screen, shown) {
+        val follow = androidx.lifecycle.LifecycleEventObserver { _, _ ->
+            life.registry.currentState = if (shown) screen.currentState else minOf(screen.currentState, Lifecycle.State.CREATED)
+        }
+        screen.addObserver(follow)
+        onDispose { screen.removeObserver(follow) }
+    }
+    CompositionLocalProvider(LocalLifecycleOwner provides life) { content() }
+}
+
+@Composable
+internal fun ImportPrompt(model: KavModel) {
     val ctx = LocalContext.current
     val uri = PendingBackup.uri ?: return
     var failed by remember(uri) { mutableStateOf<String?>(null) }
@@ -955,7 +996,7 @@ private fun ImportPrompt(model: KavModel) {
 }
 
 @Composable
-private fun LookPrompt(onDone: () -> Unit) {
+internal fun LookPrompt(onDone: () -> Unit) {
     Dialog(onDismissRequest = {}, properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)) {
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
@@ -978,7 +1019,7 @@ private fun LookPrompt(onDone: () -> Unit) {
 
 // Shown once per install: after setup, or after the look prompt on an update.
 @Composable
-private fun SupportPrompt(onDone: () -> Unit) {
+internal fun SupportPrompt(onDone: () -> Unit) {
     val ctx = LocalContext.current
     Dialog(onDismissRequest = onDone) {
         Column(
@@ -1080,8 +1121,9 @@ private fun TabBar(model: KavModel) {
                         indication = null, role = Role.Tab,
                     ) {
                         model.settingsOpen = false
-                        if (on) { model.stationStop = -1; model.lineRoute = -1; model.moovitLine = null }
-                        if (t == Tab.Directions) model.returnHome = true
+                        if (on) { model.stationStop = -1; model.lineRoute = -1 }
+                        // Home goes back to its start when tapped while on it; from another tab it's where it was left.
+                        if (t == Tab.Directions && on) model.returnHome = true
                         model.tab = t
                     },
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -1151,6 +1193,8 @@ private const val VIEW_FIX_M = 200f
 internal fun Location.fixTime(): Long =
     System.currentTimeMillis() / 1000 - (SystemClock.elapsedRealtimeNanos() - elapsedRealtimeNanos) / 1_000_000_000
 
+internal fun Location.fixAccuracy(): Float = if (hasAccuracy()) accuracy else POOR_FIX_M
+
 internal fun locationProviders(lm: LocationManager): List<String> {
     val available = runCatching { lm.allProviders }.getOrDefault(emptyList())
     return buildList {
@@ -1199,8 +1243,7 @@ fun requestLocationOnce(
     if (!requireFresh) {
         lastKnown(ctx)?.takeIf { System.currentTimeMillis() / 1000 - it.fixTime() in 0..120 }?.let { offer(it, false) }
     } else {
-        // A precise fix from the last two minutes is as good as a new one, and plans without waiting for the GPS,
-        // the way Moovit plans from where the phone already knows you are.
+        // A precise fix from the last two minutes is as good as a new one, and plans without waiting for the GPS.
         lastKnown(ctx)?.takeIf {
             System.currentTimeMillis() / 1000 - it.fixTime() in 0..120 && it.hasAccuracy() && it.accuracy in 0f..GOOD_FIX_M
         }?.let { onResult(it.latitude to it.longitude); return {} }
@@ -1248,8 +1291,9 @@ fun requestLocationOnce(
     return { stop() }
 }
 
-// Rough fixes, and network ones while a precise provider is talking, would move the steps on, so a rough one goes to onRough instead,
-// only to show where you are. One rougher than VIEW_FIX_M is no use at all.
+// A rough fix goes to onRough instead, to show where you are and to move a trip's steps, which allow for how rough it is,
+// but not for anything else the rider's position is used for. Network fixes while a precise provider is talking are
+// dropped, and one rougher than VIEW_FIX_M is no use at all.
 // every and quality: how often and how precisely, by default every second as closely as the phone can.
 fun trackLocation(
     ctx: Context, onFix: (Location) -> Unit, onRough: ((Location) -> Unit)? = null, every: Long = 1000L,
@@ -1343,7 +1387,7 @@ object Prefs {
     private const val RECENTS = "recents"
     private const val MAX_RECENTS = 8
 
-    fun recents(ctx: Context): List<Moovit.Place> = try {
+    fun recents(ctx: Context): List<Transit.Place> = try {
         val raw = store(ctx).getString(RECENTS, "[]")
         val arr = org.json.JSONArray(raw)
         (0 until arr.length()).mapNotNull { i ->
@@ -1352,7 +1396,7 @@ object Prefs {
         }
     } catch (e: Exception) { emptyList() }
 
-    fun remember(ctx: Context, p: Moovit.Place) {
+    fun remember(ctx: Context, p: Transit.Place) {
         val kept = (listOf(p) + recents(ctx))
             .distinctBy { "%.5f,%.5f".format(java.util.Locale.US, it.lat, it.lon) }
             .take(MAX_RECENTS)
@@ -1365,12 +1409,12 @@ object Prefs {
     private const val MAX_TRIPS = 100
     private const val MAX_ROUTES = 20
 
-    private fun place(o: org.json.JSONObject) = Moovit.Place(
+    private fun place(o: org.json.JSONObject) = Transit.Place(
         o.optString("n"), o.optString("d"), o.optDouble("lat"), o.optDouble("lon"),
         o.optInt("t", 5), o.optInt("m", -1),
     )
 
-    private fun json(p: Moovit.Place): org.json.JSONObject = org.json.JSONObject()
+    private fun json(p: Transit.Place): org.json.JSONObject = org.json.JSONObject()
         .put("n", p.name).put("d", p.detail).put("lat", p.lat).put("lon", p.lon)
         .put("t", p.type).put("m", p.mode)
 
@@ -1404,10 +1448,10 @@ object Prefs {
         store(ctx).edit().putString(TRIPS, arr.toString()).apply()
     }
 
-    // Every search that found routes, newest first, with the routes it found: Moovit's Recent Journeys.
+    // Every search that found routes, newest first, with the routes it found.
     fun rememberTrip(
-        ctx: Context, trip: RecentTrip, routes: List<Moovit.Itinerary>, resolved: Moovit.Resolved,
-        sections: List<Moovit.Section>,
+        ctx: Context, trip: RecentTrip, routes: List<Transit.Itinerary>, resolved: Transit.Resolved,
+        sections: List<Transit.Section>,
     ) {
         val kept = (listOf(trip) + trips(ctx)).distinctBy(::tripKey).take(MAX_TRIPS)
         saveTrips(ctx, kept)
@@ -1474,16 +1518,17 @@ object Prefs {
     fun showCo2(ctx: Context): Boolean = store(ctx).getBoolean("showCo2", false)
     fun setShowCo2(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showCo2", on).apply()
 
-    // Navigation in a small window when Kav is left, paying for rides shown, and stop photos from Moovit, which are
-    // on until the rider turns them off (StopPhotos.enabled).
+    // Navigation in a small window when Kav is left, and paying for rides shown.
     fun pipNavigation(ctx: Context): Boolean = store(ctx).getBoolean("pipNavigation", true)
     fun setPipNavigation(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("pipNavigation", on).apply()
     fun showPayments(ctx: Context): Boolean = store(ctx).getBoolean("showPayments", true)
     fun setShowPayments(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showPayments", on).apply()
     fun updatePrompts(ctx: Context): Boolean = store(ctx).getBoolean("updatePrompts", true)
     fun setUpdatePrompts(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("updatePrompts", on).apply()
-    fun moovitPhotos(ctx: Context): Boolean? = store(ctx).takeIf { it.contains("moovitPhotos") }?.getBoolean("moovitPhotos", true)
-    fun setMoovitPhotos(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("moovitPhotos", on).apply()
+    // Kav downloading new versions by itself, to install when the rider says so (Checks, AutoUpdate): on unless turned
+    // off, for riders from before it too.
+    fun autoUpdate(ctx: Context): Boolean = store(ctx).getBoolean("autoUpdate", true)
+    fun setAutoUpdate(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("autoUpdate", on).apply()
 
     fun spokenAlerts(ctx: Context): Boolean = store(ctx).getBoolean("spokenAlerts", false)
     fun setSpokenAlerts(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("spokenAlerts", on).apply()
@@ -1503,27 +1548,60 @@ object Prefs {
     fun privateSearch(ctx: Context): Boolean = store(ctx).getBoolean("privateSearch", true)
     fun setPrivateSearch(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("privateSearch", on).apply()
 
-    fun liveFromKav(ctx: Context): Boolean = store(ctx).getBoolean("liveFromKav", false)
-    fun setLiveFromKav(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("liveFromKav", on).apply()
+    // Before live locations and trip planning were two choices: live times from a server, and Kav's planner on it.
+    // Still written, for a backup an older Kav reads.
+    private fun liveFromKav(ctx: Context): Boolean = store(ctx).getBoolean("liveFromKav", false)
 
     // A started trip goes straight to its first walk instead of waiting for its time or for the rider to move off.
     fun beginTripsImmediately(ctx: Context): Boolean = store(ctx).getBoolean("beginTripsImmediately", false)
     fun setBeginTripsImmediately(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("beginTripsImmediately", on).apply()
 
-    // Kav's own planner rather than Moovit's, while Kav's server is chosen.
-    fun planWithKav(ctx: Context): Boolean = store(ctx).getBoolean("planWithKav", false)
-    fun setPlanWithKav(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("planWithKav", on).apply()
+    private fun planWithKav(ctx: Context): Boolean = store(ctx).getBoolean("planWithKav", false)
+
+    // Where live locations come from, and who plans trips: Kav's server or the rider's own, each on its own.
+    fun liveSource(ctx: Context): Source = sources(ctx).first
+    fun planSource(ctx: Context): Source = sources(ctx).second
+    fun setLiveSource(ctx: Context, s: Source) {
+        sources(ctx)
+        store(ctx).edit().putString("liveSource", s.key).putBoolean("liveFromKav", true).apply()
+    }
+    fun setPlanSource(ctx: Context, s: Source) {
+        sources(ctx)
+        store(ctx).edit().putString("planSource", s.key).putBoolean("planWithKav", true).apply()
+    }
+
+    // Both choices; the first time, as the two old switches had them, and both kept then: the old switches are still
+    // written for an older Kav, and one choice's mustn't move the other.
+    private fun sources(ctx: Context): Pair<Source, Source> {
+        val s = store(ctx)
+        val live = Source.of(s.getString("liveSource", null))
+        val plan = Source.of(s.getString("planSource", null))
+        if (live != null && plan != null) return live to plan
+        val old = Sources.fromOld(liveFromKav(ctx), planWithKav(ctx), ownServer(ctx).isNotEmpty())
+        val both = (live ?: old.first) to (plan ?: old.second)
+        s.edit().putString("liveSource", both.first.key).putString("planSource", both.second.key).apply()
+        return both
+    }
+
+    // Both choices and the rider's own server, from the settings.
+    fun loadSources(ctx: Context) {
+        KavLive.ownServer = ownServer(ctx)
+        KavLive.ownKey = kavServerKey(ctx)
+        KavLive.source = liveSource(ctx)
+        KavPlan.source = planSource(ctx)
+    }
 
     // The timetable for the seven days from today from Kav's server, rather than the week Kav shipped with.
     fun timetableUpdates(ctx: Context): Boolean = store(ctx).getBoolean("timetableUpdates", false)
     fun setTimetableUpdates(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("timetableUpdates", on).apply()
 
-    // The rider's own copy of Kav's server, else Kav's; the key it takes requests signed with (its KAV_APP_KEY), and the
-    // public half of the key its timetable is signed with, as it gave it.
-    fun kavServer(ctx: Context): String =
-        store(ctx).getString("kavServer", null)?.let(KavLive::serverAddress) ?: KavLive.KAV_SERVER
+    // The rider's own copy of Kav's server, empty while none is set up; the key it takes requests signed with (its
+    // KAV_APP_KEY), and the public half of the key its timetable is signed with, as it gave it. Kept under the names
+    // they had when Kav's server could be one of them.
+    fun ownServer(ctx: Context): String =
+        store(ctx).getString("kavServer", null)?.let(KavLive::serverAddress)?.takeIf { it != KavLive.KAV_SERVER }.orEmpty()
     fun kavServerKey(ctx: Context): String = store(ctx).getString("kavServerKey", null).orEmpty()
-    fun setKavServer(ctx: Context, address: String, key: String, bundleKey: String) = store(ctx).edit()
+    fun setOwnServer(ctx: Context, address: String, key: String, bundleKey: String) = store(ctx).edit()
         .putString("kavServer", address).putString("kavServerKey", key).putString("kavServerBundleKey", bundleKey).apply()
     fun kavServerBundleKey(ctx: Context): String = store(ctx).getString("kavServerBundleKey", null).orEmpty()
     fun setKavServerBundleKey(ctx: Context, key: String) = store(ctx).edit().putString("kavServerBundleKey", key).apply()
@@ -1534,18 +1612,18 @@ object Prefs {
     fun setMapType(ctx: Context, type: MapFile.Type) = store(ctx).edit().putString("mapType", type.name.lowercase()).apply()
 
     fun seen(ctx: Context): Seen = Seen.entries.firstOrNull { it.name == store(ctx).getString("seen", null) } ?: Seen.CITY
-    fun seenPlace(ctx: Context): Moovit.Place? = savedPlace(ctx, "seenPlace")
-    fun setSeen(ctx: Context, how: Seen, place: Moovit.Place?) {
+    fun seenPlace(ctx: Context): Transit.Place? = savedPlace(ctx, "seenPlace")
+    fun setSeen(ctx: Context, how: Seen, place: Transit.Place?) {
         val e = store(ctx).edit().putString("seen", how.name)
         if (place != null) e.putString("seenPlace", json(place).toString()) else e.remove("seenPlace")
         e.apply()
     }
-    fun seenCity(ctx: Context): Moovit.Place? = savedPlace(ctx, "seenCity")
-    fun setSeenCity(ctx: Context, city: Moovit.Place) = store(ctx).edit().putString("seenCity", json(city).toString()).apply()
-    private fun savedPlace(ctx: Context, key: String): Moovit.Place? =
+    fun seenCity(ctx: Context): Transit.Place? = savedPlace(ctx, "seenCity")
+    fun setSeenCity(ctx: Context, city: Transit.Place) = store(ctx).edit().putString("seenCity", json(city).toString()).apply()
+    private fun savedPlace(ctx: Context, key: String): Transit.Place? =
         store(ctx).getString(key, null)?.let { runCatching { place(org.json.JSONObject(it)) }.getOrNull() }
             ?.takeIf(::inIsrael)
-    private fun inIsrael(p: Moovit.Place) = p.lat in 29.0..34.0 && p.lon in 34.0..36.5
+    private fun inIsrael(p: Transit.Place) = p.lat in 29.0..34.0 && p.lon in 34.0..36.5
 
     fun onboarded(ctx: Context): Boolean = store(ctx).getBoolean("onboarded", false)
     fun setOnboarded(ctx: Context) = store(ctx).edit().putBoolean("onboarded", true).putBoolean("pickSupport", true).apply()
@@ -1579,7 +1657,6 @@ object Prefs {
         // names; after this the two settings never move each other.
         if (s.getBoolean("onboarded", false) && !s.contains("stopNames")) e.putString("stopNames", if (lang(ctx) == Lang.EN) "en" else "he")
         e.putInt("prefsVersion", 3).apply()
-        if (version < 2) java.io.File(ctx.filesDir, "moovit-stops.bin").delete()
     }
 
     fun filters(ctx: Context): Set<ResultFilter> {
@@ -1619,11 +1696,13 @@ object Prefs {
             .put("look", look(ctx).name.lowercase())
             .put("liquidGlass", s.getBoolean("liquidGlass", true))
             .put("privateSearch", privateSearch(ctx))
-            .put("liveFromKav", liveFromKav(ctx))
-            .put("planWithKav", planWithKav(ctx))
+            .put("liveSource", liveSource(ctx).key)
+            .put("planSource", planSource(ctx).key)
+            .put("liveFromKav", true)
+            .put("planWithKav", true)
             .put("beginTripsImmediately", beginTripsImmediately(ctx))
             .put("timetableUpdates", timetableUpdates(ctx))
-            .put("kavServer", kavServer(ctx))
+            .put("kavServer", ownServer(ctx).ifEmpty { KavLive.KAV_SERVER })
             .put("kavServerKey", kavServerKey(ctx))
             .put("mapType", mapType(ctx).name.lowercase())
             .put("seen", seen(ctx).name)
@@ -1634,7 +1713,7 @@ object Prefs {
             .put("pipNavigation", pipNavigation(ctx))
             .put("showPayments", showPayments(ctx))
             .put("updatePrompts", updatePrompts(ctx))
-            .apply { moovitPhotos(ctx)?.let { put("moovitPhotos", it) } }
+            .put("autoUpdate", autoUpdate(ctx))
             .put("spokenAlerts", spokenAlerts(ctx))
             .put("twelveHour", twelveHour(ctx))
     }
@@ -1652,21 +1731,24 @@ object Prefs {
         o.optString("look").takeIf { it in looks }?.let { e.putString("look", it) }
         if (o.has("liquidGlass")) e.putBoolean("liquidGlass", o.optBoolean("liquidGlass"))
         if (o.has("privateSearch")) e.putBoolean("privateSearch", o.optBoolean("privateSearch"))
-        if (o.has("liveFromKav")) e.putBoolean("liveFromKav", o.optBoolean("liveFromKav"))
-        if (o.has("planWithKav")) e.putBoolean("planWithKav", o.optBoolean("planWithKav"))
         if (o.has("beginTripsImmediately")) e.putBoolean("beginTripsImmediately", o.optBoolean("beginTripsImmediately"))
         if (o.has("timetableUpdates")) e.putBoolean("timetableUpdates", o.optBoolean("timetableUpdates"))
-        KavLive.serverAddress(o.optString("kavServer"))?.let {
+        val server = KavLive.serverAddress(o.optString("kavServer"))
+        server?.let {
             // The server's timetable key is asked of it again (Timetable.refresh).
-            if (it != kavServer(ctx)) e.remove("kavServerBundleKey")
+            if (it != (ownServer(ctx).ifEmpty { KavLive.KAV_SERVER })) e.remove("kavServerBundleKey")
             e.putString("kavServer", it)
         }
         if (o.has("kavServerKey")) e.putString("kavServerKey", o.optString("kavServerKey"))
+        // Each choice as the file has it, or as its old switches had it.
+        val (live, plan) = Sources.fromBackup(o, (server ?: ownServer(ctx).ifEmpty { KavLive.KAV_SERVER }) != KavLive.KAV_SERVER)
+        live?.let { e.putString("liveSource", it.key).putBoolean("liveFromKav", true) }
+        plan?.let { e.putString("planSource", it.key).putBoolean("planWithKav", true) }
         o.optString("mapType").takeIf { it in mapTypes }?.let { e.putString("mapType", it) }
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }
         if (o.has("showCo2")) e.putBoolean("showCo2", o.optBoolean("showCo2"))
-        for (key in listOf("pipNavigation", "showPayments", "moovitPhotos", "updatePrompts")) if (o.has(key)) e.putBoolean(key, o.optBoolean(key))
+        for (key in listOf("pipNavigation", "showPayments", "updatePrompts", "autoUpdate")) if (o.has(key)) e.putBoolean(key, o.optBoolean(key))
         if (o.has("spokenAlerts")) e.putBoolean("spokenAlerts", o.optBoolean("spokenAlerts"))
         if (o.has("twelveHour")) e.putBoolean("twelveHour", o.optBoolean("twelveHour"))
         val chosen = o.optJSONObject("filters")
@@ -1705,24 +1787,7 @@ object Prefs {
         store(ctx).edit().putString("favourites", arr.toString()).apply()
     }
     fun lineBadges(ctx: Context): LineBadgeAppearance =
-        LineBadgeAppearance.entries.firstOrNull { it.name == store(ctx).getString("lineBadgeAppearance", null) } ?: LineBadgeAppearance.KAV
+        LineBadgeAppearance.of(store(ctx).getString("lineBadgeAppearance", null))
     fun setLineBadges(ctx: Context, a: LineBadgeAppearance) = store(ctx).edit().putString("lineBadgeAppearance", a.name).apply()
 }
 
-// A Moovit line link opens that line's page; a stop link opens the stop's board, found by its public code.
-private suspend fun openMoovitEntity(ctx: Context, model: KavModel, plan: MoovitLink.Plan) {
-    try {
-        val session = Online.open(model.here ?: (32.0759 to 34.7745))
-        plan.lineGroup?.let { id ->
-            val line = withContext(Dispatchers.IO) { Moovit.lineCatalogue(session) }.firstOrNull { it.id == id } ?: return
-            model.settingsOpen = false; model.lineRoute = -1; model.moovitLine = line; model.tab = Tab.Lines
-        }
-        plan.stopId?.let { id ->
-            val code = withContext(Dispatchers.IO) { Moovit.stopInfo(session, id) }?.code?.toIntOrNull() ?: return
-            // A link that starts Kav arrives before any screen has loaded the timetable.
-            val net = model.net ?: withContext(Dispatchers.Default) { loadNet(ctx) }
-            val stop = net.code.indexOfFirst { it == code }.takeIf { it >= 0 } ?: return
-            model.settingsOpen = false; model.stationStop = stop; model.tab = Tab.Stations
-        }
-    } catch (e: CancellationException) { throw e } catch (e: Exception) { }
-}

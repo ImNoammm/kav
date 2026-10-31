@@ -4,6 +4,7 @@ package uk.noammm.kav.ui
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -41,7 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import java.util.Date
 import java.util.Locale
 import androidx.compose.material.icons.rounded.Close
@@ -54,6 +56,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -125,15 +128,18 @@ fun WarnGlyph(tint: Color = K.critical, size: androidx.compose.ui.unit.Dp = 11.d
 }
 
 @Composable
-fun DepMarkGlyph(d: Moovit.Departure, size: androidx.compose.ui.unit.Dp = 11.dp) {
-    val tint = depColour(d)
-    when (depMark(d)) {
-        DepMark.LIVE, DepMark.LIVE_STILL -> LiveGlyph(tint, size)
-        DepMark.LIVE_OFF -> LiveOffGlyph(tint, size)
-        DepMark.WARNING -> WarnGlyph(tint, size)
-        DepMark.DELAY -> ClockGlyph(tint, size)
-        DepMark.CLOCK -> ClockGlyph(K.muted, size)
-        DepMark.NONE -> Unit
+fun DepMarkGlyph(d: Transit.Departure, size: androidx.compose.ui.unit.Dp = 11.dp) {
+    // A live time that turns more or less sure eases to its new colour, and a new kind of mark fades in over the old.
+    val tint by androidx.compose.animation.animateColorAsState(depColour(d), tween(220), label = "markTint")
+    androidx.compose.animation.Crossfade(depMark(d), animationSpec = tween(220), label = "mark") { mark ->
+        when (mark) {
+            DepMark.LIVE, DepMark.LIVE_STILL -> LiveGlyph(tint, size)
+            DepMark.LIVE_OFF -> LiveOffGlyph(tint, size)
+            DepMark.WARNING -> WarnGlyph(tint, size)
+            DepMark.DELAY -> ClockGlyph(tint, size)
+            DepMark.CLOCK -> ClockGlyph(K.muted, size)
+            DepMark.NONE -> Unit
+        }
     }
 }
 
@@ -161,61 +167,96 @@ fun PlanHeader(
     onBack: (() -> Unit)? = null,
     stops: List<String> = emptyList(),
     onAddStop: (() -> Unit)? = null,
+    // A stop on the way tapped, to be changed as the start and destination are.
+    onStop: (Int) -> Unit = {},
     onRemoveStop: (Int) -> Unit = {},
-    // A place of the way moved, by its handle: the stops and then the destination, counted from 0.
+    // A place of the way moved, held or by its handle: the start, the stops and the destination, counted from the start, 0.
     onMove: (from: Int, to: Int) -> Unit = { _, _ -> },
 ) {
     Column(Modifier.fillMaxWidth().animateContentSize(tween(260)).padding(horizontal = K.gap4, vertical = K.gap2)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
             if (onBack != null) BackButton(onBack)
-            // The way from start to destination on one card, a hairline between its places.
+            // The way from start to destination on one card, a hairline between its places. Each place, the start too,
+            // is held and dragged into another order; the one held grows a little above the rest, which glide out of
+            // its way, as the two ends do when swapped.
             Column(Modifier.weight(1f).glassSurface(K.rCard)) {
-                Endpoint(from, here = fromIsHere, dot = false, onClick = onFrom)
-                // With stops on the way, each stop and the destination can be dragged by its handle into another order.
-                val places = stops.size + 1
+                val way = listOf(from) + stops + listOf(to.orEmpty())
+                val keys = remember(way) {
+                    val seen = HashMap<String, Int>()
+                    way.map { label -> "$label#${seen.merge(label, 1, Int::plus)}" }
+                }
+                val last = way.lastIndex
                 var dragging by remember { mutableStateOf(-1) }
+                // A handle held until its place lifts starts both drags; the handle's goes on when the held one gives way.
+                var byHandle by remember { mutableStateOf(false) }
                 var dy by remember { mutableFloatStateOf(0f) }
                 var rowPx by remember { mutableFloatStateOf(1f) }
-                for (i in 0 until places) {
-                    Separator(ENDPOINT_INSET)
-                    val dest = i == places - 1
+                val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+                fun drag(amount: Float) {
+                    dy += amount
+                    val at = dragging
+                    if (at < 0) return
+                    if (dy > rowPx / 2 && at < last) { onMove(at, at + 1); dragging = at + 1; dy -= rowPx }
+                    else if (dy < -rowPx / 2 && at > 0) { onMove(at, at - 1); dragging = at - 1; dy += rowPx }
+                }
+                way.forEachIndexed { i, label -> androidx.compose.runtime.key(keys[i]) {
+                    val slot by androidx.compose.runtime.rememberUpdatedState(i)
                     val lifted = dragging == i
-                    Row(
-                        Modifier.zIndex(if (lifted) 1f else 0f)
-                            .graphicsLayer { translationY = if (lifted) dy else 0f; shadowElevation = if (lifted) 8f else 0f }
-                            .then(if (lifted) Modifier.background(K.surfaceRaised) else Modifier)
-                            .onSizeChanged { rowPx = it.height.toFloat().coerceAtLeast(1f) },
-                        verticalAlignment = Alignment.CenterVertically,
+                    val lift by androidx.compose.animation.core.animateFloatAsState(
+                        if (lifted) 1f else 0f, spring(dampingRatio = 1f, stiffness = 600f), label = "lift",
+                    )
+                    // Only once there's a destination is there a way to reorder.
+                    val movable = to != null
+                    Column(
+                        Modifier.zIndex(if (lifted) 1f else lift)
+                            .glide(enabled = !lifted)
+                            .graphicsLayer {
+                                translationY = if (lifted) dy else 0f
+                                scaleX = 1f + .04f * lift; scaleY = 1f + .04f * lift
+                                shadowElevation = 8f * lift
+                            }
+                            .then(if (lift > 0f) Modifier.background(K.surfaceRaised.copy(alpha = lift)) else Modifier)
+                            .onSizeChanged { rowPx = it.height.toFloat().coerceAtLeast(1f) }
+                            .then(if (!movable) Modifier else Modifier.pointerInput(way.size) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        dragging = slot; dy = 0f
+                                        haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    },
+                                    onDragEnd = { if (!byHandle) { dragging = -1; dy = 0f } },
+                                    onDragCancel = { if (!byHandle) { dragging = -1; dy = 0f } },
+                                ) { change, amount -> change.consume(); drag(amount.y) }
+                            }),
                     ) {
-                        Box(Modifier.weight(1f)) {
-                            if (dest) Endpoint(to ?: T("Where to?", "לאן?"), here = toIsHere, dot = true, onClick = onTo, placeholder = to == null)
-                            else StopoverRow(stops[i])
-                        }
-                        if (stops.isNotEmpty()) {
-                            if (!dest) Box(
-                                Modifier.size(40.dp).clip(CircleShape).clickable(role = Role.Button, onClickLabel = T("Remove stop", "הסרת עצירה")) { onRemoveStop(i) },
-                                contentAlignment = Alignment.Center,
-                            ) { Icon(Icons.Rounded.Close, contentDescription = T("Remove stop", "הסרת עצירה"), tint = K.textTertiary, modifier = Modifier.size(18.dp)) }
-                            Box(
-                                Modifier.padding(end = K.gap1).size(40.dp).pointerInput(places) {
-                                    detectVerticalDragGestures(
-                                        onDragStart = { dragging = i; dy = 0f },
-                                        onDragEnd = { dragging = -1; dy = 0f },
-                                        onDragCancel = { dragging = -1; dy = 0f },
-                                    ) { change, amount ->
-                                        change.consume()
-                                        dy += amount
-                                        val at = dragging
-                                        if (dy > rowPx / 2 && at < places - 1) { onMove(at, at + 1); dragging = at + 1; dy -= rowPx }
-                                        else if (dy < -rowPx / 2 && at > 0) { onMove(at, at - 1); dragging = at - 1; dy += rowPx }
-                                    }
-                                }.semantics { contentDescription = T("Drag to reorder", "גררו לשינוי הסדר") },
-                                contentAlignment = Alignment.Center,
-                            ) { Icon(Icons.Rounded.DragHandle, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(20.dp)) }
+                        if (i > 0) Separator(ENDPOINT_INSET)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                                when (i) {
+                                    0 -> Endpoint(from, here = fromIsHere, dot = false, onClick = onFrom)
+                                    last -> Endpoint(to ?: T("Where to?", "לאן?"), here = toIsHere, dot = true, onClick = onTo, placeholder = to == null)
+                                    else -> StopoverRow(label) { onStop(i - 1) }
+                                }
+                            }
+                            if (stops.isNotEmpty()) {
+                                if (i in 1 until last) Box(
+                                    Modifier.size(40.dp).clip(CircleShape).clickable(role = Role.Button, onClickLabel = T("Remove stop", "הסרת עצירה")) { onRemoveStop(i - 1) },
+                                    contentAlignment = Alignment.Center,
+                                ) { Icon(Icons.Rounded.Close, contentDescription = T("Remove stop", "הסרת עצירה"), tint = K.textTertiary, modifier = Modifier.size(18.dp)) }
+                                Box(
+                                    Modifier.padding(end = K.gap1).size(40.dp).pointerInput(way.size) {
+                                        detectVerticalDragGestures(
+                                            onDragStart = { byHandle = true; dragging = slot; dy = 0f },
+                                            onDragEnd = { byHandle = false; dragging = -1; dy = 0f },
+                                            onDragCancel = { byHandle = false; dragging = -1; dy = 0f },
+                                        ) { change, amount -> change.consume(); drag(amount) }
+                                    }.semantics { contentDescription = T("Drag to reorder", "גררו לשינוי הסדר") },
+                                    contentAlignment = Alignment.Center,
+                                ) { Icon(Icons.Rounded.DragHandle, contentDescription = null, tint = K.textTertiary, modifier = Modifier.size(20.dp)) }
+                            }
                         }
                     }
-                }
-                // Up to three stops on the way, like Moovit's own planner: a row of the way still to fill in.
+                } }
+                // Up to three stops on the way: a row of the way still to fill in.
                 if (onAddStop != null && stops.size < MAX_STOPOVERS) {
                     Separator(ENDPOINT_INSET)
                     Row(
@@ -229,7 +270,19 @@ fun PlanHeader(
                     }
                 }
             }
-            if (stops.isEmpty()) KavIconButton(Icons.Rounded.SwapVert, T("Swap start and destination", "החלפת התחלה ויעד"), onSwap, floating = true)
+            if (stops.isEmpty()) {
+                // The button turns as the two ends trade places.
+                var turned by remember { mutableFloatStateOf(0f) }
+                val spin by androidx.compose.animation.core.animateFloatAsState(
+                    turned, spring(dampingRatio = .8f, stiffness = 400f), label = "swap",
+                )
+                Box(Modifier.graphicsLayer { rotationZ = spin }) {
+                    KavIconButton(
+                        Icons.Rounded.SwapVert, T("Swap start and destination", "החלפת התחלה ויעד"),
+                        { turned += 180f; onSwap() }, floating = true,
+                    )
+                }
+            }
         }
     }
 }
@@ -240,9 +293,10 @@ const val MAX_STOPOVERS = 3
 private val ENDPOINT_INSET = K.gap4 + 10.dp + K.gap3
 
 @Composable
-private fun StopoverRow(label: String) {
+private fun StopoverRow(label: String, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = K.gap4, end = K.gap2, top = K.gap3, bottom = K.gap3),
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(role = Role.Button, onClick = onClick)
+            .padding(start = K.gap4, end = K.gap2, top = K.gap3, bottom = K.gap3),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
@@ -284,11 +338,11 @@ fun DepartRow(label: String, onWhen: () -> Unit, order: String, onOrder: () -> U
     }
 }
 
-private class DepLabel(val text: String, val dep: Moovit.Departure, val isNow: Boolean = false, val isClock: Boolean = false)
+private class DepLabel(val text: String, val dep: Transit.Departure, val isNow: Boolean = false, val isClock: Boolean = false)
 
 // Minutes for the next hour, a clock time after that, with the day when it isn't today
 // (on Shabbat the first bus can be the next evening).
-private fun departLabels(deps: List<Moovit.Departure>, now: Long): Pair<List<DepLabel>, Boolean> {
+private fun departLabels(deps: List<Transit.Departure>, now: Long): Pair<List<DepLabel>, Boolean> {
     val next = deps.sortedBy { it.timeUtc }.filter { it.timeUtc >= now - 60 }.take(3)
     val mins = next.map { d -> ((d.timeUtc - now) / 60).toInt().takeIf { it in 0..60 && !d.rtDropped } }
     val allMinutes = mins.all { it != null } && mins.any { it != null && it > 0 }
@@ -327,7 +381,7 @@ private fun clockLabel(t: Long, days: Long): String {
 }
 
 @Composable
-internal fun DepartureTimes(deps: List<Moovit.Departure>, now: Long) {
+internal fun DepartureTimes(deps: List<Transit.Departure>, now: Long) {
     val (labels, allMinutes) = departLabels(deps, now)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(K.gap1), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
         labels.forEachIndexed { index, label ->
@@ -335,25 +389,36 @@ internal fun DepartureTimes(deps: List<Moovit.Departure>, now: Long) {
                 if (index == 0 && depMark(label.dep) != DepMark.NONE) {
                     DepMarkGlyph(label.dep, 12.dp); Spacer(Modifier.width(4.dp))
                 }
-                Text(
+                LiveText(
                     if (index < labels.lastIndex) label.text + "," else label.text,
-                    fontSize = 14.sp, color = depColour(label.dep), fontWeight = FontWeight.Medium,
+                    style = androidx.compose.material3.LocalTextStyle.current.copy(fontSize = 14.sp),
+                    color = depColour(label.dep), fontWeight = FontWeight.Medium,
                 )
             }
         }
         if (allMinutes) Text(T("min", "דק׳"), fontSize = 14.sp, color = K.dim)
     }
-    // Moovit's words for a vehicle held up in traffic, so the ride can take longer than planned too.
-    labels.firstOrNull()?.dep?.takeIf { it.delayed }?.let { first ->
+    // The words for a vehicle held up in traffic, so the ride can take longer than planned too. They open and
+    // close under the times instead of pushing what's below in one jump.
+    val delayed = labels.firstOrNull()?.dep?.takeIf { it.delayed }
+    var heavy by remember { mutableStateOf(false) }
+    if (delayed != null) heavy = delayed.traffic == HEAVY_TRAFFIC
+    androidx.compose.animation.AnimatedVisibility(
+        delayed != null,
+        enter = androidx.compose.animation.expandVertically(androidx.compose.animation.core.spring(dampingRatio = 1f, stiffness = 500f)) +
+            androidx.compose.animation.fadeIn(tween(200, delayMillis = 60)),
+        exit = androidx.compose.animation.shrinkVertically(androidx.compose.animation.core.spring(dampingRatio = 1f, stiffness = 500f)) +
+            androidx.compose.animation.fadeOut(tween(120)),
+    ) {
         Text(
             T("Delay due to traffic", "עיכוב בגלל עומסי תנועה"),
-            fontSize = 12.sp, color = if (first.traffic == HEAVY_TRAFFIC) K.critical else K.problem,
+            fontSize = 12.sp, color = if (heavy) K.critical else K.problem,
             modifier = Modifier.padding(top = 2.dp),
         )
     }
 }
 
-// Moovit's MVTrafficStatus: 1 none, 2 medium, 3 heavy.
+// Traffic status: 1 none, 2 medium, 3 heavy.
 internal const val HEAVY_TRAFFIC = 3
 
 @Composable
@@ -372,9 +437,9 @@ internal fun PlatformTag(platform: String) {
     }
 }
 
-// One badge per ride, as Moovit draws it: every line that can take it, "90 / 29 / 27".
+// One badge per ride: every line that can take it, "90 / 29 / 27".
 @Composable
-private fun RouteChoices(ride: Moovit.Leg, r: Moovit.Resolved) {
+private fun RouteChoices(ride: Transit.Leg, r: Transit.Resolved) {
     val labels = ride.lineChoices.mapNotNull { id ->
         ride.options.firstOrNull { it.lineId == id }?.shortName?.ifBlank { null } ?: r.line(id)?.number?.ifBlank { null }
     }.distinct()
@@ -385,31 +450,32 @@ private fun RouteChoices(ride: Moovit.Leg, r: Moovit.Resolved) {
     LineBadgeOnline(ride.lineId, labels.joinToString("\u00A0/ ") { "$isolate${it.replace(' ', '\u00A0')}\u2069" }, r)
 }
 
-fun depColour(d: Moovit.Departure): Color = when (d.state) {
-    Moovit.TimeState.REAL_TIME, Moovit.TimeState.REAL_TIME_HIGH -> K.realtime
-    Moovit.TimeState.REAL_TIME_MEDIUM -> K.problem
-    Moovit.TimeState.REAL_TIME_LOW, Moovit.TimeState.OUT_OF_SHAPE -> K.critical
-    Moovit.TimeState.REAL_TIME_DROPPED, Moovit.TimeState.CANCELED -> K.dim
-    Moovit.TimeState.STATIC, Moovit.TimeState.STATISTICAL, Moovit.TimeState.FREQUENCY -> K.scheduled
+fun depColour(d: Transit.Departure): Color = when (d.state) {
+    Transit.TimeState.REAL_TIME, Transit.TimeState.REAL_TIME_HIGH -> K.realtime
+    Transit.TimeState.REAL_TIME_MEDIUM -> K.problem
+    Transit.TimeState.REAL_TIME_LOW, Transit.TimeState.OUT_OF_SHAPE -> K.critical
+    Transit.TimeState.REAL_TIME_DROPPED, Transit.TimeState.CANCELED -> K.dim
+    Transit.TimeState.STATIC, Transit.TimeState.STATISTICAL, Transit.TimeState.FREQUENCY -> K.scheduled
 }
 
 enum class DepMark { LIVE, LIVE_STILL, LIVE_OFF, WARNING, CLOCK, DELAY, NONE }
 
-fun depMark(d: Moovit.Departure): DepMark = when {
-    d.state == Moovit.TimeState.CANCELED || d.state == Moovit.TimeState.FREQUENCY -> DepMark.NONE
+fun depMark(d: Transit.Departure): DepMark = when {
+    d.state == Transit.TimeState.CANCELED || d.state == Transit.TimeState.FREQUENCY -> DepMark.NONE
     d.delayed -> DepMark.DELAY
     else -> when (d.state) {
-        Moovit.TimeState.REAL_TIME, Moovit.TimeState.REAL_TIME_HIGH,
-        Moovit.TimeState.REAL_TIME_MEDIUM -> DepMark.LIVE
-        Moovit.TimeState.REAL_TIME_LOW -> DepMark.LIVE_STILL
-        Moovit.TimeState.REAL_TIME_DROPPED -> DepMark.LIVE_OFF
-        Moovit.TimeState.OUT_OF_SHAPE -> DepMark.WARNING
+        Transit.TimeState.REAL_TIME, Transit.TimeState.REAL_TIME_HIGH,
+        Transit.TimeState.REAL_TIME_MEDIUM -> DepMark.LIVE
+        Transit.TimeState.REAL_TIME_LOW -> DepMark.LIVE_STILL
+        Transit.TimeState.REAL_TIME_DROPPED -> DepMark.LIVE_OFF
+        Transit.TimeState.OUT_OF_SHAPE -> DepMark.WARNING
         else -> DepMark.CLOCK
     }
 }
 
+// footer: something of the card's own under it, as the taxi card's Gett button.
 @Composable
-fun ItineraryCard(it: Moovit.Itinerary, r: Moovit.Resolved, onClick: (() -> Unit)? = null) {
+fun ItineraryCard(it: Transit.Itinerary, r: Transit.Resolved, footer: (@Composable () -> Unit)? = null, onClick: (() -> Unit)? = null) {
     val now = System.currentTimeMillis() / 1000
     Column(
         Modifier.fillMaxWidth()
@@ -426,12 +492,20 @@ fun ItineraryCard(it: Moovit.Itinerary, r: Moovit.Resolved, onClick: (() -> Unit
                     Text(" $unit", style = K.type.subhead, maxLines = 1, modifier = Modifier.alignByBaseline())
                 }
             }
-            Text(hm.format(Date(it.dep * 1000)), style = K.type.subhead.tabular, color = K.textTertiary)
-            Icon(
-                Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, tint = K.textTertiary,
-                modifier = Modifier.padding(horizontal = K.gap1).size(14.dp),
-            )
-            Text(hm.format(Date(it.arr * 1000)), style = K.type.subhead.tabular, color = K.text)
+            // Said in words, as the arrow between the times isn't.
+            val dep = hm.format(Date(it.dep * 1000))
+            val arr = hm.format(Date(it.arr * 1000))
+            Row(
+                Modifier.clearAndSetSemantics { contentDescription = T("Leaves $dep, arrives $arr", "יציאה ב-$dep, הגעה ב-$arr") },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(dep, style = K.type.subhead.tabular, color = K.textTertiary)
+                Icon(
+                    Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, tint = K.textTertiary,
+                    modifier = Modifier.padding(horizontal = K.gap1).size(14.dp),
+                )
+                Text(arr, style = K.type.subhead.tabular, color = K.text)
+            }
         }
         RouteStrip(it, r)
         DepartureLine(it, r, now)
@@ -444,36 +518,37 @@ fun ItineraryCard(it: Moovit.Itinerary, r: Moovit.Resolved, onClick: (() -> Unit
                 }
             }
         }
+        footer?.invoke()
     }
 }
 
 private class StripItem(
-    val kind: Moovit.LegKind,
+    val kind: Transit.LegKind,
     val minutes: Int,
     val alert: Int = 0,
-    val ride: Moovit.Leg? = null,
+    val ride: Transit.Leg? = null,
 )
 
-private fun stripItems(it: Moovit.Itinerary): List<StripItem> {
+private fun stripItems(it: Transit.Itinerary): List<StripItem> {
     val out = ArrayList<StripItem>()
     for (l in it.legs) {
         if (l.pathway) continue
         when (l.kind) {
-            Moovit.LegKind.WALK -> {
+            Transit.LegKind.WALK -> {
                 val last = out.lastOrNull()
-                if (last != null && last.kind == Moovit.LegKind.WALK) {
-                    out[out.size - 1] = StripItem(Moovit.LegKind.WALK, last.minutes + l.minutes)
-                } else out.add(StripItem(Moovit.LegKind.WALK, l.minutes))
+                if (last != null && last.kind == Transit.LegKind.WALK) {
+                    out[out.size - 1] = StripItem(Transit.LegKind.WALK, last.minutes + l.minutes)
+                } else out.add(StripItem(Transit.LegKind.WALK, l.minutes))
             }
-            Moovit.LegKind.RIDE, Moovit.LegKind.TAXI, Moovit.LegKind.BIKE -> {
+            Transit.LegKind.RIDE, Transit.LegKind.TAXI, Transit.LegKind.BIKE -> {
                 val alert = it.legs.getOrNull(it.legs.indexOf(l) - 1)
-                    ?.takeIf { w -> w.kind == Moovit.LegKind.WAIT }?.alertCategory ?: 0
+                    ?.takeIf { w -> w.kind == Transit.LegKind.WAIT }?.alertCategory ?: 0
                 out.add(StripItem(l.kind, l.minutes, alert, l))
             }
             else -> {}
         }
     }
-    return out.filter { s -> s.kind != Moovit.LegKind.WALK || s.minutes >= 1 }
+    return out.filter { s -> s.kind != Transit.LegKind.WALK || s.minutes >= 1 }
 }
 
 private fun showMinutes(leg: StripItem): Boolean = leg.minutes >= 5
@@ -481,7 +556,7 @@ private fun showMinutes(leg: StripItem): Boolean = leg.minutes >= 5
 private val PIP_OVERHANG = 5.dp
 
 @Composable
-internal fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
+internal fun RouteStrip(it: Transit.Itinerary, r: Transit.Resolved) {
     val shown = stripItems(it)
     FlowRow(
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -496,7 +571,7 @@ internal fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
             ) {
             if (i > 0) Chevron(size = 11.dp)
             when (leg.kind) {
-                Moovit.LegKind.RIDE -> Box(
+                Transit.LegKind.RIDE -> Box(
                     Modifier.padding(vertical = PIP_OVERHANG, horizontal = PIP_OVERHANG),
                 ) {
                     leg.ride?.let { RouteChoices(it, r) }
@@ -506,9 +581,12 @@ internal fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
                         AlertPip(leg.alert)
                     }
                 }
-                Moovit.LegKind.TAXI -> leg.ride?.let { GettPill(it) }
-                Moovit.LegKind.BIKE -> Row(
-                    Modifier.height(28.dp), verticalAlignment = Alignment.CenterVertically,
+                Transit.LegKind.TAXI -> leg.ride?.let { GettPill(it) }
+                Transit.LegKind.BIKE -> Row(
+                    Modifier.height(28.dp).clearAndSetSemantics {
+                        contentDescription = if (showMinutes(leg)) T("Cycle ${leg.minutes} min", "רכיבה ${leg.minutes} דק׳") else T("Cycle", "רכיבה")
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     CycleGlyph(leg.ride)
                     if (showMinutes(leg)) {
@@ -517,7 +595,10 @@ internal fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
                     }
                 }
                 else -> Row(
-                    Modifier.height(28.dp), verticalAlignment = Alignment.CenterVertically,
+                    Modifier.height(28.dp).clearAndSetSemantics {
+                        contentDescription = if (showMinutes(leg)) T("Walk ${leg.minutes} min", "הליכה ${leg.minutes} דק׳") else T("Walk", "הליכה")
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     WalkGlyph(K.muted, 18.dp)
                     if (showMinutes(leg)) {
@@ -532,19 +613,21 @@ internal fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
 }
 
 @Composable
-private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) {
+private fun LineBadgeOnline(lineId: Int, shortName: String, r: Transit.Resolved) {
     val info = r.line(lineId)
     val agency = info?.agencyId ?: -1
     val rt = if (info != null) r.routeType(agency) else 3
     val label = shortName.ifBlank { null } ?: info?.number?.ifBlank { null }
     val plate = linePlate(rt, agency) { Operators.of(r, agency) }
-    // Moovit's look for buses, when chosen in Settings.
-    if (K.lineBadgeAppearance == LineBadgeAppearance.MOOVIT && modeOf(rt) == Mode.BUS) {
-        LinePlateBadge(label, Mode.BUS, plate)
+    val said = lineDescription(rt, label)
+    // The strip look for buses, when chosen in Settings.
+    if (K.lineBadgeAppearance == LineBadgeAppearance.STRIP && modeOf(rt) == Mode.BUS) {
+        Box(Modifier.clearAndSetSemantics { contentDescription = said }) { LinePlateBadge(label, Mode.BUS, plate) }
         return
     }
     Column(
-        Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.badgePlate)
+        Modifier.clearAndSetSemantics { contentDescription = said }
+            .clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.badgePlate)
             .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge)),
     ) {
         Row(
@@ -565,7 +648,7 @@ private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) 
 
 // A bike-kind leg: the rider's own bike, or a shared one picked up in the street, and what it is.
 @Composable
-internal fun CycleGlyph(leg: Moovit.Leg?, tint: Color = K.muted, size: androidx.compose.ui.unit.Dp = 18.dp) {
+internal fun CycleGlyph(leg: Transit.Leg?, tint: Color = K.muted, size: androidx.compose.ui.unit.Dp = 18.dp) {
     val icon = when (leg?.shared) {
         3, 4 -> Icons.Rounded.ElectricScooter
         5 -> Icons.Rounded.Moped
@@ -576,7 +659,7 @@ internal fun CycleGlyph(leg: Moovit.Leg?, tint: Color = K.muted, size: androidx.
 }
 
 // The same leg in words, with who runs a shared vehicle and how long it takes.
-internal fun cycleLabel(leg: Moovit.Leg): String {
+internal fun cycleLabel(leg: Transit.Leg): String {
     val what = when (leg.shared) {
         0 -> T("Cycle", "אופניים")
         3, 4 -> T("Shared scooter", "קורקינט שיתופי")
@@ -600,11 +683,11 @@ internal fun BikeGlyph(tint: Color = K.muted, size: androidx.compose.ui.unit.Dp 
 }
 
 @Composable
-private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
-    val taxi = it.legs.take(2).firstOrNull { l -> l.kind == Moovit.LegKind.TAXI }
+private fun DepartureLine(it: Transit.Itinerary, r: Transit.Resolved, now: Long) {
+    val taxi = it.legs.take(2).firstOrNull { l -> l.kind == Transit.LegKind.TAXI }
     if (taxi != null) {
         val mins = (((taxi.dep - now) + 59) / 60).coerceAtLeast(0)
-        Text(
+        LiveText(
             T(
                 "Pickup in $mins min",
                 "איסוף בעוד $mins דק׳",
@@ -615,13 +698,13 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
     }
     // A shared bike or scooter route has no departures: say what it rides and who runs it.
     val shared = it.legs.firstOrNull { l -> l.shared != 0 }
-    if (shared != null && it.legs.none { l -> l.kind == Moovit.LegKind.RIDE }) {
+    if (shared != null && it.legs.none { l -> l.kind == Transit.LegKind.RIDE }) {
         Text(cycleLabel(shared), style = K.type.subhead)
         return
     }
-    val rideIndex = it.legs.indexOfFirst { leg -> leg.kind == Moovit.LegKind.RIDE }
+    val rideIndex = it.legs.indexOfFirst { leg -> leg.kind == Transit.LegKind.RIDE }
     val ride = it.legs.getOrNull(rideIndex)
-    val wait = it.legs.getOrNull(rideIndex - 1)?.takeIf { leg -> leg.kind == Moovit.LegKind.WAIT }
+    val wait = it.legs.getOrNull(rideIndex - 1)?.takeIf { leg -> leg.kind == Transit.LegKind.WAIT }
     val stop = (wait?.fromStop ?: ride?.fromStop)?.takeIf { id -> id > 0 }?.let { id -> r.stopName(id) }
     val deps = ride?.let { leg -> r.cardDepartures(leg, wait) }.orEmpty()
     val (labels, allMinutes) = departLabels(deps, now)
@@ -629,7 +712,8 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
 
     if (labels.isEmpty() && stop == null && fare == null) return
     val lead = labels.firstOrNull()?.dep
-    Text(
+    // A new live time rolls in where the old one was, and the rest of the line stays put or slides over to make room.
+    LiveText(
         buildAnnotatedString {
             if (labels.isNotEmpty()) {
                 val first = labels.first()
@@ -673,7 +757,7 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
 
 private const val MARK = "mark"
 
-private fun cardNotes(it: Moovit.Itinerary): List<Pair<String, String>> {
+private fun cardNotes(it: Transit.Itinerary): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>(2)
     if (it.accessible) out.add("access" to T("Step-free", "נגיש לנכים"))
     if (Shown.co2 && it.co2g >= 0) out.add("co2" to co2(it.co2g))

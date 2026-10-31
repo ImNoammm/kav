@@ -27,7 +27,7 @@ KERBS = {
     # Shoham, Emek Ayalon/Yasur square: the footway at the stop only climbs to the plaza above, not down to the street.
     "32764": ((32.005175, 34.946687), (1368754441, 12676724415, 12676724402), (639526554, 6026080623, 6026080997)),
     # Petah Tikva, Kaplan/Arlozorov: the sidewalk at the stop ends 11 m short of the corner and meets Kaplan street only
-    # 160 m north, so from the stop to the corner 129 m south was a 460 m walk, where Moovit's is 129 m.
+    # 160 m north, so from the stop to the corner 129 m south was a 460 m walk, where the corner is 129 m away.
     "38311": ((32.086123, 34.868377), (1469846906, 13479652905, 13479652906), (267404129, 2728609074, 12865202674)),
 }
 # Way: tags it has wrongly and loses. Ahuza street's sidewalk in Raanana is tagged one-way, which OTP holds walkers to.

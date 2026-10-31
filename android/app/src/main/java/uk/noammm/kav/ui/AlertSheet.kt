@@ -79,7 +79,7 @@ import kotlin.math.abs
 // Line alerts at a stop: the ones set there, and a new one's lines, days and hours. Every choice is a tap: lines and
 // days are toggles that fill when on, and the hours turn on wheels under the time being set, no keyboard.
 @Composable
-internal fun AlertSheet(model: KavModel, net: Net, stop: Int, moovitId: Int, onDismiss: () -> Unit) {
+internal fun AlertSheet(model: KavModel, net: Net, stop: Int, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
     val key = net.stopKey(stop)
     val numbers = remember(stop) { net.linesAt(stop) }
@@ -168,8 +168,7 @@ internal fun AlertSheet(model: KavModel, net: Net, stop: Int, moovitId: Int, onD
                 onClick = {
                         val alert = LineAlert(
                             System.currentTimeMillis(), key, net.stopName(stop), numbers.filter { it in lines }, days, from, to,
-                            StopPhotos.idNow(net, stop) ?: moovitId,
-                            ends.filter { it in toward }.map { LineAlert.End(net.name[it], net.code[it], net.lat[it], net.lon[it]) },
+                            toward = ends.filter { it in toward }.map { LineAlert.End(net.name[it], net.code[it], net.lat[it], net.lon[it]) },
                         )
                         model.saveAlerts(ctx, model.lineAlerts + alert)
                         lines = emptySet()

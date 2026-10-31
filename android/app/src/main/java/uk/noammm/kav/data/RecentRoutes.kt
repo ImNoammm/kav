@@ -4,15 +4,15 @@ import android.content.Context
 import org.json.JSONObject
 import java.io.File
 
-// The routes a recent trip's search found, so the trip reopens on them instead of planning again, as Moovit's Recent
+// The routes a recent trip's search found, so the trip reopens on them instead of planning again, as a Recent
 // Journeys do. A file per trip, for the newest trips only; older ones plan afresh when opened.
 object RecentRoutes {
-    class Saved(val routes: List<Moovit.Itinerary>, val resolved: Moovit.Resolved, val sections: List<Moovit.Section>)
+    class Saved(val routes: List<Transit.Itinerary>, val resolved: Transit.Resolved, val sections: List<Transit.Section>)
 
     private fun dir(ctx: Context) = File(ctx.filesDir, "recent-routes")
     private fun file(ctx: Context, key: String) = File(dir(ctx), key.replace('>', '_') + ".json")
 
-    fun save(ctx: Context, key: String, routes: List<Moovit.Itinerary>, resolved: Moovit.Resolved, sections: List<Moovit.Section>) {
+    fun save(ctx: Context, key: String, routes: List<Transit.Itinerary>, resolved: Transit.Resolved, sections: List<Transit.Section>) {
         val f = file(ctx, key)
         val tmp = File(f.path + ".tmp")
         try {

@@ -1,15 +1,15 @@
 {
-  // Moovit's street model, measured on its own plans: walking and cycling at a steady speed (1.33 and 5 m/s) with no
+  // The street model: walking and cycling at a steady speed (1.33 and 5 m/s) with no
   // time lost at crossings, stairs or escalators. OpenTripPlanner takes speeds to the nearest 0.05 m/s, so it walks
-  // at 1.35 and server/live.py makes each walk Moovit's length again. Walks take the shortest way, main roads too:
+  // at 1.35 and server/live.py makes each walk the 1.33 m/s length again. Walks take the shortest way, main roads too:
   // OpenTripPlanner's own weighting (a trunk road counts 9.3 times its length) sent Grand Canyon's walk to the bus
-  // 1 km around the mall where Moovit walks 550 m beside the road.
+  // 1 km around the mall where the walk beside the road is 550 m.
   "routingDefaults": {
     "walk": { "speed": 1.33, "stairsTimeFactor": 1.0, "escalator": { "speed": 1.35 }, "safetyFactor": 0 },
     "bicycle": { "optimization": "shortest-duration", "walk": { "speed": 5.0 } },
     "intersectionTraversalModel": "constant",
-    // Moovit offers walking or cycling all the way for an hour at most, cycles to a station for a quarter of an hour
-    // and takes a taxi there for ten minutes (seven on the planner's free-flowing roads).
+    // Walking or cycling all the way is offered for an hour at most, cycling to a station for a quarter of an hour
+    // and a taxi there for ten minutes (seven on the planner's free-flowing roads).
     "maxDirectStreetDurationForMode": { "walk": "1h", "bike": "1h" },
     // Every stop within reach counts, or a station deep underground comes after the 500 that OpenTripPlanner keeps.
     "accessEgress": {

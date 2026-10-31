@@ -1,7 +1,7 @@
-"""Moves the timetable's buses to when they really get to each stop, as Moovit plans them: by how long each line has
+"""Moves the timetable's buses to when they really get to each stop: by how long each line has
 taken, at that time of day and on that kind of day, from its first stop to each of its stops. The times come from
 when Kav's server saw each bus pass each stop (server/live.py's Recorder), over the last DAYS days. Trains, the
-Jerusalem light rail and the Haifa cable car keep their timetable, as Moovit keeps them. A trip's first stop keeps its
+Jerusalem light rail and the Haifa cable car keep their timetable. A trip's first stop keeps its
 time too, which is how the live updates find the trip.
 
     python3 predict.py <dir with israel-gtfs.zip> <history dir>
@@ -23,7 +23,7 @@ import zipfile
 
 DAYS = {"W": 14, "F": 28, "S": 28}  # days looked back: Fridays and Saturdays come once a week
 WINDOW = 2700  # trips that set out up to 45 minutes either side count
-# How many past trips were quicker: 0.4, which matched Moovit's predictions best. At half the buses came closer to the
+# How many past trips were quicker: 0.4. At half the buses came closer to the
 # time worked out, but a rider at the stop a minute before a first bus planned ahead missed it about twice as often.
 SHARE = 0.4
 LEAST = 3  # past trips needed for a prediction
@@ -35,11 +35,11 @@ HOP = 0.5  # a bus takes at least this share of the timetable's time from one st
 # 2, 20, 40, 9 and 22 minutes after it set out, so 20). At the stops this moves Kav is far less often minutes later
 # than the bus, though more often early.
 JUMP, JUMP_TIMES = 600, 3
-TAVEL = "22"  # the Tel Aviv light rail's operator: Moovit predicts it like a bus
+TAVEL = "22"  # the Tel Aviv light rail's operator: predicted like a bus
 KINDS = {"W": ("sunday", "monday", "tuesday", "wednesday", "thursday"), "F": ("friday",), "S": ("saturday",)}
 DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 # A day the ministry runs clearly fewer buses on than its other days of that kind (an election, a holiday) is a special
-# day: its trips keep the ministry's own times, as Moovit's do, and its passings stay out of the history.
+# day: its trips keep the ministry's own times, and its passings stay out of the history.
 SPECIAL = 0.85
 
 

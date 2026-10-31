@@ -70,7 +70,7 @@ object JourneyFile {
     internal fun parse(o: JSONObject): Pair<ActiveJourney, Int>? = try {
         val journey = ActiveJourney(
             trip = itinerary(o.getJSONObject("trip")),
-            resolved = Moovit.Resolved(
+            resolved = Transit.Resolved(
                 lines = keyed(o.optJSONObject("lines")) { line(it) },
                 stops = keyed(o.optJSONObject("stops")) { stop(it) },
                 routeTypes = counts(o.optJSONObject("types")),
@@ -86,7 +86,7 @@ object JourneyFile {
     } catch (e: Exception) { null }
 
     // A search's routes as a recent trip keeps them, without live times or line shapes: those only follow a bus.
-    internal fun routesJson(routes: List<Moovit.Itinerary>, r: Moovit.Resolved, sections: List<Moovit.Section>): JSONObject =
+    internal fun routesJson(routes: List<Transit.Itinerary>, r: Transit.Resolved, sections: List<Transit.Section>): JSONObject =
         JSONObject()
             .put("trips", JSONArray().apply { routes.forEach { put(json(it)) } })
             .put("lines", JSONObject().apply { r.lines.forEach { (id, l) -> put(id.toString(), json(l)) } })
@@ -102,39 +102,37 @@ object JourneyFile {
     internal fun routes(o: JSONObject): RecentRoutes.Saved? = try {
         RecentRoutes.Saved(
             objects(o.optJSONArray("trips")).map { itinerary(it) },
-            Moovit.Resolved(
+            Transit.Resolved(
                 lines = keyed(o.optJSONObject("lines")) { line(it) },
                 stops = keyed(o.optJSONObject("stops")) { stop(it) },
                 routeTypes = counts(o.optJSONObject("types")),
             ),
             objects(o.optJSONArray("sections")).map {
-                Moovit.Section(it.optInt("id", -1), it.optString("name"), it.optInt("max", Int.MAX_VALUE),
+                Transit.Section(it.optInt("id", -1), it.optString("name"), it.optInt("max", Int.MAX_VALUE),
                     it.optInt("type"), it.optInt("index"))
             },
         ).takeIf { it.routes.isNotEmpty() }
     } catch (e: Exception) { null }
 
-    private fun json(t: Moovit.Itinerary): JSONObject = JSONObject()
+    private fun json(t: Transit.Itinerary): JSONObject = JSONObject()
         .put("guid", t.guid).put("group", t.group)
         .put("legs", JSONArray().apply { t.legs.forEach { put(json(it)) } })
         .put("dep", t.dep).put("arr", t.arr)
         .put("fare", t.fare).put("cur", t.currency).put("co2", t.co2g)
         .put("acc", t.accessible).put("tags", JSONArray(t.tags))
         .put("sec", t.section).put("secId", t.sectionId)
-        .put("wire", t.wire)
 
-    private fun itinerary(o: JSONObject) = Moovit.Itinerary(
+    private fun itinerary(o: JSONObject) = Transit.Itinerary(
         guid = o.optString("guid"), group = o.optInt("group"),
         legs = objects(o.optJSONArray("legs")).map { leg(it) },
         dep = o.optLong("dep"), arr = o.optLong("arr"),
         fare = o.optInt("fare", -1), currency = o.optString("cur"),
         co2g = o.optInt("co2", -1), accessible = o.optBoolean("acc"),
-        tags = strings(o.optJSONArray("tags")),
+        tags = strings(o.optJSONArray("tags")).mapNotNull(KavPlan::tagOf),
         section = o.optString("sec"), sectionId = o.optInt("secId", -1),
-        wire = o.optString("wire").takeIf { it.isNotBlank() },
     )
 
-    private fun json(l: Moovit.Leg): JSONObject {
+    private fun json(l: Transit.Leg): JSONObject {
         val o = JSONObject()
             .put("kind", l.kind.name)
             .put("line", l.lineId).put("trip", l.tripId)
@@ -154,8 +152,8 @@ object JourneyFile {
         return o
     }
 
-    private fun leg(o: JSONObject): Moovit.Leg = Moovit.Leg(
-        kind = Moovit.LegKind.valueOf(o.getString("kind")),
+    private fun leg(o: JSONObject): Transit.Leg = Transit.Leg(
+        kind = Transit.LegKind.valueOf(o.getString("kind")),
         lineId = o.optInt("line", -1), tripId = o.optLong("trip"),
         dep = o.optLong("dep"), arr = o.optLong("arr"),
         stops = ints(o.optJSONArray("stops")),
@@ -172,7 +170,7 @@ object JourneyFile {
         alternativeLineIds = ints(o.optJSONArray("altLines")),
     )
 
-    private fun json(d: Moovit.Departure): JSONObject = JSONObject()
+    private fun json(d: Transit.Departure): JSONObject = JSONObject()
         .put("trip", d.tripId).put("static", d.staticUtc)
         .put("rt", d.rtUtc).put("stat", d.statisticalUtc)
         .put("status", d.status).put("cert", d.certainty).put("traffic", d.traffic)
@@ -180,7 +178,7 @@ object JourneyFile {
         .put("veh", d.vehicleStatus).put("alert", d.alert)
         .put("platform", d.platform)
 
-    private fun departure(o: JSONObject) = Moovit.Departure(
+    private fun departure(o: JSONObject) = Transit.Departure(
         tripId = o.optLong("trip"), staticUtc = o.optLong("static"),
         rtUtc = o.optLong("rt"), statisticalUtc = o.optLong("stat"),
         status = o.optInt("status"), certainty = o.optInt("cert"),
@@ -189,22 +187,22 @@ object JourneyFile {
         alert = o.optInt("alert"), platform = o.optString("platform"),
     )
 
-    private fun json(l: Moovit.LineInfo): JSONObject = JSONObject()
+    private fun json(l: Transit.LineInfo): JSONObject = JSONObject()
         .put("group", l.groupId).put("number", l.number).put("agency", l.agencyId)
         .put("origin", l.origin).put("dest", l.destination).put("caption", l.caption)
 
-    private fun line(o: JSONObject) = Moovit.LineInfo(
+    private fun line(o: JSONObject) = Transit.LineInfo(
         o.optInt("group", -1), o.optString("number"), o.optInt("agency", -1),
         o.optString("origin"), o.optString("dest"), o.optString("caption"),
     )
 
-    private fun json(s: Moovit.StopInfo): JSONObject {
+    private fun json(s: Transit.StopInfo): JSONObject {
         val o = JSONObject().put("id", s.id).put("name", s.name).put("code", s.code)
         if (s.lat.isFinite() && s.lon.isFinite()) o.put("lat", s.lat).put("lon", s.lon)
         return o
     }
 
-    private fun stop(o: JSONObject) = Moovit.StopInfo(
+    private fun stop(o: JSONObject) = Transit.StopInfo(
         o.optInt("id"), o.optString("name"), o.optString("code"),
         o.optDouble("lat", Double.NaN), o.optDouble("lon", Double.NaN),
     )

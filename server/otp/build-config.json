@@ -2,7 +2,7 @@
   "transitServiceStart": "-P1D",
   "transitServiceEnd": "P14D",
   "transitModelTimeZone": "Asia/Jerusalem",
-  // Changes with a bike, as Moovit plans them: between trains and light rail, which take bikes.
+  // Changes with a bike: between trains and light rail, which take bikes.
   "transferRequests": [{ "modes": "WALK" }, { "modes": "BICYCLE" }],
   "transferParametersForMode": {
     "BIKE": { "disableDefaultTransfers": true, "bikesAllowedStopMaxTransferDuration": "10m" }

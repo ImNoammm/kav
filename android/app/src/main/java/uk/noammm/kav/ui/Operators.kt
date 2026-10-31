@@ -4,15 +4,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import uk.noammm.kav.data.KavPlan
-import uk.noammm.kav.data.Moovit
+import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.Net
 import kotlin.math.max
 import kotlin.math.min
 
 // Each bus operator's own colour, on its lines' plates and its buses' roads on the map. The idea and the
 // colours are Sammy Zaionz's (szaionz), from his route_colors branch. An operator is known by the ministry's id for it
-// (Kav's server and planner) or by its name in the ministry's timetable; Moovit names it the same with the English in
-// brackets, "דן (Dan)". Operators without a colour here keep Kav's own.
+// (Kav's server and planner) or by its name in the ministry's timetable, which can carry the English in brackets,
+// "דן (Dan)". Operators without a colour here keep Kav's own.
 internal object Operators {
     private class Operator(val gtfs: Int, val name: String, val english: String?, val argb: Long)
 
@@ -59,8 +59,8 @@ internal object Operators {
         return (byName[hebrew] ?: byName[english].takeIf { english.isNotEmpty() })?.let { Color(it.argb) }
     }
 
-    // A ride's operator, from a trip's details: Kav's planner's by the ministry's id it carries, Moovit's by name.
-    fun of(r: Moovit.Resolved, agencyId: Int): Color? =
+    // A ride's operator, from a trip's details: Kav's planner's by the ministry's id it carries, else by name.
+    fun of(r: Transit.Resolved, agencyId: Int): Color? =
         KavPlan.gtfsAgency(agencyId)?.let(::ofGtfs) ?: ofName(r.agencyName(agencyId))
 
     // A timetable route's operator.

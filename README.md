@@ -61,11 +61,9 @@ you're on the way.
 
 ## Getting it
 
-Moovit sent me a cease and desist, so I took the old versions down. The next
-version, with nothing from Moovit in it, is coming soon. Until then there's
-nothing to download here, but you can build Kav from source (see
-[Building it](#building-it)). A build of your own has the map and the
-timetables, but live buses and trip planning only work in the official APK.
+Moovit sent me a cease and desist, so I took the old versions down. Kav isn't
+stopping, it's going harder: the next version, with nothing from Moovit in it,
+is coming soon.
 
 Once it's out, grab the APK from
 [Releases](https://github.com/ImNoammm/kav/releases) and open it. It updates

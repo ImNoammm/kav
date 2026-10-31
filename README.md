@@ -8,6 +8,12 @@
   Public transport in Israel, without the ads, the account or the tracking.
 </p>
 
+<h2 align="center">
+  Moovit sent me a cease and desist, so I took the old versions down.<br>
+  Kav isn't stopping, it's going harder: the next version, with nothing from
+  Moovit in it, is coming in the next few days.
+</h2>
+
 <p align="center">
   <a href="https://github.com/ImNoammm/kav/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ImNoammm/kav?label=release&color=9ABEFF"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white">
@@ -61,11 +67,7 @@ you're on the way.
 
 ## Getting it
 
-Moovit sent me a cease and desist, so I took the old versions down. Kav isn't
-stopping, it's going harder: the next version, with nothing from Moovit in it,
-is coming in the next few days.
-
-Once it's out, grab the APK from
+Once the next version is out, grab the APK from
 [Releases](https://github.com/ImNoammm/kav/releases) and open it. It updates
 itself from the same page. No store, no update service.
 

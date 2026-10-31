@@ -63,7 +63,7 @@ you're on the way.
 
 Moovit sent me a cease and desist, so I took the old versions down. Kav isn't
 stopping, it's going harder: the next version, with nothing from Moovit in it,
-is coming soon.
+is coming in the next few days.
 
 Once it's out, grab the APK from
 [Releases](https://github.com/ImNoammm/kav/releases) and open it. It updates

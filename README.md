@@ -11,7 +11,8 @@
 <h2 align="center">
   Moovit sent me a cease and desist, so I took the old versions down.<br>
   Kav isn't stopping, it's going harder: the next version, with nothing from
-  Moovit in it, is coming in the next few days.
+  Moovit in it, is coming in the next few days. It's mostly ready and just
+  needs a few small fixes to the planner.
 </h2>
 
 <p align="center">

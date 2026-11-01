@@ -3039,6 +3039,51 @@ def station_at(p, ask=None):
     return (s.get("parentStation") or {}).get("gtfsId") or s["gtfsId"], street
 
 
+# A bus stop picked by name is its namesake across the street too: a trip from (to) it may start (end) at either with
+# no walk, as one from a train station starts on its platforms. Where the street map has no crossing between the two,
+# the planner walks round to the next stop the same bus calls at. A point within PICKED_NEAR of a bus stop is that
+# stop; the stop of the same name within TWIN_NEAR of it is its twin when the planner's walk to it is at least
+# TWIN_DETOUR longer than the straight line. Only on a trip of up to TWIN_TRIP in a straight line: further, the side of
+# the street changes a few metres of it, and the twin's questions double the planner's time. The latest TWINS_KEPT
+# points' twins are kept for plan_variables().
+PICKED_NEAR, TWIN_NEAR, TWIN_DETOUR, TWIN_TRIP, TWINS_KEPT = 3, 50, 100, 10_000, 4096
+twins_found, twins_lock = {}, threading.Lock()
+WALK_QUERY = ("{ planConnection(origin: {location: {coordinate: {latitude: %f, longitude: %f}}}, destination: {location: "
+              "{coordinate: {latitude: %f, longitude: %f}}}, modes: {directOnly: true, direct: [WALK]}) "
+              "{ edges { node { legs { distance } } } } }")
+
+
+def twins_at(p, ask=None):
+    """The twin of the bus stop at p, the nearest: (lat, lon), or None. Kept in twins_found."""
+    ask = ask or ask_graphql
+    d = 0.0008
+    try:
+        found = ask("{ stopsByBbox(minLat: %f, minLon: %f, maxLat: %f, maxLon: %f) { gtfsId name lat lon vehicleMode } }"
+                    % (p[0] - d, p[1] - d, p[0] + d, p[1] + d))
+    except Exception:
+        return None
+    near = lambda s: math.hypot((s["lat"] - p[0]) * 111_320, (s["lon"] - p[1]) * 111_320 * math.cos(math.radians(p[0])))
+    bus = [s for s in found.get("stopsByBbox") or [] if s.get("vehicleMode") == "BUS"]
+    stop = min(bus, key=near, default=None)
+    same = [s for s in bus if stop and near(stop) <= PICKED_NEAR and s["gtfsId"] != stop["gtfsId"]
+            and s.get("name") == stop.get("name") and near(s) <= TWIN_NEAR]
+    nearest, twin = min(same, key=near, default=None), None
+    if nearest:
+        try:
+            walks = (ask(WALK_QUERY % (p[0], p[1], nearest["lat"], nearest["lon"])).get("planConnection") or {}).get("edges")
+            walked = min(sum(l.get("distance") or 0 for l in e["node"]["legs"]) for e in walks) if walks else 0
+        except Exception:
+            walked = 0
+        if walked >= near(nearest) + TWIN_DETOUR:
+            twin = (nearest["lat"], nearest["lon"])
+    with twins_lock:
+        twins_found.pop(p, None)
+        twins_found[p] = twin
+        while len(twins_found) > TWINS_KEPT:
+            del twins_found[next(iter(twins_found))]
+    return twin
+
+
 def plan_variables(frm, to, when, arrive, modes, kind="main", via=(), window=None, exclude=(), at=(None, None),
                    walk_reluctance=None, transfers=None, rail=None):
     """at: the train stations (station_at) the trip starts and ends at, if any, which the routes list goes from and to.
@@ -3055,6 +3100,11 @@ def plan_variables(frm, to, when, arrive, modes, kind="main", via=(), window=Non
     if kind in ("main", "all") and street != list(at):
         # The same question from the points themselves where the other rides start or end there (asked_both()).
         out["points"] = {"o": point(frm, street[0]), "d": point(to, street[1])}
+    twins = [None if s else twins_found.get(p) for p, s in ((frm, at[0]), (to, at[1]))]
+    apart = math.hypot((frm[0] - to[0]) * 111_320, (frm[1] - to[1]) * 111_320 * math.cos(math.radians(frm[0])))
+    if kind in ("main", "all") and any(twins) and apart <= TWIN_TRIP:
+        # The same question from (to) a picked bus stop's twin across the street too (asked_twins()).
+        out["twins"] = {k: point(t, None) for k, t in zip("od", twins) if t}
     if window:
         out["window"] = window
     if via:
@@ -3273,15 +3323,64 @@ def asked_both(variables, post):
     return doc
 
 
+def asked_twins(variables, post):
+    """A question from or to a picked bus stop with a twin (plan_variables' twins), asked from (to) each of the two
+    (asked_both()), every answer's routes together: of those riding the same trips, the one the planner costs least.
+    Any answer alone if the others fail."""
+    twins = variables.get("twins")
+    if not twins:
+        return asked_both(variables, post)
+    asked = {k: v for k, v in variables.items() if k != "twins"}
+    ways = []
+    for o in [asked["o"]] + ([twins["o"]] if "o" in twins else []):
+        for d in [asked["d"]] + ([twins["d"]] if "d" in twins else []):
+            way = dict(asked, o=o, d=d)
+            if "points" in asked:
+                # Only an end without a station has a twin, and there the point is the end itself.
+                way["points"] = dict(asked["points"], **{k: e for k, e in (("o", o), ("d", d)) if e is not asked[k]})
+            ways.append(way)
+    docs, failed = [], None
+    with ThreadPoolExecutor(len(ways) - 1) as pool:
+        others = [pool.submit(asked_both, way, post) for way in ways[1:]]
+        try:
+            docs.append(asked_both(ways[0], post))
+        except Exception as e:
+            failed = e
+        for other in others:
+            try:
+                docs.append(other.result())
+            except Exception:
+                pass
+    if not docs:
+        raise failed
+    plans = [(doc, (doc.get("data") or {}).get("planConnection")) for doc in docs]
+    plans = [(doc, plan) for doc, plan in plans if plan is not None]
+    if not plans:
+        return docs[0]
+    ridden = lambda e: tuple(((l.get("route") or {}).get("gtfsId"), (l.get("trip") or {}).get("gtfsId"))
+                             for l in e["node"]["legs"] if l["mode"] not in ("WALK", "BICYCLE", "CAR"))
+    cost = lambda e: e["node"].get("generalizedCost") or 0
+    kept = {}
+    for _, plan in plans:
+        for e in plan.get("edges") or []:
+            if ridden(e) not in kept or cost(e) < cost(kept[ridden(e)]):
+                kept[ridden(e)] = e
+    doc, plan = plans[0]
+    if kept and not plan.get("edges"):
+        plan["routingErrors"] = next(p.get("routingErrors") or [] for _, p in plans if p.get("edges"))
+    plan["edges"] = list(kept.values())
+    return doc
+
+
 def ask_official(variables, wait=OFFICIAL_WAIT):
     """The planner on the ministry's own times."""
     url = OFFICIAL_URL
-    return asked_both(variables, lambda v: post_plan(url, v, wait))
+    return asked_twins(variables, lambda v: post_plan(url, v, wait))
 
 
 def ask_planner(variables, wait=25):
     url = OTP_URL
-    return asked_both(variables, lambda v: post_plan(url, v, wait))
+    return asked_twins(variables, lambda v: post_plan(url, v, wait))
 
 
 # OpenTripPlanner's filter that drops a route costing more than walking all the way, which it works out even for a
@@ -4695,8 +4794,10 @@ class Handler(BaseHTTPRequestHandler):
         asked = when
         if way == "l":
             when = last_way(when)
-        # A trip from or to a train station starts or ends on its platforms.
-        with ThreadPoolExecutor(2) as both:
+        # A trip from or to a train station starts or ends on its platforms, and one from or to a picked bus stop may
+        # start or end at its twin across the street (twins_at(), kept for plan_variables()).
+        with ThreadPoolExecutor(4) as both:
+            both.map(twins_at, (frm, to))
             at = tuple(both.map(station_at, (frm, to)))
         window = {"l": LAST_WINDOW, "a": ARRIVE_WINDOW}.get(way)
         # Asked beside the routes list's own questions, to be ready when plan_answer() takes them.

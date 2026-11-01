@@ -3058,7 +3058,8 @@ def plan_variables(frm, to, when, arrive, modes, kind="main", via=(), window=Non
     if window:
         out["window"] = window
     if via:
-        out["via"] = [{"visit": {"coordinate": {"latitude": p[0], "longitude": p[1]}}} for p in via]
+        # The places on the way, which the trip is planned by a part at a time (through()).
+        out["via"] = [list(p) for p in via]
     if kind in ("walk", "cycle"):
         out["modes"] = {"directOnly": True, "direct": ["WALK" if kind == "walk" else "BICYCLE"]}
         return out
@@ -3108,10 +3109,106 @@ OFFICIAL_URL, OFFICIAL_WAIT = os.environ.get("OFFICIAL_URL", ""), 4
 
 
 def post_plan(url, variables, wait):
+    if variables.get("via"):
+        until = time.time() + wait
+        return through(variables, lambda v: post_plan(url, v, max(0.1, until - time.time())))
     body = json.dumps({"query": PLAN_QUERY, "variables": variables}).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=wait) as r:
         return json.load(r)
+
+
+# A trip by places on the way is planned a part at a time, each part the planner's own question: from where it starts
+# to the first place, from each place to the next, and from the last to where it ends (arriving by a time, from the
+# last part back). The planner's own way through a place (a via visit) takes it several seconds, and at most places it
+# fails. Each route to a place goes on with each route from it setting out after the rider arrives, and the routes kept
+# are those no other beats in every way, as the planner keeps its own (pareto()). The walk from a place sets out
+# FIRST_LEAN earlier, as a trip's first walk does (lean_first()), and the time at the place costs what waiting does.
+# Each part after the first is asked over the times the rider is at its place, and VIA_WINDOW more. A part where
+# walking beats every ride, whose rides the planner's filters drop, is walked: on from a place as soon as the rider is
+# there, to a place to be there just in time for the route on (joined()).
+VIA_WINDOW = 3600
+
+
+def through(variables, post):
+    """The planner's answer to a question by places on the way (the via of plan_variables()), asked of post() a part
+    at a time: the routes all the way, and the routing errors of the last part asked."""
+    arrive = "latestArrival" in variables["t"]
+    asked = {k: v for k, v in variables.items() if k != "via"}
+    places = [asked["o"]] + [{"location": {"coordinate": {"latitude": p[0], "longitude": p[1]}}} for p in variables["via"]]
+    parts = list(zip(places, places[1:] + [asked["d"]]))
+    # Whether a route gets to a place in time for one from it: a walk moves to fit, leaving at a time only later.
+    before = lambda there, on: walk_only(on) or arrive and walk_only(there) or epoch(there["end"]) <= epoch(on["start"]) - FIRST_LEAN
+    routes = None
+    for o, d in parts[::-1] if arrive else parts:
+        part = dict(asked, o=o, d=d)
+        if routes is not None:
+            at = sorted(epoch(r["start"]) - FIRST_LEAN if arrive else epoch(r["end"]) + FIRST_LEAN for r in routes)
+            stamp = datetime.datetime.fromtimestamp(at[-1] if arrive else at[0], datetime.timezone.utc).isoformat()
+            part.update(t={"latestArrival" if arrive else "earliestDeparture": stamp},
+                        window="PT%dM" % -(-(at[-1] - at[0] + VIA_WINDOW) // 60))
+        plan = (post(part).get("data") or {}).get("planConnection") or {}
+        errors = plan.get("routingErrors") or []
+        got = [e["node"] for e in plan.get("edges") or []
+               if not {n.get("tag") for n in e["node"].get("systemNotices") or []} - {WALK_FILTER}]
+        if not got:
+            got = [dict(e["node"], systemNotices=[]) for e in plan.get("edges") or [] if walk_only(e["node"])][:1]
+        if routes is None:
+            routes = got
+        else:
+            first, then = (got, routes) if arrive else (routes, got)
+            routes = pareto([r for a in first for r in pareto([joined(a, b) for b in then if before(a, b)])])
+        if not routes:
+            break
+    return {"data": {"planConnection": {"routingErrors": errors, "edges": [{"node": r} for r in routes]}}}
+
+
+def pareto(routes):
+    """The routes no other is as good as in every way and better in one: setting out later, getting there sooner, with
+    fewer rides, costing less."""
+    rated = sorted(((-epoch(r["start"]), epoch(r["end"]), sum(l["mode"] not in ("WALK", "BICYCLE", "CAR") for l in r["legs"]),
+                     r["generalizedCost"]), n, r) for n, r in enumerate(routes))
+    kept = []
+    for rating, _, r in rated:
+        if not any(all(x <= y for x, y in zip(k, rating)) for k, _ in kept):
+            kept.append((rating, r))
+    return [r for _, r in kept]
+
+
+def walk_only(route):
+    """Whether a planner's route rides nothing."""
+    return all(l["mode"] in ("WALK", "BICYCLE", "CAR") for l in route["legs"])
+
+
+def joined(there, on):
+    """A route to a place and one on from it as one route (through()); a walked one moved to fit the other."""
+    if walk_only(on):
+        on = shifted(on, epoch(there["end"]) - epoch(on["start"]))
+    elif walk_only(there):
+        there = shifted(there, epoch(on["start"]) - FIRST_LEAN - epoch(there["end"]))
+    ride = next((i for i, l in enumerate(on["legs"]) if l["mode"] not in ("WALK", "BICYCLE", "CAR")), len(on["legs"]))
+    lean = FIRST_LEAN if ride < len(on["legs"]) else 0
+    stay = epoch(on["start"]) - lean - epoch(there["end"])
+    return dict(on, start=there["start"], generalizedCost=there["generalizedCost"] + stay + on["generalizedCost"],
+                systemNotices=(there.get("systemNotices") or []) + (on.get("systemNotices") or []),
+                legs=there["legs"] + [moved(l, -lean) for l in on["legs"][:ride]] + on["legs"][ride:])
+
+
+def shifted(route, by):
+    """A planner's route by seconds later."""
+    later = lambda text: (datetime.datetime.fromisoformat(text) + datetime.timedelta(seconds=by)).isoformat()
+    return dict(route, start=later(route["start"]), end=later(route["end"]), legs=[moved(l, by) for l in route["legs"]])
+
+
+def moved(leg, by):
+    """A planner's leg by seconds later, as planned and as estimated."""
+    later = lambda text: (datetime.datetime.fromisoformat(text) + datetime.timedelta(seconds=by)).isoformat()
+    ends = {}
+    for k in ("start", "end"):
+        ends[k] = dict(leg[k], scheduledTime=later(leg[k]["scheduledTime"]))
+        if (leg[k].get("estimated") or {}).get("time"):
+            ends[k]["estimated"] = dict(leg[k]["estimated"], time=later(leg[k]["estimated"]["time"]))
+    return dict(leg, **ends)
 
 
 def on_platforms(node, start, end):
@@ -4599,10 +4696,8 @@ class Handler(BaseHTTPRequestHandler):
         if way == "l":
             when = last_way(when)
         # A trip from or to a train station starts or ends on its platforms.
-        at = (None, None)
-        if not via:
-            with ThreadPoolExecutor(2) as both:
-                at = tuple(both.map(station_at, (frm, to)))
+        with ThreadPoolExecutor(2) as both:
+            at = tuple(both.map(station_at, (frm, to)))
         window = {"l": LAST_WINDOW, "a": ARRIVE_WINDOW}.get(way)
         # Asked beside the routes list's own questions, to be ready when plan_answer() takes them.
         like, main_answer, dawning = None, Future(), None
@@ -4678,7 +4773,7 @@ class Handler(BaseHTTPRequestHandler):
                                      (lambda: earlier((), "PT%dM" % (wide // 60))) if way in "nd" and wide >= 600 else None,
                                      officially.result if officially else None,
                                      (lambda: ask_planner(plan_variables(frm, to, when, arrive, allowed, "main", via, DIRECT_WINDOW, (),
-                                                                         at, transfers=0))) if way in "nd" else None,
+                                                                         at, transfers=0))) if way in "nd" and not via else None,
                                      found_too if like or dawning else None, rested=rested if resting else None, off=off))
 
     def line(self, number, fresh, now):

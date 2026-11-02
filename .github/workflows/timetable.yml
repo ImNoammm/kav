@@ -1,0 +1,69 @@
+name: Timetable
+
+# Each night, the week Kav keeps on the phone: the seven days from today of the Ministry of Transport's timetable and
+# Tel Aviv's weekend lines, compiled by tools/export_web_bundle.py, its manifest signed with the key whose public half
+# the app pins (Timetable.KEY), and put on the "timetable" release, where the app downloads it at setup and after.
+on:
+  schedule:
+    # 01:30 in Israel in winter, 02:30 in summer: after the ministry's nightly feed.
+    - cron: '30 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: timetable
+
+jobs:
+  timetable:
+    runs-on: ubuntu-latest
+    env:
+      # The public half of the signing key, as the app pins it.
+      KEY: MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKjZO/hTPZFH6+Y3FvqhpfCm17I2Wl5Nwkg6X/dQp9MroYouUoX8O5W70MM0hpWSRBX7CEB8oH07xXUqDMi7UzA==
+    steps:
+      - uses: actions/checkout@v7
+
+      # Tel Aviv's weekend lines are in no ministry feed, and the city's site answers addresses abroad with a maintenance
+      # page: the Cloudflare Worker near Tel Aviv that Kav's server uses fetches them (NAIM_WORKER, "<address> <key>", as
+      # in server/otp/prepare.py), the city's own address after. Keep the last complete week if neither works.
+      - name: Feeds
+        env:
+          NAIM_WORKER: ${{ secrets.NAIM_WORKER }}
+        run: |
+          tools/fetch.sh
+          zipped() { python3 -c 'import sys, zipfile; sys.exit(not zipfile.is_zipfile(sys.argv[1]))' .cache/naim-gtfs.zip; }
+          set -- $NAIM_WORKER
+          { [ -n "${1:-}" ] && curl -sSfL --retry 3 -A kav-server -H "x-kav-key: ${2:-}" -o .cache/naim-gtfs.zip "$1" && zipped; } ||
+            { curl -sSfL --retry 3 -A kav-server -o .cache/naim-gtfs.zip https://opendatasource.tel-aviv.gov.il/OpenData_Ducaments/gtfs.zip && zipped; } ||
+            { echo "::error::Weekend feed unavailable; keeping the last published timetable"; exit 1; }
+
+      - name: Compile
+        env:
+          KAV_FROM: today
+          KAV_BBOX: national
+          KAV_REGION: il
+          KAV_MANIFEST: '1'
+          KAV_OUT: out
+        run: python3 tools/export_web_bundle.py
+
+      - name: Sign
+        env:
+          KAV_TIMETABLE_KEY: ${{ secrets.KAV_TIMETABLE_KEY }}
+        run: |
+          umask 077
+          trap 'rm -f key.pem' EXIT
+          printf '%s\n' "$KAV_TIMETABLE_KEY" > key.pem
+          openssl dgst -sha256 -sign key.pem out/manifest.json | base64 -w0 > out/manifest.json.sig
+          printf '%s' "$KEY" | base64 -d | openssl pkey -pubin -inform DER -out pub.pem
+          base64 -d out/manifest.json.sig > sig.der
+          openssl dgst -sha256 -verify pub.pem -signature sig.der out/manifest.json
+          cat out/manifest.json
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view timetable > /dev/null 2>&1 || gh release create timetable --latest=false --title "Timetable" \
+            --notes "The week of scheduled departures Kav downloads, built each night from the Ministry of Transport's timetable."
+          gh release upload timetable out/il.kav.gz out/manifest.json.sig out/manifest.json --clobber

@@ -77,7 +77,12 @@ private val hm get() = clockFormat()
 internal sealed class Step {
     abstract val focus: List<Pair<Double, Double>>
 
-    class Start(val label: String, val time: Long, override val focus: List<Pair<Double, Double>>) : Step()
+    class Start(
+        val label: String, val time: Long, override val focus: List<Pair<Double, Double>>,
+        // The first ride, when the trip starts at its stop with no walk to it, with its wait and leg: the card then names
+        // that stop, its number and platform, as a walk's card does.
+        val board: Transit.Leg? = null, val boardWait: Transit.Leg? = null, val boardLeg: Int = -1,
+    ) : Step()
     class Walk(
         val leg: Transit.Leg, val toStop: Int, val toRide: Transit.Leg?,
         override val focus: List<Pair<Double, Double>>,
@@ -159,6 +164,9 @@ internal fun buildSteps(trip: Transit.Itinerary, fromLabel: String, toLabel: Str
     }
     out.add(Step.Arrive(toLabel, trip.arr, all.lastOrNull { it.shape.isNotEmpty() }?.shape ?: whole,
         all.takeLastWhile { it.kind == Transit.LegKind.WALK }.flatMap { it.shape }))
+    (out.getOrNull(1) as? Step.Wait)?.let { first ->
+        out[0] = Step.Start(fromLabel, trip.dep, out[0].focus, first.ride, first.wait, first.legIndex)
+    }
     return out
 }
 
@@ -458,7 +466,17 @@ internal fun StepCard(
 ) {
     when (step) {
         is Step.Start -> Card(T("Start from", "התחלה מ-"), active) {
-            Text(step.label, style = K.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            val board = step.board
+            val stop = board?.let { r.stop(it.fromStop) }
+            if (board != null && stop != null) {
+                StopLine(
+                    stop.shown(), stop.code, legMode(board, r),
+                    platform = boardingChoice(board, step.boardWait, chosen[step.boardLeg] ?: 0).let { (ride, wait) -> r.platform(ride, wait) },
+                    stopId = board.fromStop,
+                    streetView = stop.point?.let { lookAt(it, board, r) },
+                )
+                Spacer(Modifier.height(K.gap2))
+            } else Text(step.label, style = K.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(T("Leave at ${hm.format(Date(step.time * 1000))}", "יציאה בשעה ${hm.format(Date(step.time * 1000))}"), fontSize = 12.sp, color = K.dim)
         }
 
@@ -504,19 +522,21 @@ internal fun StepCard(
         is Step.Wait -> {
             val options = Transit.boardingOptions(step.ride, step.wait)
             val pick = boardingIndex(chosen[step.legIndex] ?: 0, options.size)
-            // Once a line is picked, here or on the trip's page, the card is about waiting for it, the others a tap away.
-            var choosing by remember(step.legIndex) { mutableStateOf(false) }
-            val choice = options.size > 1 && (chosen[step.legIndex] == null || choosing)
+            val choice = options.size > 1
             Card(if (choice) T("Select a line", "בחרו קו") else T("Wait for", "המתנה ל-"), active) {
                 // Changing trains here: where the next one leaves from, on the card for waiting for it.
                 step.after?.let { trainChange(it, options[pick].first, options[pick].second, r) }?.let {
                     ChangeBlock(it)
                     Spacer(Modifier.height(K.gap3))
                 }
-                Column(Modifier.animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
+                // A train is paid at the station's gates, before its platform, so its payment comes first: under a list of
+                // trains to pick from it was out of sight.
+                if (pay != null && paidAtEntry(step.ride, r)) {
+                    pay(step.legIndex, options[pick].first)
+                    Spacer(Modifier.height(K.gap3))
+                }
                 options.forEachIndexed { index, (ride, wait) ->
-                    if (!choice && index != pick) return@forEachIndexed
-                    if (choice && index > 0) Spacer(Modifier.height(K.gap2))
+                    if (index > 0) Spacer(Modifier.height(K.gap2))
                     val picked = index == pick
                     Column(
                         Modifier.fillMaxWidth()
@@ -528,7 +548,6 @@ internal fun StepCard(
                                     .semantics { selected = picked }
                                     .clickable(role = Role.RadioButton) {
                                         onChoose(step.legIndex, index)
-                                        choosing = false
                                     }
                                     .padding(K.gap2)
                                 else Modifier,
@@ -551,13 +570,6 @@ internal fun StepCard(
                         }
                     }
                 }
-                if (!choice && options.size > 1) Text(
-                    T("Change line", "החלפת קו"), fontSize = 14.sp, color = K.accentInk,
-                    modifier = Modifier.clickable(role = Role.Button) { choosing = true }.padding(vertical = K.gap1),
-                )
-                }
-                // A train is paid at the station's gates, so its payment is here already, on reaching the station.
-                if (paidAtEntry(step.ride, r)) pay?.invoke(step.legIndex, options[pick].first)
             }
         }
 

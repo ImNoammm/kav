@@ -19,7 +19,7 @@ internal fun feedbackLink(ctx: Context, bug: Boolean): String =
             "version" to Updates.installedVersion(ctx),
             "android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
             "device" to deviceName(Build.MANUFACTURER.orEmpty(), Build.MODEL.orEmpty()),
-            "setup" to setupLine(KavLive.source, KavPlan.source, T.lang, StopNames.english),
+            "setup" to setupLine(KavLive.source, KavPlan.source, T.lang, StopNames.english, uk.noammm.kav.data.Schedules.source),
         ),
     )
     else issueLink("feature_request.yml", listOf("version" to Updates.installedVersion(ctx)))
@@ -37,9 +37,10 @@ internal fun deviceName(maker: String, model: String): String {
 }
 
 // In English, for whoever reads the issue: where live times and trips are set to come from, each its own choice.
-internal fun setupLine(live: Source, plan: Source, lang: Lang, englishNames: Boolean): String {
-    fun from(s: Source, server: String, own: String) = when (s) { Source.KAV -> server; Source.OWN -> own }
+internal fun setupLine(live: Source, plan: Source, lang: Lang, englishNames: Boolean, timetable: Source = Source.KAV): String {
+    fun from(s: Source, server: String, own: String) = when (s) { Source.KAV -> server; Source.OWN -> own; Source.BUS_NEARBY -> "Bus Nearby"; Source.EGG -> "EGG"; Source.MOOVIT -> "Moovit's website" }
     return "Live: ${from(live, "Kav's server", "own server")}. " +
         "Trips: ${from(plan, "Kav's planner", "own server's planner")}. " +
+        "Timetable: ${from(timetable, "Kav's week", "own server's week")}. " +
         "Language: ${if (lang == Lang.HE) "Hebrew" else "English"}, stop names in ${if (englishNames) "English" else "Hebrew"}."
 }

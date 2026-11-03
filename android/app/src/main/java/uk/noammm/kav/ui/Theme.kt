@@ -152,7 +152,7 @@ object KType {
 val TextStyle.tabular get() = copy(fontFeatureSettings = "tnum")
 
 object Shown {
-    var co2 by mutableStateOf(false)
+    val co2 = false
     var twelveHour by mutableStateOf(false)
     // Paying for rides: the home screen's card and a ride's. Off, Kav shows nothing of it.
     var payments by mutableStateOf(true)

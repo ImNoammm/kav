@@ -48,7 +48,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,11 +67,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 // Kav's controls, one of each: buttons, icon buttons, chips, a segmented control, grouped lists and their rows, section
 // and screen headers, cards, a sheet's header, one switch and a line's plate. Their sizes, shapes, type and colours all
@@ -241,22 +246,38 @@ fun KavChip(
     }
 }
 
-// One choice of a few that changes a view: equal segments in one capsule, the chosen one on an accent thumb that slides
-// to it, as a chosen chip is filled. Text only; five segments at most.
+// One choice of a few that changes a view: segments in one capsule, the chosen one on an accent thumb that slides to it,
+// as a chosen chip is filled. Up to three are equal; four or five (the providers) are each as wide as its name needs,
+// with the room left shared out evenly, so a long name (Bus Nearby) isn't squeezed. Text only; five segments at most.
 @Composable
 fun KavSegmented(
     options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier,
     // A segment that can't be chosen right now: greyed and not tappable, with the reason said beside the control.
     enabled: (Int) -> Boolean = { true },
 ) {
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val style = K.type.subhead
     BoxWithConstraints(modifier.fillMaxWidth().height(40.dp).clip(K.capsule).background(K.fill).padding(3.dp)) {
-        val each = maxWidth / options.size.coerceAtLeast(1)
-        val at by animateDpAsState(each * selected, spring(dampingRatio = 1f, stiffness = 500f), label = "thumb")
-        Box(Modifier.offset(x = at).width(each).fillMaxHeight().clip(K.capsule).background(K.accent))
+        val n = options.size.coerceAtLeast(1)
+        val widths = remember(options, maxWidth, style, density) {
+            if (n < 4) List(n) { maxWidth / n } else {
+                // As wide as the name when chosen, in its heavier weight.
+                val natural = options.map {
+                    with(density) { measurer.measure(it, style.copy(fontWeight = FontWeight.Medium)).size.width.toDp() } + 24.dp
+                }
+                val sum = natural.fold(0.dp) { a, b -> a + b }
+                if (sum <= maxWidth) natural.map { it + (maxWidth - sum) / n } else natural.map { it * (maxWidth / sum) }
+            }
+        }
+        val start = widths.take(selected.coerceIn(0, widths.size)).fold(0.dp) { a, b -> a + b }
+        val at by animateDpAsState(start, spring(dampingRatio = 1f, stiffness = 500f), label = "thumb")
+        val wide by animateDpAsState(widths.getOrElse(selected) { 0.dp }, spring(dampingRatio = 1f, stiffness = 500f), label = "thumbWidth")
+        Box(Modifier.offset(x = at).width(wide).fillMaxHeight().clip(K.capsule).background(K.accent))
         Row(Modifier.fillMaxSize()) {
             options.forEachIndexed { i, option ->
                 Box(
-                    Modifier.weight(1f).fillMaxHeight().clip(K.capsule)
+                    Modifier.width(widths.getOrElse(i) { 0.dp }).fillMaxHeight().clip(K.capsule)
                         .semantics { this.selected = i == selected }
                         .clickable(enabled = enabled(i), role = Role.Tab) { onSelect(i) },
                     contentAlignment = Alignment.Center,
@@ -269,9 +290,12 @@ fun KavSegmented(
                         },
                         tween(150), label = "segmentInk",
                     )
+                    // A label too long for its segment (five of them, in Hebrew) steps down in size until it fits.
+                    var size by remember(option) { mutableStateOf(K.type.subhead.fontSize) }
                     Text(
-                        option, style = K.type.subhead, maxLines = 1, color = ink,
+                        option, style = K.type.subhead.copy(fontSize = size), maxLines = 1, color = ink,
                         fontWeight = if (i == selected) FontWeight.Medium else null,
+                        onTextLayout = { if (it.hasVisualOverflow && size > 10.sp) size *= .92f },
                     )
                 }
             }
@@ -464,7 +488,8 @@ fun KavSwitch(on: Boolean, modifier: Modifier = Modifier) {
 }
 
 // A line's number on its plate: the mode's glyph and the number, on the mode's or operator's colour (linePlate) or
-// Kav's quiet fill. 44 dp wide at least, so plates in a column line up; dense: the smaller one, in a line of text.
+// Kav's quiet fill. 44 dp wide at least, so plates in a column line up; dense: the smaller one, in a line of text;
+// look: the badges' look, Settings' own unless a preview shows one going.
 @Composable
 fun LinePlateBadge(
     number: String?,
@@ -473,12 +498,13 @@ fun LinePlateBadge(
     modifier: Modifier = Modifier,
     dense: Boolean = false,
     glyph: (@Composable (ink: Color, size: Dp) -> Unit)? = null,
+    look: LineBadgeAppearance = K.lineBadgeAppearance,
 ) {
     val shape = RoundedCornerShape(K.rBadge)
     val ink = plate?.ink ?: K.text
     val mark = if (dense) 12.dp else 14.dp
     // The strip look, for buses when chosen in Settings: a grey plate over a strip of the operator's colour.
-    if (K.lineBadgeAppearance == LineBadgeAppearance.STRIP && mode == Mode.BUS) Column(
+    if (look == LineBadgeAppearance.STRIP && mode == Mode.BUS) Column(
         modifier
             .widthIn(min = 44.dp)
             .width(IntrinsicSize.Max)

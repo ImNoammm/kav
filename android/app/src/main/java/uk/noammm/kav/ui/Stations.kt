@@ -35,6 +35,7 @@ import uk.noammm.kav.data.Transit
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.LOCATION_PERMISSIONS
 import uk.noammm.kav.data.Net
+import uk.noammm.kav.data.Schedules
 import uk.noammm.kav.data.TrainName
 import uk.noammm.kav.data.TrainsToday
 import uk.noammm.kav.data.departuresAt
@@ -53,7 +54,7 @@ fun StationsScreen(model: KavModel) {
 
 @Composable
 private fun StationsBody(model: KavModel, net: Net) {
-    androidx.activity.compose.BackHandler(model.stationStop >= 0) { model.stationStop = -1 }
+    androidx.activity.compose.BackHandler(model.stationStop >= 0) { model.backFromStation() }
     val list = remember(net) { StationListState() }
     androidx.compose.animation.AnimatedContent(
         targetState = model.stationStop,
@@ -61,7 +62,7 @@ private fun StationsBody(model: KavModel, net: Net) {
         transitionSpec = { if (targetState >= 0) forward() else backward() },
         label = "station",
     ) { stop ->
-        if (stop >= 0) DepartureBoard(model, net, stop) { model.stationStop = -1 }
+        if (stop >= 0) DepartureBoard(model, net, stop) { model.backFromStation() }
         else StationList(model, net, list)
     }
 }
@@ -107,12 +108,15 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
             }
         }
     }
-    val yoursLive = remember(net) { mutableStateMapOf<Int, List<LiveAt>>() }
+    val yoursLive = remember(net, KavLive.origin) { mutableStateMapOf<Int, List<LiveAt>>() }
+    // A provider's day at each, asked once a day while it's the timetable picked.
+    val today = Schedules.today()
+    val yoursDays = remember(net, Schedules.source, today) { mutableStateMapOf<Int, ScheduleDay>() }
     // As on a stop's board, the rows' clock moves on with the live times asked for it.
     var shownAt by remember { mutableIntStateOf(t0) }
     // Shown only while nothing is searched for.
     val listing = q.isBlank()
-    LaunchedEffect(yours, t0, listing) {
+    LaunchedEffect(yours, t0, listing, KavLive.origin) {
         if (!listing) return@LaunchedEffect
         // From Kav's server, one question for them all.
         val board = runCatching {
@@ -124,6 +128,13 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
             stopLive(net, s, board)?.let { yoursLive[s] = it.first }
         }
         shownAt = t0
+    }
+    LaunchedEffect(yours, listing, Schedules.source, today) {
+        if (!listing || !Schedules.boards) return@LaunchedEffect
+        for (s in yours) {
+            val code = net.code.getOrElse(s) { 0 }
+            if (code > 0 && s !in yoursDays) yoursDays[s] = scheduleDay(ctx, code)
+        }
     }
 
     var hits by list::hits
@@ -167,7 +178,8 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
                     itemsIndexed(yours, key = { _, s -> "saved-$s" }) { i, s ->
                         SavedStopRow(
                             net, s, yoursLive[s].orEmpty(), shownAt, model.lineAlerts.filter { it.stop == net.stopKey(s) },
-                            first = i == 0, last = i == yours.lastIndex,
+                            first = i == 0, last = i == yours.lastIndex, day = yoursDays[s],
+                            asking = Schedules.boards && net.code.getOrElse(s) { 0 } > 0,
                         ) { model.stationStop = s }
                     }
                 }
@@ -229,18 +241,33 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
             }
         }
     }
-    var live by remember(stop) { mutableStateOf<List<LiveAt>>(emptyList()) }
+    var live by remember(stop, KavLive.origin) { mutableStateOf<List<LiveAt>>(emptyList()) }
     // At a train station, what the live source says of the timetable's trains today: where some end early. The
     // ministry's answers can leave out a train that runs, so Kav's own server never says one doesn't.
-    var trains by remember(stop) { mutableStateOf(TrainsToday()) }
+    var trains by remember(stop, KavLive.origin) { mutableStateOf(TrainsToday()) }
     // The clock the rows are drawn at moves on with the live times asked for it, so each refresh lands at once: ahead of
     // them, a bus due now would leave the board and come back with them.
     var shownAt by remember(stop) { mutableIntStateOf(t0) }
-    LaunchedEffect(stop, t0) {
+    LaunchedEffect(stop, t0, KavLive.origin) {
         stopLive(net, stop)?.let { (l, t) -> live = l; trains = t }
         shownAt = t0
     }
-    val rows = remember(stop, shownAt, live) { boardRows(net, stop, shownAt, live, 60) }
+    // A provider's timetable: its day at this stop, today's and tomorrow's, in place of the week's; the week's rows,
+    // and why, when it can't be asked.
+    val ctx = LocalContext.current
+    val code = net.code.getOrElse(stop) { 0 }
+    val asking = Schedules.boards && code > 0
+    val today = Schedules.today()
+    var day by remember(stop, Schedules.source, today) { mutableStateOf<ScheduleDay?>(null) }
+    LaunchedEffect(stop, Schedules.source, today) { if (asking) day = scheduleDay(ctx, code) }
+    val rows = remember(stop, shownAt, live, day, asking) {
+        val provided = day?.departures
+        when {
+            provided != null -> scheduleRows(provided, day!!.midnight, shownAt, live, 60)
+            asking && day == null -> emptyList()
+            else -> boardRows(net, stop, shownAt, live, 60)
+        }
+    }
 
     var alerting by remember(stop) { mutableStateOf(false) }
     val alertable = remember(stop) { net.linesAt(stop).isNotEmpty() || net.endsAt(stop).isNotEmpty() }
@@ -298,7 +325,16 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
             }
         }
         Spacer(Modifier.height(K.gap3))
-        if (rows.isEmpty()) {
+        val provider = sourceName(Schedules.source)
+        when {
+            asking && day == null ->
+                NoteCard(T("Loading the times from $provider", "טוענים את הזמנים מ$provider"), Modifier.padding(horizontal = K.gap4, vertical = K.gap2))
+            asking && day?.departures == null -> NoteCard(T(
+                "$provider isn't answering. These times are from the timetable on your phone.",
+                "$provider לא עונה. הזמנים האלה מלוח הזמנים שבטלפון.",
+            ), Modifier.padding(horizontal = K.gap4, vertical = K.gap2))
+        }
+        if (rows.isEmpty() && !(asking && day == null)) {
             NoteCard(T("Nothing more today or tomorrow.", "אין עוד יציאות היום או מחר."), Modifier.padding(horizontal = K.gap4, vertical = K.gap4))
         }
         val lines = remember(rows, trains, T.lang) { rows.map { boardLine(net, it, live, trains, shownAt) } }
@@ -329,10 +365,11 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                 }
                 item(key = keys[i]) {
                     BoardLineRow(net, l, columns, Modifier.animateItem(boardFadeIn, boardGlide, boardFadeOut)) {
-                        // The line itself, open at this stop, as the Lines tab shows it.
-                        model.lineFocusStop = stop
-                        model.lineRoute = l.route
-                        model.tab = uk.noammm.kav.Tab.Lines
+                        // The line itself, open at this stop, as the Lines tab shows it: the provider's own when it's
+                        // the timetable picked.
+                        val line = l.line
+                        if (line != null) model.openSchedule(line, code)
+                        else openTimetableLine(model, l.route, stop)
                     }
                 }
             }
@@ -344,10 +381,11 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
 
 // A board row as it's shown, worked out before it's drawn so every row can share one width per column. own (a live bus
 // or train the timetable has no trip for, as Kav's server names it) opens no line. note: why a train isn't coming.
+// line: the provider's line a provider's departure opens.
 private class BoardLine(
     val route: Int, val label: String?, val type: Int, val agency: Int, val to: String, val platform: String,
     val time: String, val live: Transit.Departure?, val note: String?, val cancelled: Boolean, val tomorrow: Boolean,
-    val opens: Boolean, val key: String,
+    val opens: Boolean, val key: String, val line: Schedules.Line? = null,
 )
 
 private fun boardLine(net: Net, row: BoardRow, live: List<LiveAt>, trains: TrainsToday, t0: Int): BoardLine {
@@ -355,9 +393,17 @@ private fun boardLine(net: Net, row: BoardRow, live: List<LiveAt>, trains: Train
     val soon = relative(shown, t0)
     val time = soon ?: hhmm(shown)
     val tomorrow = soon == null && shown >= 86_400
+    row.sched?.let { d ->
+        val at = row.liveAt
+        return BoardLine(
+            -1, d.number, d.line.type, -1, net.shown(at?.to ?: d.to), at?.platform?.ifEmpty { null } ?: d.platform, time,
+            at?.dep, null, false, tomorrow, opens = true, key = "sched:${d.line.id}:${d.number}:${d.at}", line = d.line,
+        )
+    }
+    // Beside a provider's departures, also a live bus on the week's trip that none of them is.
     if (own != null) return BoardLine(
-        -1, own.number, own.type, own.agency, net.shown(own.to.orEmpty()), own.platform, time, own.dep, null, false,
-        tomorrow, opens = false, key = "own:${own.number}:${own.dep.tripId}:${own.static}",
+        -1, own.number, own.type, own.agency, net.shown(own.to ?: own.trip.takeIf { it >= 0 }?.let { net.name[net.tripLast(it)] }.orEmpty()),
+        own.platform, time, own.dep, null, false, tomorrow, opens = false, key = "own:${own.number}:${own.dep.tripId}:${own.static}",
     )
     val t = net.tripOf(net.cST[c])
     val route = net.tripRoute[t]
@@ -426,7 +472,7 @@ private fun BoardLineRow(net: Net, l: BoardLine, columns: BoardColumns, modifier
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap3),
     ) {
-        LineBadge(net, l.route, Modifier.widthIn(min = columns.plate), label = l.label, type = l.type, agency = l.agency)
+        LineBadge(net, l.route, Modifier.widthIn(min = columns.plate), label = l.label, type = l.type, agency = l.agency, operator = l.line?.operator)
         Column(Modifier.weight(1f)) {
             Text(
                 l.to, style = K.type.body, color = if (l.note != null) K.textTertiary else K.text,
@@ -504,8 +550,11 @@ private fun List<LiveAt>.at(net: Net, trip: Int, dep: Int): LiveAt? = firstOrNul
 }
 
 // A row of a stop's board: the timetable's connection c, its own time and the time shown, the live one where there is
-// one; or (own) a live bus or train the timetable has no trip for, c -1, at its live time.
-private data class BoardRow(val c: Int, val dep: Int, val shown: Int, val own: LiveAt? = null)
+// one; or (own) a live bus or train the timetable has no trip for, c -1, at its live time; or (sched) a departure from
+// the timetable's provider, c -1, with the live time of the bus it is (liveAt).
+private data class BoardRow(
+    val c: Int, val dep: Int, val shown: Int, val own: LiveAt? = null, val sched: Schedules.Departure? = null, val liveAt: LiveAt? = null,
+)
 
 // A stop's next departures from t0 (seconds of the day), soonest first by the time shown. From half an hour back: a
 // late bus or train is still to come after its timetabled time.
@@ -517,13 +566,46 @@ private fun boardRows(net: Net, stop: Int, t0: Int, live: List<LiveAt>, limit: I
         .filter { it.shown >= t0 }.sortedBy { it.shown }.take(limit)
 }
 
+// Today's and tomorrow's departures at a stop from the timetable's provider (Schedules), from midnight today;
+// departures null when it couldn't be asked.
+private class ScheduleDay(val departures: List<Schedules.Departure>?, val midnight: Long)
+
+private suspend fun scheduleDay(ctx: android.content.Context, code: Int): ScheduleDay {
+    val today = Schedules.today()
+    val departures = try {
+        withContext(Dispatchers.IO) { Schedules.departures(ctx, code, today) + Schedules.departures(ctx, code, today.plusDays(1)) }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+    return ScheduleDay(departures, Schedules.start(today))
+}
+
+// A stop's next departures from its provider's day, as boardRows has the week's: each with the live time of the same
+// number's bus about then, and the live buses none of them is at their live times.
+private fun scheduleRows(deps: List<Schedules.Departure>, midnight: Long, t0: Int, live: List<LiveAt>, limit: Int): List<BoardRow> {
+    val used = HashSet<LiveAt>()
+    val rows = deps.mapNotNull { d ->
+        val dep = (d.at - midnight).toInt()
+        if (dep < t0 - 1800) return@mapNotNull null
+        val at = live.firstOrNull { it !in used && it.number == d.number && kotlin.math.abs(it.static - dep) <= 120 }?.also { used.add(it) }
+        BoardRow(-1, dep, at?.rt ?: dep, sched = d, liveAt = at)
+    }
+    return (rows + live.filter { it !in used }.map { BoardRow(-1, it.rt, it.rt, it) })
+        .filter { it.shown >= t0 }.sortedBy { it.shown }.take(limit)
+}
+
 // A saved stop: its next three departures, live ones coloured as on its board, and its line alerts.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SavedStopRow(
-    net: Net, stop: Int, live: List<LiveAt>, t0: Int, alerts: List<LineAlert>, first: Boolean, last: Boolean, onClick: () -> Unit,
+    net: Net, stop: Int, live: List<LiveAt>, t0: Int, alerts: List<LineAlert>, first: Boolean, last: Boolean,
+    day: ScheduleDay? = null, asking: Boolean = false, onClick: () -> Unit,
 ) {
-    val rows = remember(stop, t0, live) { boardRows(net, stop, t0, live, 3) }
+    val rows = remember(stop, t0, live, day) {
+        day?.departures?.let { scheduleRows(it, day.midnight, t0, live, 3) } ?: boardRows(net, stop, t0, live, 3)
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -540,12 +622,23 @@ private fun SavedStopRow(
             }
         }
         Spacer(Modifier.height(K.gap2))
-        if (rows.isEmpty()) Text(T("Nothing more today or tomorrow", "אין עוד יציאות היום או מחר"), style = K.type.subhead)
+        if (asking && day == null) Text(T("Checking times…", "בודקים זמנים…"), style = K.type.subhead)
+        else if (rows.isEmpty()) Text(T("Nothing more today or tomorrow", "אין עוד יציאות היום או מחר"), style = K.type.subhead)
         else FlowRow(horizontalArrangement = Arrangement.spacedBy(K.gap3), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
             // Each departure keeps its place as the times change: its time rolls, and when one ahead of it goes, it
             // glides along.
-            rows.forEach { (c, dep, shown, own) -> key(if (own != null) "own:${own.number}:${own.dep.tripId}" else "$c:$dep") {
-                if (own != null) {
+            rows.forEach { row -> val (c, dep, shown, own) = row; val d = row.sched
+                key(if (d != null) "sched:${d.line.id}:${d.number}:${d.at}" else if (own != null) "own:${own.number}:${own.dep.tripId}" else "$c:$dep") {
+                if (d != null) {
+                    Row(Modifier.glide(), verticalAlignment = Alignment.CenterVertically) {
+                        LineBadge(net, -1, label = d.number, type = d.line.type, operator = d.line.operator, dense = true)
+                        Spacer(Modifier.width(6.dp))
+                        LiveText(
+                            relative(shown, t0) ?: hhmm(shown), style = K.type.subhead.tabular,
+                            color = row.liveAt?.let { depColour(it.dep) } ?: K.scheduled, maxLines = 1,
+                        )
+                    }
+                } else if (own != null) {
                     Row(Modifier.glide(), verticalAlignment = Alignment.CenterVertically) {
                         LineBadge(net, -1, label = own.number, type = own.type, agency = own.agency, dense = true)
                         Spacer(Modifier.width(6.dp))

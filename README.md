@@ -8,13 +8,6 @@
   Public transport in Israel, without the ads, the account or the tracking.
 </p>
 
-<h2 align="center">
-  Moovit sent me a cease and desist, so I took the old versions down.<br>
-  Kav isn't stopping, it's going harder: the next version, with nothing from
-  Moovit in it, is coming in the next few days. It's mostly ready and just
-  needs a few small fixes to the planner.
-</h2>
-
 <p align="center">
   <a href="https://github.com/ImNoammm/kav/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ImNoammm/kav?label=release&color=9ABEFF"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white">
@@ -43,7 +36,7 @@ you're on the way.
   floating window.
 - Shows where your bus actually is. The trip stays in the notification shade
   while you're on the way, and on Android 16 it shows up as a live update.
-- Live bus locations on the map, free. They come from Kav's own server
+- Live bus locations on the map, free. With Kav selected, they come from its server
   ([server/](server)), which takes them straight from the Ministry of
   Transport's real-time feed, and it plans your trips too, on the ministry's
   timetable with OpenTripPlanner. It only learns the lines, stops or rough area
@@ -53,6 +46,11 @@ you're on the way.
   position.
 - Departure boards for every station, and a page for every line with its route
   on a map, its stops and its buses on the road.
+- Separate choices for trip planning, live locations and timetables. Pick
+  He who shall not be named's public website, Bus Nearby, EGG, Kav or your own server for planning
+  and timetables; live locations have the same choices except Moovit. External
+  providers receive the requests you make to them and your IP address. The
+  timetable kept on the phone remains available without signal.
 - OLED black, light and dark, with liquid glass or solid bars.
 - Favourite places on the home screen, and backups of your places and settings
   to a `.kav` file.
@@ -68,7 +66,7 @@ you're on the way.
 
 ## Getting it
 
-Once the next version is out, grab the APK from
+Grab the APK from
 [Releases](https://github.com/ImNoammm/kav/releases) and open it. It updates
 itself from the same page. No store, no update service.
 
@@ -76,12 +74,13 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-3.2.apk --repo ImNoammm/kav
+gh attestation verify kav-3.2-nightly.apk --repo ImNoammm/kav
 ```
 
-First launch fetches the map, about 176 MB once. It lives on the phone from then
-on, so the map works offline and no tile server sees where you look. The
-satellite map you can pick in Settings loads online.
+Setup downloads the map (about 176 MB once) and timetable (about 6 MB) from
+GitHub. Both stay on the phone for offline use. GitHub builds the timetable
+nightly, and Kav checks for it in the background. Daily updates can be turned
+off in Settings. The satellite map loads online.
 
 ## Building it
 
@@ -93,16 +92,18 @@ tools/android_toolchain.sh
 tools/android_build.sh :app:assembleRelease
 ```
 
-The timetable isn't in the repo. The Ministry of Transport publishes its GTFS
-feed with no licence attached, so build it yourself:
+The APK contains no timetable. The nightly [workflow](.github/workflows/timetable.yml)
+compiles the Ministry of Transport's feed and Tel Aviv's weekend lines, signs
+the manifest with `KAV_TIMETABLE_KEY`, and publishes the download to the
+`timetable` release. To compile a local copy:
 
 ```sh
 tools/fetch.sh
-KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
+KAV_FROM=today KAV_REGION=il KAV_BBOX=national KAV_MANIFEST=1 python3 tools/export_web_bundle.py
 ```
 
-A build of your own needs a server of your own for live buses and trips
-(below): Kav's server only answers the APKs from Releases.
+To use Kav as the live or planning provider in a build of your own, you need
+your own server (below): Kav's server only answers the APKs from Releases.
 
 ## Running your own server
 

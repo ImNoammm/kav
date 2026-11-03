@@ -3,6 +3,12 @@ package uk.noammm.kav.data
 // Trips past midnight are written as 24:00 and later, so last night's run of one can still be to come.
 // Tomorrow's trips follow today's, so a board opened late at night isn't empty.
 fun Net.departuresAt(stop: Int, now: Int, today: Int, limit: Int = 60): List<Pair<Int, Int>> {
+    // Providers name the whole station by its code. Its unnumbered stop may have no trips: those leave from the
+    // platforms sharing that code. A specific platform still gets only its own departures.
+    if (code[stop] > 0 && platform[stop].isEmpty() && dStart[stop] == dStart[stop + 1]) {
+        return code.indices.filter { code[it] == code[stop] && dStart[it] < dStart[it + 1] }
+            .flatMap { departuresAt(it, now, today, limit) }.sortedBy { it.second }.take(limit)
+    }
     val yesterday = (today + 6) % 7
     val tomorrow = (today + 1) % 7
     val out = ArrayList<Pair<Int, Int>>()
@@ -19,24 +25,6 @@ fun Net.departuresAt(stop: Int, now: Int, today: Int, limit: Int = 60): List<Pai
     }
     return out.sortedBy { it.second }.take(limit)
 }
-
-// A line's departures from one stop that go on to reach another, soonest first from second now of the board's day
-// today (Sunday 0) and within the next four hours, at most limit: the stop time each leaves from and when. from and to are every stop with the codes
-// the ride is boarded and left at, as a station's platforms share one. number: the line's; null for any train, each of
-// whose runs is a route of its own.
-fun Net.lineDepartures(from: Set<Int>, to: Set<Int>, number: String?, now: Int, today: Int, limit: Int = 4): List<Pair<Int, Int>> =
-    from.flatMap { departuresAt(it, now, today, limit = 240) }
-        .map { (c, dep) -> cST[c] to dep }
-        .filter { (st, _) ->
-            val t = tripOf(st)
-            val route = tripRoute[t]
-            (if (number == null) rType[route] == 2 else rShort[route] == number) &&
-                (st + 1 until tripStart[t + 1]).any { stStop[it] in to }
-        }
-        .filter { (_, dep) -> dep - now <= 4 * 3600 }
-        .distinctBy { (st, dep) -> tripOf(st) to dep }
-        .sortedBy { it.second }
-        .take(limit)
 
 // A train on a station's board as a live source names it: the timetable trip that is its row, and where it really
 // ends when that's a station before the timetable's last, as when works end a night's trains early.

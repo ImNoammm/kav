@@ -184,13 +184,14 @@ fun DrawScope.drawWalker(tint: Color) {
 }
 
 // label: a train's number, which the timetable doesn't keep, where a live source has given it. type: the mode of a
-// line the timetable hasn't, as the live source has it, and agency its operator, by the ministry's id.
+// line the timetable hasn't, as the live source has it, and agency its operator, by the ministry's id, or operator, by
+// its name (a timetable provider's line).
 @Composable
 fun LineBadge(
     net: Net, route: Int, modifier: Modifier = Modifier, label: String? = null, type: Int = net.rType.getOrElse(route) { 3 },
-    agency: Int = -1, dense: Boolean = false,
+    agency: Int = -1, dense: Boolean = false, operator: String? = null,
 ) {
-    val plate = linePlate(type, -1) { Operators.of(net, route) ?: Operators.ofGtfs(agency) }
+    val plate = linePlate(type, -1) { Operators.of(net, route) ?: Operators.ofGtfs(agency) ?: Operators.ofName(operator) }
     LinePlateBadge(label?.ifBlank { null } ?: net.rShort.getOrElse(route) { "" }, modeOf(type), plate, modifier, dense)
 }
 

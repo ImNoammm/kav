@@ -22,9 +22,8 @@ import uk.noammm.kav.data.SignedFile
 import uk.noammm.kav.data.Updates
 import uk.noammm.kav.ui.UpdateRun
 
-// Everything Kav asks GitHub for by itself (Vela's recipe, the newest release, an update to download) is asked here,
-// when Android runs it about every six hours and never while Kav is open or in the half hour after, so the requests
-// say nothing about when anyone uses Kav.
+// Background GitHub checks run about every six hours, never while Kav is open or for
+// half an hour after, so requests don't reveal when someone uses the app.
 class Checks : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
         val app = applicationContext
@@ -82,6 +81,7 @@ class Checks : JobService() {
         private fun run(ctx: Context) {
             if (inFront(ctx)) return
             runCatching { GoogleRecipe.refresh(ctx) }.onFailure { Log.w("KavChecks", "vela", it) }
+            runCatching { uk.noammm.kav.data.Timetable.refresh(ctx) }.onFailure { Log.w("KavChecks", "timetable", it) }
             val auto = Prefs.autoUpdate(ctx)
             if (!auto && !Prefs.updatePrompts(ctx)) return
             runCatching {

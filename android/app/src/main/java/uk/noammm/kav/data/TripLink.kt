@@ -1,15 +1,20 @@
 package uk.noammm.kav.data
 
 import java.net.URI
+import java.net.HttpURLConnection
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 
-// Links that open a trip in Kav: Kav's own (tripLink), geo: links, and points typed or pasted as text.
+// Links that open a trip in Kav: Kav's own (tripLink), trips shared from Bus Nearby, egg and Moovit, geo: links, and
+// points typed or pasted as text.
 object TripLink {
     const val HOST = "kav.noammm.uk"
 
     class Ride(val lineId: Int, val tripId: Long, val depSec: Long)
+
+    // A trip another app shared by its id there, which that app's own servers turn back into the trip (resolve).
+    class Shared(val source: Source, val id: String)
 
     class Plan(
         val fromName: String?, val fromLat: Double?, val fromLon: Double?,
@@ -17,12 +22,117 @@ object TripLink {
         val departMs: Long,
         val autoRun: Boolean,
         val rides: List<Ride> = emptyList(),
+        val shared: Shared? = null,
+        val exact: KavPlan.Planned? = null,
     )
+
+    // A shared trip its app no longer has.
+    class Expired : java.io.IOException("This shared trip is no longer available")
 
     fun parse(url: String?): Plan? {
         if (url.isNullOrBlank() || url.length > 16_384) return null
         val trimmed = url.trim()
-        return if (trimmed.startsWith("geo:", ignoreCase = true)) geo(trimmed.substring(4)) else kav(trimmed)
+        return if (trimmed.startsWith("geo:", ignoreCase = true)) geo(trimmed.substring(4)) else kav(trimmed) ?: other(trimmed)
+    }
+
+    // The first link in a text shared to Kav that opens a trip: the other apps share theirs inside a message.
+    fun inText(text: String?): Plan? = text?.let { Regex("(?:https?|moovit|busnearby|egged)://[^\\s<>\"']+").findAll(it) }
+        ?.firstNotNullOfOrNull { parse(it.value.trimEnd('.', ',', ')', '!', '?')) }
+
+    // The trip a shared link names, from the app that shared it, asked as that app opens its own link.
+    fun resolve(s: Shared): Plan = when {
+        s.id.startsWith("https://") -> resolveShort(s.id)
+        s.source.hopOn -> BusNearby.shared(s.id, s.source)
+        s.source == Source.MOOVIT -> MoovitWeb.shared(s.id)
+        else -> throw IllegalArgumentException("${s.source.key} shares no trips")
+    }
+
+    // seen: every address asked on the way, across short links that lead to others, so two pages naming each other end.
+    private fun resolveShort(url: String, seen: MutableSet<String> = HashSet()): Plan {
+        var next = url
+        fun open(p: Plan): Plan = p.shared?.let { s -> if (s.id.startsWith("https://")) resolveShort(s.id, seen) else resolve(s) } ?: p
+        for (attempt in 0 until 5) {
+            if (!seen.add(next)) throw java.io.IOException("Shared link redirects in a loop")
+            if (seen.size > 8) throw java.io.IOException("Too many shared link redirects")
+            val connection = (URI(next).toURL().openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                connectTimeout = 5_000; readTimeout = 10_000
+            }
+            try {
+                val location = connection.getHeaderField("Location")
+                if (connection.responseCode in 300..399 && location != null) {
+                    next = URI(next).resolve(location).toString()
+                    parse(next)?.let { if (it.shared?.id != next) return open(it) }
+                    continue
+                }
+                if (connection.responseCode != 200) throw java.io.IOException("Shared link HTTP ${connection.responseCode}")
+                val page = connection.inputStream.bufferedReader().use { reader ->
+                    val text = StringBuilder()
+                    val buffer = CharArray(4096)
+                    while (text.length < 262_144) {
+                        val n = reader.read(buffer, 0, minOf(buffer.size, 262_144 - text.length))
+                        if (n < 0) break
+                        text.append(buffer, 0, n)
+                    }
+                    text.toString()
+                }
+                    .replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&")
+                for (match in Regex("(?:https?://|moovit://|busnearby://|egged://|intent://)[^\\s\\\"'<>\\\\]+")
+                    .findAll(page)) {
+                    val link = if (match.value.startsWith("intent://") && ";scheme=moovit;" in match.value)
+                        "moovit://" + match.value.removePrefix("intent://").substringBefore("#Intent") else match.value
+                    parse(link)?.let { if (it.shared?.id != next) return open(it) }
+                }
+                throw java.io.IOException("Shared page contains no trip")
+            } finally { connection.disconnect() }
+        }
+        throw java.io.IOException("Too many shared link redirects")
+    }
+
+    // Bus Nearby's and egg's: HopOn's itinerary id after "itinerary" in a link on their hosts (busnear.by,
+    // busnearby.co.il, egg.hopon.co) or app schemes, where their own apps look for it. Moovit's: an itinerary's id after
+    // /i/ (moovitapp.com/i/<id>, which its site sends on to /tripplan/i/<id>, or moovit://i/<id>), or an older
+    // directions link with the trip's ends in it.
+    private fun other(url: String): Plan? {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        if (uri.userInfo != null || uri.port != -1) return null
+        val scheme = uri.scheme?.lowercase(Locale.US) ?: return null
+        val host = uri.host?.lowercase(Locale.US).orEmpty()
+        val web = scheme == "https" || scheme == "http"
+        // An app scheme's first part is its host: busnearby://itinerary/<id>.
+        val parts = (if (web) emptyList() else listOf(host)) + uri.rawPath.orEmpty().split('/').filter { it.isNotEmpty() }
+            .map { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
+        fun shared(source: Source, id: String?) = id?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,160}")) }
+            ?.let { Plan(null, null, null, null, null, null, 0L, autoRun = true, shared = Shared(source, it)) }
+        val hopOn = when {
+            web && (host == "busnear.by" || host == "busnearby.co.il" || host.endsWith(".busnearby.co.il")) || scheme == "busnearby" -> Source.BUS_NEARBY
+            web && host == "egg.hopon.co" || scheme == "egged" -> Source.EGG
+            else -> null
+        }
+        if (hopOn != null) return if (web && host == "busnear.by")
+            Plan(null, null, null, null, null, null, 0L, true, shared = Shared(hopOn, url))
+        else shared(hopOn, parts.indexOf("itinerary").takeIf { it >= 0 }?.let { parts.getOrNull(it + 1) })
+        if (web && host == "moovit.onelink.me") {
+            val p = parameters(uri.rawQuery.orEmpty())
+            for (key in listOf("deep_link_value", "af_dp", "link", "af_android_url", "af_web_dp"))
+                parse(p[key])?.let { return it }
+            return Plan(null, null, null, null, null, null, 0L, true, shared = Shared(Source.MOOVIT, url))
+        }
+        if (!(web && (host == "moovitapp.com" || host == "www.moovitapp.com") || scheme == "moovit")) return null
+        when {
+            parts.firstOrNull() == "i" -> return shared(Source.MOOVIT, parts.getOrNull(1))
+            web && parts.take(2) == listOf("tripplan", "i") -> return shared(Source.MOOVIT, parts.getOrNull(2))
+            parts != listOf("directions") -> return null
+        }
+        val p = parameters(uri.rawQuery.orEmpty())
+        val to = point("${p["dest_lat"]},${p["dest_lon"]}")
+        val toName = p["dest_name"]?.takeIf { it.isNotBlank() }
+        if (to == null && toName == null) return null
+        val from = point("${p["orig_lat"]},${p["orig_lon"]}")
+        return Plan(
+            p["orig_name"]?.takeIf { it.isNotBlank() }, from?.first, from?.second, toName, to?.first, to?.second,
+            departMs = p["date"]?.toLongOrNull()?.takeIf { it > 0 } ?: 0L, autoRun = p["auto_run"] != "false" && p["auto_run"] != "0",
+        )
     }
 
     // A trip shared from Kav: https://kav.noammm.uk/t/ with what was shared after the #, which a browser never sends,

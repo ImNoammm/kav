@@ -9,10 +9,9 @@ import org.json.JSONObject
 import uk.noammm.kav.ui.T
 import java.util.Locale
 
-// Trips planned on Kav's own server (server/live.py, OpenTripPlanner on the ministry's timetable), or the rider's own
-// copy of it. The answer becomes the routes and details the screens show (Transit): stops, lines and operators get ids
-// from BASE up, trips the negative ids KavLive gives the ministry's journeys. Their live times come from wherever live
-// locations do, which is a choice of its own.
+// Normalizes provider plans into Transit. Ministry stop, line and operator ids start at BASE;
+// journeys use KavLive's negative ids. MoovitWeb retains its provider ids.
+// Live times come from the independently selected live provider.
 object KavPlan {
     private const val BASE = 2_000_000_000
     private const val PREFS = "kav-plan"
@@ -33,9 +32,12 @@ object KavPlan {
 
     fun agencyName(agencyId: Int): String? = operators[agencyId]
 
-    // Who plans trips: Kav's server or the rider's own (KavLive.ownServer, the one live locations can use too). Any
-    // other stored choice plans on Kav's server.
-    var source by mutableStateOf(Source.KAV)
+    // Another planner's operator (Moovit's own ids, which never reach BASE), kept with these.
+    internal fun keepOperator(agencyId: Int, name: String) { operators[agencyId] = name }
+
+    // Who plans trips, independently of live locations: Moovit's website until the settings are read. Unknown stored
+    // choices use the old preference migration.
+    var source by mutableStateOf(Source.MOOVIT)
 
     // The server chosen to plan: Kav's, or the rider's own once it's set up (Kav's until then).
     val server: String get() = KavLive.serverOf(source)
@@ -51,11 +53,17 @@ object KavPlan {
     fun planner(): String? = server.takeIf { up && offered }
     fun wanted(): Boolean = planner() != null
 
-    // A shared trip Kav planned only a Kav planner finds again, whichever plans now: the one chosen, else the server
-    // live locations come from.
-    fun linkPlanner(): String? = planner() ?: KavLive.server.takeIf { KavLive.enabled }
+    // A shared trip Kav planned only a Kav planner finds again, whichever plans now: the one chosen, else the server live
+    // locations come from when that's Kav's or the rider's own. Never a provider for what it wasn't chosen for: Moovit's
+    // website, which knows none of Kav's rides, plans such a link the same way at the same time.
+    fun linkPlanner(): String? =
+        planner() ?: KavLive.server.takeIf { KavLive.enabled && !KavLive.source.provider && source != Source.MOOVIT }
 
     fun owns(trip: Transit.Itinerary): Boolean = trip.guid.startsWith("kav-")
+
+    // Whether a route takes live times from where live locations come from: Kav's planner's, and Moovit's from its
+    // website, by their stops' codes and lines' numbers. Routes an older Kav kept from Moovit's app stay as they were.
+    fun timed(trip: Transit.Itinerary): Boolean = owns(trip) || MoovitWeb.owns(trip)
 
     // A shared link that names Kav's own rides, which only Kav's planner can find again.
     fun owns(rides: List<TripLink.Ride>): Boolean = rides.isNotEmpty() && rides.all { it.lineId >= BASE }
@@ -108,7 +116,11 @@ object KavPlan {
         from: Pair<Double, Double>, to: Pair<Double, Double>, whenMs: Long, timeType: Int, routeTypes: List<Int>, taxi: Boolean,
         stopovers: List<Transit.Place> = emptyList(), at: String,
     ): Planned {
-        val planned = parse(asked(path(from, to, whenMs, timeType, routeTypes, taxi, stopovers.map { it.lat to it.lon }), at))
+        val planned = when (at) {
+            MoovitWeb.SERVER -> MoovitWeb.plan(from, to, whenMs, timeType, routeTypes, taxi, stopovers)
+            BusNearby.SERVER -> parse(BusNearby.plan(from, to, whenMs, timeType, routeTypes, stopovers.map { it.lat to it.lon }, source))
+            else -> parse(asked(path(from, to, whenMs, timeType, routeTypes, taxi, stopovers.map { it.lat to it.lon }), at))
+        }
         // The server's timetable runs two weeks ahead. Walking and cycling don't need it.
         if (planned.plan.itineraries.none { it.rides.isNotEmpty() } && "OUTSIDE_SERVICE_PERIOD" in planned.errors) {
             throw NoTimetable()
@@ -148,6 +160,7 @@ object KavPlan {
     // rider's own, answers about the ministry's own stops and routes, which Kav's ids are.
     fun live(list: List<Transit.Itinerary>, r: Transit.Resolved, ending: Boolean = false): Transit.Resolved {
         if (list.isEmpty()) return r
+        val origin = KavLive.origin
         val board: (List<Int>) -> KavLive.Board = when {
             KavLive.stopsEnabled -> { codes -> KavLive.stops(codes) }
             else -> return r.aged()
@@ -157,6 +170,7 @@ object KavPlan {
         } catch (e: Exception) {
             return r.aged()
         }
+        if (origin != KavLive.origin) return r
         return Transit.Resolved(r.lines, r.stops, r.routeTypes, rides.live, r.shapes, 15, r.patterns + rides.patterns,
             r.delays + Transit.delaysOf(list, rides.live))
     }
@@ -168,7 +182,8 @@ object KavPlan {
     }
 
     internal fun parse(body: String): Planned {
-        val o = JSONObject(body)
+        val response = JSONObject(body)
+        val o = if (response.has("plan")) BusNearby.planBody(response) else response
         val stops = HashMap<Int, Transit.StopInfo>()
         o.optJSONObject("stops")?.let { s ->
             for (k in s.keys()) {
@@ -210,7 +225,7 @@ object KavPlan {
             for (j in 0 until parts.length()) {
                 val l = parts.getJSONObject(j)
                 val dep = l.optLong("dep"); val arr = l.optLong("arr")
-                val shape = KavLive.decodePolyline(l.optString("shape"))
+                val shape = KavLive.decodePolyline(l.optString("shape"), l.optInt("precision", 5))
                 fun point(k: String) = l.optJSONArray(k)?.let { p -> p.optDouble(0) to p.optDouble(1) }
                 when (l.optString("k")) {
                     "w" -> legs += Transit.Leg(Transit.LegKind.WALK, dep = dep, arr = arr, meters = l.optInt("m"), shape = shape)

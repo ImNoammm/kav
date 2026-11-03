@@ -1547,7 +1547,9 @@ private fun Paying(model: KavModel) {
                                 val from = b.from ?: return@AddButton
                                 val end = to ?: return@AddButton
                                 if (quote?.total == null) return@AddButton
-                                Payer.hold(Payer.Pending(b.line, b.qr, route, b.officeLineId, from.code, end.code, guests, tripLeg, tripKey))
+                                // Kept during a trip, it's that trip's ride, and ends with it.
+                                Payer.hold(Payer.Pending(b.line, b.qr, route, b.officeLineId, from.code, end.code, guests, tripLeg,
+                                    tripKey ?: model.activeJourney?.paymentKey))
                                 clearBus(); tripLeg = null
                                 leave()
                             }

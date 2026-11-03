@@ -18,7 +18,7 @@ import uk.noammm.kav.data.Transit
 // The road a route takes, from Kav's server: empty until it comes, or if the route has none.
 @Composable
 internal fun rememberKavShape(route: Int): List<Pair<Double, Double>> {
-    val shape by produceState(KavLive.shapeNow(route), route) {
+    val shape by produceState(KavLive.shapeNow(route), route, KavLive.source, KavLive.server) {
         value = KavLive.shapeNow(route)
         if (route <= 0 || value.isNotEmpty()) return@produceState
         // One that didn't come, or came empty, while the server restarts say, is asked for again a little later, and
@@ -43,8 +43,9 @@ internal fun rememberKavSpots(routes: List<Int>): Map<String, KavLive.Spot> {
     val asked = remember(routes) { routes.distinct().take(KavLive.FOLLOW_MAX).sorted() }
     // Each refresh can bring a slightly different set of routes; that alone asks no more than every 10 s.
     val last = remember { longArrayOf(0L) }
-    val spots by produceState(emptyMap<String, KavLive.Spot>(), asked, on, lifecycle) {
-        if (!on || asked.isEmpty()) { value = emptyMap(); return@produceState }
+    val spots by produceState(emptyMap<String, KavLive.Spot>(), asked, on, lifecycle, KavLive.source, KavLive.server) {
+        value = emptyMap()
+        if (!on || asked.isEmpty()) return@produceState
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             delay((last[0] + 10_000 - System.currentTimeMillis()).coerceAtLeast(0))
             while (true) {

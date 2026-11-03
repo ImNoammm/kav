@@ -38,6 +38,14 @@ fun backward(): ContentTransform =
     fadeIn(tween(MED)) togetherWith
         (slideOutHorizontally(tween(MED)) { it / 6 } + fadeOut(tween(FAST)))
 
+// Between things picked with chips, as a line's ways: the new one comes in from the side of its chip, the old one leaves
+// the other way.
+fun sideways(next: Boolean): ContentTransform {
+    val from = if (next != T.rtl) 1 else -1
+    return (slideInHorizontally(tween(MED)) { from * it / 6 } + fadeIn(tween(MED))) togetherWith
+        (slideOutHorizontally(tween(MED)) { -from * it / 6 } + fadeOut(tween(FAST)))
+}
+
 private val lift = spring<IntOffset>(dampingRatio = .9f, stiffness = 380f)
 
 // No size animation: the default one grows search out of the middle of the screen.

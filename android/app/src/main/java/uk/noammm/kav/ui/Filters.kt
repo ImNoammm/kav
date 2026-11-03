@@ -1,6 +1,12 @@
 package uk.noammm.kav.ui
 
+import uk.noammm.kav.data.Source
 import uk.noammm.kav.data.Transit
+
+// What a planner can bring: Bus Nearby and egg plan transit and walking, never a bike route. Taxi stays for them too,
+// as the plain Gett row Kav shows under any planner's routes.
+fun filtersOf(planner: Source): List<ResultFilter> =
+    if (planner.hopOn) ResultFilter.entries - ResultFilter.BIKE else ResultFilter.entries
 
 enum class ResultFilter {
     BUS, TRAIN, LIGHT_RAIL, CARMELIT_RAKAVLIT, SHUTTLE, TAXI, BIKE, WALK;

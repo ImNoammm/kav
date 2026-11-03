@@ -85,6 +85,7 @@ import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.KavPlan
 import uk.noammm.kav.data.LineAlert
 import uk.noammm.kav.data.MapFile
+import uk.noammm.kav.data.MoovitWebPage
 import uk.noammm.kav.data.GoogleMaps
 import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.TripLink
@@ -158,7 +159,6 @@ class MainActivity : ComponentActivity() {
         K.applyTheme(Prefs.look(this))
         K.liquid = Prefs.liquidGlass(this)
         K.lineBadgeAppearance = Prefs.lineBadges(this)
-        Shown.co2 = Prefs.showCo2(this)
         Shown.payments = Prefs.showPayments(this)
         Shown.updatePrompts = Prefs.updatePrompts(this)
         Pip.allowed = Prefs.pipNavigation(this)
@@ -168,7 +168,10 @@ class MainActivity : ComponentActivity() {
         StopNames.english = Prefs.stopNamesEnglish(this)
         MapFile.type = Prefs.mapType(this)
         MapFile.init(this)
+        uk.noammm.kav.data.Timetable.init(this)
+        uk.noammm.kav.data.Schedules.init(this)
         KavPlan.init(this)
+        MoovitWebPage.init(this)
         Payer.init(this)
         // The trip notification's QUICK PAY button follows the ride kept with Asshole mode.
         lifecycleScope.launch {
@@ -180,9 +183,7 @@ class MainActivity : ComponentActivity() {
         T.lang = Prefs.lang(this)
         // Restored, or reopened from Recents: the link or backup was already handled.
         val fresh = savedInstanceState == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
-        if (fresh && !PendingBackup.offer(this, intent?.data)) {
-            TripLink.parse(intent?.dataString)?.let { PendingLink.plan = it }
-        }
+        if (fresh && !PendingBackup.offer(this, intent?.data)) linkOf(intent)?.let { PendingLink.plan = it }
         if (fresh) intent?.getStringExtra(LineAlerts.EXTRA_STOP)?.let { PendingStop.key = it }
         // A force stop drops the line alerts' alarm.
         LineAlerts.reschedule(this)
@@ -232,7 +233,18 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         intent.getStringExtra(LineAlerts.EXTRA_STOP)?.let { PendingStop.key = it; return }
         if (PendingBackup.offer(this, intent.data)) return
-        TripLink.parse(intent.dataString)?.let { PendingLink.plan = it }
+        linkOf(intent)?.let { PendingLink.plan = it }
+    }
+
+    // A link opened in Kav, or the first link that opens a trip in a message shared to Kav: Bus Nearby, egg and Moovit
+    // share theirs inside one. A message without one says so.
+    private fun linkOf(intent: Intent?): TripLink.Plan? {
+        if (intent?.action != Intent.ACTION_SEND) return TripLink.parse(intent?.dataString)
+        return TripLink.inText(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()) ?: run {
+            android.widget.Toast.makeText(this, T("There's no trip link in what was shared.", "אין קישור לנסיעה במה ששותף."),
+                android.widget.Toast.LENGTH_LONG).show()
+            null
+        }
     }
 }
 
@@ -307,6 +319,44 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     var lineRoute by mutableIntStateOf(-1)
     // The stop to open on the line shown, when it was opened from a trip.
     var lineFocusStop by mutableIntStateOf(-1)
+    // A line from the timetable's provider (Schedules) in place of the week's, the provider it came from, and the code
+    // of the stop to open on it.
+    var scheduleLine by mutableStateOf<uk.noammm.kav.data.Schedules.Line?>(null)
+    var scheduleSource by mutableStateOf(Source.KAV)
+    var scheduleStop by mutableIntStateOf(-1)
+    private data class ReturnPage(
+        val destination: Tab, val tab: Tab, val stationStop: Int, val lineRoute: Int,
+        val lineFocusStop: Int, val scheduleLine: uk.noammm.kav.data.Schedules.Line?,
+        val scheduleSource: Source, val scheduleStop: Int,
+    )
+    private val returns = ArrayDeque<ReturnPage>()
+    fun rememberReturn(destination: Tab) {
+        if (tab != destination) returns.addLast(ReturnPage(
+            destination, tab, stationStop, lineRoute, lineFocusStop, scheduleLine, scheduleSource, scheduleStop,
+        ))
+    }
+    private fun returnTo(destination: Tab): Boolean {
+        val page = returns.lastOrNull()?.takeIf { it.destination == destination } ?: return false
+        returns.removeLast()
+        stationStop = page.stationStop; lineRoute = page.lineRoute; lineFocusStop = page.lineFocusStop
+        scheduleLine = page.scheduleLine; scheduleSource = page.scheduleSource; scheduleStop = page.scheduleStop
+        tab = page.tab
+        return true
+    }
+    fun backFromLine() { if (!returnTo(Tab.Lines)) { lineRoute = -1; scheduleLine = null } }
+    fun backFromStation() { if (!returnTo(Tab.Stations)) stationStop = -1 }
+    fun openStation(stop: Int) {
+        rememberReturn(Tab.Stations)
+        stationStop = stop; tab = Tab.Stations
+    }
+    fun resetOpenPages() {
+        stationStop = -1; lineRoute = -1; scheduleLine = null; returns.clear()
+    }
+    fun openSchedule(line: uk.noammm.kav.data.Schedules.Line, code: Int) {
+        rememberReturn(Tab.Lines)
+        scheduleLine = line; scheduleSource = uk.noammm.kav.data.Schedules.source; scheduleStop = code
+        lineRoute = -1; tab = Tab.Lines
+    }
 
     var stopQuery by mutableStateOf("")
     var lineQuery by mutableStateOf("")
@@ -343,7 +393,6 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         K.applyTheme(Prefs.look(ctx))
         K.liquid = Prefs.liquidGlass(ctx)
         K.lineBadgeAppearance = Prefs.lineBadges(ctx)
-        Shown.co2 = Prefs.showCo2(ctx)
         Shown.payments = Prefs.showPayments(ctx)
         Shown.updatePrompts = Prefs.updatePrompts(ctx)
         Checks.ensure(ctx)
@@ -498,9 +547,9 @@ private val netLoadMutex = Mutex()
 suspend fun loadNet(ctx: Context): Net = withContext(Dispatchers.Default) {
     netLoadMutex.withLock {
         Loaded.net ?: run {
-            // The seven days from today from Kav's server when there's a copy, else the week Kav shipped with.
-            val n = runCatching { uk.noammm.kav.data.Timetable.load(ctx) }.getOrNull()
-                ?: ctx.assets.open("il.kav").use { Net.read(it) }
+            // The seven days from today as last downloaded. Kav doesn't come with a week: there's none before the first
+            // download, at setup or at a start without one (TimetableStep).
+            val n = uk.noammm.kav.data.Timetable.load(ctx) ?: throw java.io.IOException("No timetable on the phone yet")
             Loaded.store(n)
             n
         }
@@ -517,19 +566,24 @@ private fun Root() {
         OnboardingScreen(model) { Prefs.setOnboarded(ctx); onboarded = true }
         return
     }
+    // A rider without a week yet (one who set Kav up when it came with one): it's downloaded before anything else, once.
+    // With one on the phone Kav opens at once, as it always did, and reads the week meanwhile; what needs it waits there.
+    LaunchedEffect(uk.noammm.kav.data.Timetable.state) {
+        if (uk.noammm.kav.data.Timetable.state == uk.noammm.kav.data.Timetable.State.Ready) runCatching { loadNet(app) }
+    }
+    if (uk.noammm.kav.data.Timetable.state != uk.noammm.kav.data.Timetable.State.Ready) {
+        TimetableStep()
+        return
+    }
     // Nothing is asked of GitHub because Kav opened: a new version, read again at each opening as the background check
     // (Checks) runs while Kav is away, and Vela's recipe (fixes for Google that need no update) comes
-    // from what that check kept. And the timetable for the seven days from today, taken in at the next start.
+    // from what that check kept, as does a newer week of the timetable, taken in at the next start.
     LaunchedEffect(model, Openings.count) { model.loadUpdate(app) }
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             runCatching { Checks.recipesAtOpen(app) }
-            runCatching { uk.noammm.kav.data.Timetable.refresh(app) }
         }
     }
-    // Kav's server tells a bus on its way by the trip the timetable has it on, so the timetable loads with it; as it does
-    // for Kav's planner, whose trips' buses are matched to it wherever their live times come from.
-    LaunchedEffect(Unit) { runCatching { loadNet(app) } }
     // The server chosen for live times not answering: said once when the app opens, and its live times again as soon as
     // it answers. Without internet it isn't the server, and nothing changes. The ministry can also stop answering the
     // server about stations while its snapshot is fine: said once, until a station's answer comes again.
@@ -549,7 +603,8 @@ private fun Root() {
                     val answering = (check(live) as? KavLive.Check.Answers)?.live == true
                     if (!answering && opening) android.widget.Toast.makeText(
                         app,
-                        if (KavLive.own) T("Your server isn't answering", "השרת שלכם לא עונה")
+                        if (KavLive.source.hopOn) T("The selected live provider isn't answering", "ספק המיקומים שנבחר לא עונה")
+                        else if (KavLive.own) T("Your server isn't answering", "השרת שלכם לא עונה")
                         else T("Kav's server is offline", "השרת של Kav לא זמין"),
                         android.widget.Toast.LENGTH_LONG,
                     ).show()
@@ -559,7 +614,8 @@ private fun Root() {
                     val c = check(plans) as? KavLive.Check.Answers
                     if (c == null && opening && plans != live) android.widget.Toast.makeText(
                         app,
-                        if (plans != KavLive.KAV_SERVER) T("Your server isn't answering · no trip planning", "השרת שלכם לא עונה · אין תכנון מסלולים")
+                        if (KavPlan.source.provider) T("The selected trip provider isn't answering", "ספק תכנון המסלולים שנבחר לא עונה")
+                        else if (plans != KavLive.KAV_SERVER) T("Your server isn't answering · no trip planning", "השרת שלכם לא עונה · אין תכנון מסלולים")
                         else T("Kav's server is offline · no trip planning", "השרת של Kav לא זמין · אין תכנון מסלולים"),
                         android.widget.Toast.LENGTH_LONG,
                     ).show()
@@ -652,6 +708,8 @@ private fun Shell(model: KavModel) {
         }
         model.restored = true
         snapshotFlow { model.activeJourney to model.journeyStep }.collect { (journey, step) ->
+            // A ride kept with Asshole mode for a trip goes with that trip, however it ended: there's no ride left to pay.
+            Payer.pending?.journey?.let { kept -> if (kept != journey?.paymentKey) Payer.dropPending() }
             withContext(Dispatchers.IO) {
                 if (journey == null) JourneyFile.clear(ctx) else JourneyFile.save(ctx, journey, step)
             }
@@ -674,7 +732,7 @@ private fun Shell(model: KavModel) {
             if (plan == null) return@collect
             PendingLink.plan = null
             val somewhere = plan.toLat != null && plan.toLon != null
-            if (!somewhere && plan.toName == null) return@collect
+            if (!somewhere && plan.toName == null && plan.shared == null) return@collect
             model.pendingLink = plan
             model.settingsOpen = false
             model.tab = Tab.Directions
@@ -685,9 +743,9 @@ private fun Shell(model: KavModel) {
     LaunchedEffect(model, model.activeJourney?.trip) {
         while (true) {
             val journey = model.activeJourney ?: break
-            // A trip Kav planned has its names already, and its live times come from where live locations do: a server.
-            // Any other trip keeps what it was saved with.
-            if (!KavPlan.owns(journey.trip)) break
+            // A trip Kav or Moovit's website planned has its names already, and its live times come from where live
+            // locations do. Any other trip keeps what it was saved with.
+            if (!KavPlan.timed(journey.trip)) break
             delay(journey.resolved.pollSecs.coerceIn(15, 120) * 1000L)
             val current = model.activeJourney?.takeIf { it.trip == journey.trip } ?: break
             val refreshed = withContext(Dispatchers.IO) { KavPlan.live(listOf(current.trip), current.resolved, ending = true) }
@@ -789,7 +847,7 @@ private fun Shell(model: KavModel) {
             model.payOpen -> model.payOpen = false
             model.settingsOpen -> { model.settingsOpen = false; model.tab = Tab.Directions }
             model.tab != Tab.Directions -> {
-                model.stationStop = -1; model.lineRoute = -1
+                model.resetOpenPages()
                 model.tab = Tab.Directions
             }
             else -> exitAsk = true
@@ -1121,7 +1179,7 @@ private fun TabBar(model: KavModel) {
                         indication = null, role = Role.Tab,
                     ) {
                         model.settingsOpen = false
-                        if (on) { model.stationStop = -1; model.lineRoute = -1 }
+                        if (on) model.resetOpenPages()
                         // Home goes back to its start when tapped while on it; from another tab it's where it was left.
                         if (t == Tab.Directions && on) model.returnHome = true
                         model.tab = t
@@ -1516,7 +1574,6 @@ object Prefs {
     fun setStopNamesEnglish(ctx: Context, on: Boolean) = store(ctx).edit().putString("stopNames", if (on) "en" else "he").apply()
 
     fun showCo2(ctx: Context): Boolean = store(ctx).getBoolean("showCo2", false)
-    fun setShowCo2(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showCo2", on).apply()
 
     // Navigation in a small window when Kav is left, and paying for rides shown.
     fun pipNavigation(ctx: Context): Boolean = store(ctx).getBoolean("pipNavigation", true)
@@ -1574,7 +1631,7 @@ object Prefs {
     // written for an older Kav, and one choice's mustn't move the other.
     private fun sources(ctx: Context): Pair<Source, Source> {
         val s = store(ctx)
-        val live = Source.of(s.getString("liveSource", null))
+        val live = Source.liveOf(s.getString("liveSource", null))
         val plan = Source.of(s.getString("planSource", null))
         if (live != null && plan != null) return live to plan
         val old = Sources.fromOld(liveFromKav(ctx), planWithKav(ctx), ownServer(ctx).isNotEmpty())
@@ -1583,16 +1640,23 @@ object Prefs {
         return both
     }
 
-    // Both choices and the rider's own server, from the settings.
+    // Where the timetable comes from, a choice of its own; the first time, where the week came from until then.
+    fun timetableSource(ctx: Context): Source = Source.of(store(ctx).getString("timetableSource", null))
+        ?: Sources.timetableOf(liveSource(ctx), planSource(ctx), ownServer(ctx).isNotEmpty())
+            .also { store(ctx).edit().putString("timetableSource", it.key).apply() }
+    fun setTimetableSource(ctx: Context, s: Source) = store(ctx).edit().putString("timetableSource", s.key).apply()
+
+    // The three choices and the rider's own server, from the settings.
     fun loadSources(ctx: Context) {
         KavLive.ownServer = ownServer(ctx)
         KavLive.ownKey = kavServerKey(ctx)
         KavLive.source = liveSource(ctx)
         KavPlan.source = planSource(ctx)
+        uk.noammm.kav.data.Schedules.source = timetableSource(ctx)
     }
 
-    // The timetable for the seven days from today from Kav's server, rather than the week Kav shipped with.
-    fun timetableUpdates(ctx: Context): Boolean = store(ctx).getBoolean("timetableUpdates", false)
+    // Keep the downloaded week fresh in the background, unless the rider has switched it off.
+    fun timetableUpdates(ctx: Context): Boolean = store(ctx).getBoolean("timetableUpdates", true)
     fun setTimetableUpdates(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("timetableUpdates", on).apply()
 
     // The rider's own copy of Kav's server, empty while none is set up; the key it takes requests signed with (its
@@ -1698,6 +1762,7 @@ object Prefs {
             .put("privateSearch", privateSearch(ctx))
             .put("liveSource", liveSource(ctx).key)
             .put("planSource", planSource(ctx).key)
+            .put("timetableSource", timetableSource(ctx).key)
             .put("liveFromKav", true)
             .put("planWithKav", true)
             .put("beginTripsImmediately", beginTripsImmediately(ctx))
@@ -1732,7 +1797,9 @@ object Prefs {
         if (o.has("liquidGlass")) e.putBoolean("liquidGlass", o.optBoolean("liquidGlass"))
         if (o.has("privateSearch")) e.putBoolean("privateSearch", o.optBoolean("privateSearch"))
         if (o.has("beginTripsImmediately")) e.putBoolean("beginTripsImmediately", o.optBoolean("beginTripsImmediately"))
-        if (o.has("timetableUpdates")) e.putBoolean("timetableUpdates", o.optBoolean("timetableUpdates"))
+        // A backup from before the timetable was downloaded (no timetableSource) wrote this off by default, when off
+        // meant the week Kav came with; now off means a week that's never refreshed, so it's left at its default.
+        if (o.has("timetableUpdates") && o.has("timetableSource")) e.putBoolean("timetableUpdates", o.optBoolean("timetableUpdates"))
         val server = KavLive.serverAddress(o.optString("kavServer"))
         server?.let {
             // The server's timetable key is asked of it again (Timetable.refresh).
@@ -1744,6 +1811,7 @@ object Prefs {
         val (live, plan) = Sources.fromBackup(o, (server ?: ownServer(ctx).ifEmpty { KavLive.KAV_SERVER }) != KavLive.KAV_SERVER)
         live?.let { e.putString("liveSource", it.key).putBoolean("liveFromKav", true) }
         plan?.let { e.putString("planSource", it.key).putBoolean("planWithKav", true) }
+        Source.of(o.optString("timetableSource"))?.let { e.putString("timetableSource", it.key) }
         o.optString("mapType").takeIf { it in mapTypes }?.let { e.putString("mapType", it) }
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }

@@ -23,12 +23,6 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Timetable
-        run: |
-          tools/fetch.sh
-          KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
-          rm -f android/app/src/main/assets/il.kav.gz
-
       # Without ANDROID_USER_HOME, Gradle on GitHub's runners signs with a debug key of its own instead of this one.
       - name: Build
         env:
@@ -47,6 +41,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           APK="kav-$VERSION.apk"
           cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+          python3 -c 'import sys, zipfile; assert not any(n.endswith((".kav", ".kav.gz")) for n in zipfile.ZipFile(sys.argv[1]).namelist()), "Timetable must be downloaded during setup"' "$APK"
           TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
           "$TOOLS/aapt2" dump badging "$APK" | head -1
           "$TOOLS/apksigner" verify --print-certs "$APK" | grep "SHA-256 digest"

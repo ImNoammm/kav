@@ -52,8 +52,9 @@ object MapFile {
     }
 
     // OLED draws the map like a battery saver: black ground, grey roads, no buildings or land colours. Satellite keeps
-    // the dark map's names, light with a dark edge, which read on any photo.
-    fun styleJson(ctx: Context, light: Boolean = false, oled: Boolean = false, type: Type = Type.STANDARD): String {
+    // the dark map's names, light with a dark edge, which read on any photo. remote: read from the file on GitHub, a
+    // piece at a time, for a preview before it's downloaded.
+    fun styleJson(ctx: Context, light: Boolean = false, oled: Boolean = false, type: Type = Type.STANDARD, remote: Boolean = false): String {
         val name = when {
             type == Type.SATELLITE -> "map/style.json"
             light -> "map/style-light.json"
@@ -61,7 +62,7 @@ object MapFile {
             else -> "map/style.json"
         }
         val json = ctx.assets.open(name).reader().use { it.readText() }
-            .replace("__MAP__", "pmtiles://file://" + file(ctx).absolutePath)
+            .replace("__MAP__", if (remote) "pmtiles://$URL" else "pmtiles://file://" + file(ctx).absolutePath)
         return when (type) {
             Type.STANDARD -> json
             Type.SATELLITE -> satellite(JSONObject(json)).toString()

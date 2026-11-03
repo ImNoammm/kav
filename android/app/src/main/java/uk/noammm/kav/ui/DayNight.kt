@@ -7,13 +7,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import uk.noammm.kav.Prefs
 
-// Settings' looks: Light, Dark and OLED, one choice.
+// Settings' looks: OLED, Light and Dark, one choice.
 @Composable
 internal fun LookRow(inset: Dp) {
     val ctx = LocalContext.current
-    val looks = listOf(Look.LIGHT, Look.DARK, Look.OLED)
+    val looks = listOf(Look.OLED, Look.LIGHT, Look.DARK)
     KavSegmented(
-        listOf(T("Light", "בהיר"), T("Dark", "כהה"), "OLED"), looks.indexOf(K.look).coerceAtLeast(0),
+        listOf("OLED", T("Light", "בהיר"), T("Dark", "כהה")), looks.indexOf(K.look).coerceAtLeast(0),
         { i -> K.applyTheme(looks[i]); Prefs.setLook(ctx, looks[i]) },
         Modifier.padding(horizontal = inset),
     )

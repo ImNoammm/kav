@@ -123,7 +123,7 @@ fun TripDetailScreen(
                     .firstOrNull { net.rShort[it] == number } ?: return@withContext null
                 route to stop
             } ?: return@launch
-            model.lineFocusStop = found.second; model.lineRoute = found.first; model.tab = uk.noammm.kav.Tab.Lines
+            openTimetableLine(model, found.first, found.second)
         }
     }
     CompositionLocalProvider(LocalLineOpener provides openLine) {

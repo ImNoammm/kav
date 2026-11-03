@@ -86,8 +86,7 @@ private sealed class RailAnswer {
     class Found(val journeys: List<IsraelRail.Journey>) : RailAnswer()
 }
 
-// Israel Railways' own trains between those stations around the route's time, in a card beside the routes'
-// "View schedules" one, where the results talk about the train. It opens on a tap, and only then asks the railway: it
+// Israel Railways' own trains between those stations around the route's time. It opens on a tap, and only then asks the railway: it
 // learns the two stations and the day. Once asked, closed, it names the next train.
 @Composable
 // onJourney: a train route tapped, to open like any other route.
@@ -127,7 +126,7 @@ internal fun RailCard(net: Net?, pair: RailPair, modifier: Modifier = Modifier, 
                 AnimatedContent(
                     if (!open && next != null) T("Next train ${clock.format(Date(next.dep * 1000))}",
                         "הרכבת הבאה ב־${clock.format(Date(next.dep * 1000))}")
-                    else scheduleTitle(true, "", from, to),
+                    else T("Trains from $from to $to", "רכבות מ־$from אל $to"),
                     transitionSpec = {
                         (fadeIn(tween(220)) togetherWith fadeOut(tween(150)))
                             .using(SizeTransform(clip = false) { _, _ -> spring(dampingRatio = 1f, stiffness = 500f) })

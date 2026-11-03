@@ -1,9 +1,9 @@
-"""Compile the Israeli MOT GTFS feed into the Kav bundle the app ships.
+"""Compile the Israeli MOT GTFS feed into the timetable Kav downloads.
 
 Emits a compact varint binary that the app decodes into typed arrays: stops,
 lines, and the trips of one ordinary week, each tagged with the days it runs.
 Defaults to the Tel Aviv metro bbox; KAV_BBOX=national covers the country,
-which is what android/app/src/main/assets/il.kav is.
+which is what the nightly timetable uses.
 
 Read-only over already-downloaded files; makes no network calls.
 """
@@ -21,7 +21,7 @@ ZIP  = os.environ.get("KAV_GTFS", os.path.join(HERE, ".cache", "israel-gtfs.zip"
 # tab uses for these lines (ui/Lines.kt NAIM_NAME).
 NAIM = os.environ.get("KAV_NAIM", os.path.join(HERE, ".cache", "naim-gtfs.zip"))
 NAIM_NAME = "נעים בסופ״ש"
-OUT  = os.environ.get("KAV_OUT",  os.path.join(HERE, "android", "app", "src", "main", "assets"))
+OUT  = os.environ.get("KAV_OUT",  os.path.join(HERE, ".cache", "timetable"))
 os.makedirs(OUT, exist_ok=True)
 _zip = zipfile.ZipFile(ZIP)
 

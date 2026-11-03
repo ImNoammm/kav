@@ -218,8 +218,7 @@ object Transit {
     ) {
         private val byId = sections.associateBy { it.id }
 
-        // NO_GROUPING sections hold a station-to-station timetable, not a way there: they show as a
-        // "View schedules" card, never among the routes.
+        // NO_GROUPING sections hold a station-to-station timetable, excluded from the suggested routes.
         private fun isSchedule(it: Itinerary) = byId[it.sectionId]?.type == SECTION_NO_GROUPING
 
         fun schedule(): Itinerary? = itineraries.firstOrNull(::isSchedule)
@@ -273,13 +272,20 @@ object Transit {
         val lines: Map<Int, LineInfo> = emptyMap(),
         val stops: Map<Int, StopInfo> = emptyMap(),
         val routeTypes: Map<Int, Int> = emptyMap(),
-        val live: Map<ArrivalKey, Arrival> = emptyMap(),
+        live: Map<ArrivalKey, Arrival> = emptyMap(),
         val shapes: Map<Int, List<Pair<Double, Double>>> = emptyMap(),
         val pollSecs: Int = 20,
         val patterns: Map<Int, List<Int>> = emptyMap(),
         // How far each ride runs from the plan, in seconds, by the last stop with a live time for it.
-        val delays: Map<Long, Long> = emptyMap(),
+        delays: Map<Long, Long> = emptyMap(),
     ) {
+        private val origin = KavLive.origin
+        private val arrivals = live
+        private val offsets = delays
+        // A source change invalidates the former provider's positions and delays, including on an open journey.
+        val live get() = if (origin == KavLive.origin) arrivals else emptyMap()
+        val delays get() = if (origin == KavLive.origin) offsets else emptyMap()
+
         fun arrival(ride: Leg): Arrival? = live[ArrivalKey(ride.fromStop, ride.tripId)]
 
         fun withLive(live: Map<ArrivalKey, Arrival>) = Resolved(lines, stops, routeTypes, live, shapes, pollSecs, patterns, delays)

@@ -82,6 +82,56 @@
                 <data android:pathPrefix="/l/" />
                 <data android:pathPrefix="/s/" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="moovitapp.com" android:pathPrefix="/i/" />
+                <data android:scheme="https" android:host="www.moovitapp.com" android:pathPrefix="/i/" />
+                <data android:scheme="https" android:host="moovitapp.com" android:pathPrefix="/tripplan/i/" />
+                <data android:scheme="https" android:host="www.moovitapp.com" android:pathPrefix="/tripplan/i/" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="moovitapp.com" android:path="/directions" />
+                <data android:scheme="https" android:host="www.moovitapp.com" android:path="/directions" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="moovit.onelink.me" />
+                <data android:scheme="https" android:host="busnear.by" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="busnearby.co.il" android:pathPrefix="/itinerary/" />
+                <data android:scheme="https" android:host="*.busnearby.co.il" android:pathPrefix="/itinerary/" />
+                <data android:scheme="https" android:host="egg.hopon.co" android:pathPrefix="/itinerary/" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="moovit" android:host="i" />
+                <data android:scheme="moovit" android:host="directions" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="busnearby" android:host="itinerary" />
+                <data android:scheme="egged" android:host="itinerary" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
             <!-- geo: points and place names, so Kav is offered as a navigation app. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

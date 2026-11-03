@@ -662,6 +662,8 @@ fun TileMap(
     status: (@Composable () -> Unit)? = null,
     controls: (@Composable () -> Unit)? = null,
     attribution: Boolean = true,
+    // The map read from GitHub while it isn't on the phone yet: a preview, as setup shows before the download.
+    remote: Boolean = false,
 ) {
     val ctx = LocalContext.current
     val density = LocalDensity.current
@@ -719,10 +721,11 @@ fun TileMap(
             mapView.onDestroy()
         }
     }
-    val mapReady = MapFile.state is MapFile.State.Ready
+    val onPhone = MapFile.state is MapFile.State.Ready
+    val mapReady = onPhone || remote
     val type = MapFile.type
-    LaunchedEffect(map, mapReady, K.look, type) {
-        if (mapReady) map?.setStyle(Style.Builder().fromJson(MapFile.styleJson(ctx, K.light, K.look == Look.OLED, type))) { style = it }
+    LaunchedEffect(map, mapReady, onPhone, K.look, type) {
+        if (mapReady) map?.setStyle(Style.Builder().fromJson(MapFile.styleJson(ctx, K.light, K.look == Look.OLED, type, remote = !onPhone))) { style = it }
     }
     fun Style.ensureKavIcons() {
         val px = with(density) { 1.dp.toPx() }

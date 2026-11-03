@@ -264,6 +264,60 @@ private fun PaneNote(text: String, actions: @Composable RowScope.() -> Unit) {
     }
 }
 
+// Google's panorama in a frame takes the frame for part of a page that scrolls, and turns only with two fingers. This
+// script, run in Google's frame alone, keeps the panorama the embed makes with Google's public class and turns it with
+// one finger, as a full-screen Street View does. Should Google change, it does nothing and two fingers still work.
+internal const val ONE_FINGER = """(function () {
+  if (window.top === window || location.pathname.indexOf('/maps/embed') !== 0) return;
+  var pano = null, made = null;
+  function wrap(Pano) {
+    if (!Pano || Pano.kav) return Pano;
+    if (made && made.base === Pano) return made;
+    var Kept = function (div, options) { pano = new Pano(div, options); return pano; };
+    Kept.prototype = Pano.prototype;
+    Object.setPrototypeOf(Kept, Pano);
+    Kept.kav = true; Kept.base = Pano;
+    return made = Kept;
+  }
+  function trapPano(maps) {
+    if (!maps || typeof maps !== 'object') return;
+    var Pano = maps.StreetViewPanorama;
+    try {
+      Object.defineProperty(maps, 'StreetViewPanorama', {configurable: true, enumerable: true,
+        get: function () { return wrap(Pano); }, set: function (v) { Pano = v; }});
+    } catch (e) {}
+  }
+  function trapMaps(google) {
+    if (!google || typeof google !== 'object') return;
+    var maps = google.maps;
+    try {
+      Object.defineProperty(google, 'maps', {configurable: true, enumerable: true,
+        get: function () { return maps; }, set: function (v) { maps = v; trapPano(v); }});
+    } catch (e) {}
+    trapPano(maps);
+  }
+  var google = window.google;
+  try {
+    Object.defineProperty(window, 'google', {configurable: true, enumerable: true,
+      get: function () { return google; }, set: function (v) { google = v; trapMaps(v); }});
+  } catch (e) {}
+  trapMaps(google);
+  var last = null;
+  addEventListener('touchstart', function (e) {
+    last = e.touches.length === 1 ? [e.touches[0].clientX, e.touches[0].clientY] : null;
+  }, {capture: true, passive: true});
+  addEventListener('touchmove', function (e) {
+    if (!pano || !last || e.touches.length !== 1) return;
+    var t = e.touches[0], dx = t.clientX - last[0], dy = t.clientY - last[1];
+    last = [t.clientX, t.clientY];
+    var pov = pano.getPov(), zoom = pano.getZoom() || 1;
+    var deg = 180 / Math.pow(2, zoom) / Math.max(1, innerWidth);
+    pano.setPov({heading: pov.heading - dx * deg, pitch: Math.max(-90, Math.min(90, pov.pitch + dy * deg))});
+    e.preventDefault();
+    e.stopPropagation();
+  }, {capture: true, passive: false});
+})();"""
+
 // Google's page, kept to itself: no location, no files, and any link out of it (Google Maps, terms, a problem report)
 // opens outside Kav. Third-party cookies off, so Google's frame keeps none.
 @SuppressLint("SetJavaScriptEnabled")
@@ -273,6 +327,9 @@ private fun StreetWebView(page: String, ground: Int, onReady: () -> Unit) {
     AndroidView(
         factory = { ctx ->
             WebView(ctx).apply {
+                if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    androidx.webkit.WebViewCompat.addDocumentStartJavaScript(this, ONE_FINGER, setOf("https://www.google.com"))
+                }
                 setBackgroundColor(ground)
                 // The page's word that Google's frame has loaded; it carries nothing else.
                 addJavascriptInterface(object {

@@ -2,23 +2,24 @@ package uk.noammm.kav.data
 
 import android.content.Context
 import android.net.ConnectivityManager
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import org.json.JSONObject
 import uk.noammm.kav.Prefs
+import uk.noammm.kav.ui.T
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
-import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 
-// Kav's timetable for the seven days from today, which Kav's server builds each night from the ministry's real calendars
-// and the weekend lines (tools/export_web_bundle.py with KAV_FROM), in place of the week the app shipped with. On a day
-// that runs a timetable of its own (a holiday, an election day) the shipped week has the wrong buses. A
-// copy counts only when its manifest's signature checks out against the key pinned below and the file's hash and size
-// are the manifest's. It's taken in at the next start, Net being read once a run, and the shipped week stays for when
-// there's none.
+// Downloads the week's timetable from GitHub or the selected own server. The manifest signature,
+// file hash and size must all match. Net reads once per run, so verified downloads take effect
+// at the next start; the last valid copy stays until a replacement checks out.
 internal class TimetableStore(private val dir: File, key: String) {
     class Manifest(val from: LocalDate, val days: Int, val sha256: String, val size: Long)
 
@@ -66,8 +67,7 @@ internal class TimetableStore(private val dir: File, key: String) {
         }
     }
 
-    // The waiting copy becomes the one in use, file by file with the manifest last, so a copy half moved never checks
-    // out and the shipped week is read instead.
+    // Keep next intact until all three files are installed. If Android stops us halfway, the next start can retry.
     fun promote(): Boolean {
         synchronized(LOCK) {
             if (!next.exists()) return false
@@ -75,24 +75,32 @@ internal class TimetableStore(private val dir: File, key: String) {
                 next.deleteRecursively()
                 return false
             }
-            File(dir, MANIFEST).delete()
-            for (name in listOf(BODY, SIGNATURE, MANIFEST)) if (!File(next, name).renameTo(File(dir, name))) return false
+            if (runCatching {
+                File(dir, MANIFEST).delete()
+                for (name in listOf(BODY, SIGNATURE, MANIFEST)) File(next, name).copyTo(File(dir, name), overwrite = true)
+            }.isFailure) return false
             next.deleteRecursively()
             return true
         }
     }
 
-    // The copy in use when it checks out and its seven days aren't long gone, else null: the shipped week's turn.
-    fun current(today: LocalDate): ByteArray? {
-        val (m, body) = read(dir) ?: return null
-        return body.takeIf { ChronoUnit.DAYS.between(m.from, today) in -1..KEEP_DAYS }
+    // The copy in use when it checks out. Past its seven days its weekdays are a week old or more, but they're the
+    // timetable there is until a newer copy comes.
+    fun current(): ByteArray? = read(dir)?.second
+
+    // Whether there's a copy, in use or waiting: its manifest checks out and its file is the manifest's size. Quick, for
+    // a start that has to know whether to fetch one first; current() checks the whole file.
+    fun ready(): Boolean = listOf(dir, next).any { folder ->
+        runCatching {
+            manifest(File(folder, MANIFEST).readBytes(), File(folder, SIGNATURE).readText())?.size == File(folder, BODY).length()
+        }.getOrDefault(false)
     }
 
     fun discard() {
         synchronized(LOCK) { for (name in listOf(MANIFEST, SIGNATURE, BODY)) File(dir, name).delete() }
     }
 
-    // When Kav's server last answered about it.
+    // When the timetable's source last answered about it.
     fun checked(): Long = File(dir, CHECKED).lastModified()
 
     fun markChecked() {
@@ -100,13 +108,13 @@ internal class TimetableStore(private val dir: File, key: String) {
         File(dir, CHECKED).writeText("")
     }
 
+    fun forgetChecked() { File(dir, CHECKED).delete() }
+
     companion object {
         const val BODY = "il.kav.gz"
         const val MANIFEST = "manifest.json"
         const val SIGNATURE = "manifest.json.sig"
         const val CHECKED = "checked"
-        // Past its seven days a copy's weekdays are a week old, as the shipped week's are; two weeks on it's let go.
-        const val KEEP_DAYS = 13L
         private val LOCK = Any()
 
         fun sha256(b: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
@@ -114,82 +122,137 @@ internal class TimetableStore(private val dir: File, key: String) {
 }
 
 internal object Timetable {
-    // The public half of .signing/bundle.key, which server/otp/rebuild.sh signs each night's manifest with.
-    internal const val KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEY3iBi374N7EW4WLuDKkaA38M8006nUKSMnpbzE+LR3U7MPIHHrXpjqQzYlz+FtfbycjIaadUaxxlw/j9RK40mQ=="
+    // The public half of .signing/timetable.key, which GitHub's nightly build signs each week's manifest with.
+    internal const val KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKjZO/hTPZFH6+Y3FvqhpfCm17I2Wl5Nwkg6X/dQp9MroYouUoX8O5W70MM0hpWSRBX7CEB8oH07xXUqDMi7UzA=="
+    // Where that build puts it: a release of its own, replaced each night.
+    internal const val RELEASE = "https://github.com/${Updates.OWNER}/${Updates.REPO}/releases/download/timetable/"
     private const val DAY_MS = 24 * 60 * 60 * 1000L
     // On mobile data a newer copy comes only once the one in use is this many days old.
     private const val STALE_DAYS = 3L
     private val israel = ZoneId.of("Asia/Jerusalem")
+    private val downloadLock = Any()
 
-    // A copy counts with Kav's key, pinned above, or with the one the rider's own server gave (server/selfhost makes its
-    // own); a copy of the other server's then doesn't check out, and the shipped week is read until the chosen one's comes.
-    fun store(ctx: Context) = TimetableStore(
-        File(ctx.filesDir, "timetable"), if (KavLive.timetableServer != KavLive.KAV_SERVER) Prefs.kavServerBundleKey(ctx) else KEY,
+    // Whether Kav has a week to read, for setup and for a start without one: Missing until one is fetched.
+    sealed interface State {
+        data object Missing : State
+        data class Downloading(val progress: Float) : State
+        data class Failed(val why: String) : State
+        data object Ready : State
+    }
+
+    var state by mutableStateOf<State>(State.Missing)
+
+    fun init(ctx: Context) {
+        if (state !is State.Downloading) state = if (store(ctx).ready()) State.Ready else State.Missing
+    }
+
+    // A copy counts with the key pinned above, or with the one the rider's own server gave (server/selfhost makes its
+    // own); a copy from the other source then doesn't check out, and the chosen one's is fetched.
+    private fun source(ctx: Context) = Sources.timetableFrom(Prefs.timetableSource(ctx), Prefs.ownServer(ctx))
+
+    fun store(ctx: Context) = store(ctx, source(ctx))
+
+    private fun store(ctx: Context, at: String?) = TimetableStore(
+        File(ctx.filesDir, if (at == null) "timetable" else "timetable-own/${TimetableStore.sha256(at.toByteArray())}"),
+        if (at != null) Prefs.kavServerBundleKey(ctx) else KEY,
     )
 
-    // Another server chosen: its copy is asked for now rather than a day after the last server's.
+    // Another source chosen: its copy is asked for now rather than a day after the last one's.
     fun serverChanged(ctx: Context) {
-        File(File(ctx.filesDir, "timetable"), TimetableStore.CHECKED).delete()
+        store(ctx).forgetChecked()
         refresh(ctx)
     }
 
-    // At start: the copy downloaded last run, else the one taken in before; null for the shipped week. One that doesn't
-    // read is let go and the shipped week read instead.
+    // At start: the copy downloaded last run, else the one taken in before; null when there's none yet. One that doesn't
+    // read is let go and fetched again.
     fun load(ctx: Context): Net? {
-        if (!Prefs.timetableUpdates(ctx)) return null
         val s = store(ctx)
         s.promote()
-        val body = s.current(LocalDate.now(israel)) ?: return null
-        val net = runCatching { Net.read(body.inputStream()) }.getOrElse { s.discard(); null } ?: return null
-        // A copy without English names borrows the shipped week's, so stop names in English stay in English.
-        if (net.nameEn.isEmpty()) runCatching { ctx.assets.open("il.kav").use { Net.read(it) } }.getOrNull()?.let(net::borrowEnglish)
-        return net
+        val body = s.current() ?: return null.also { state = State.Missing }
+        return runCatching { Net.read(body.inputStream()) }.getOrElse { s.discard(); state = State.Missing; null }
     }
 
-    // Asks Kav's server about a newer copy at most once a day while the setting is on: on Wi-Fi or another unmetered
-    // network, and on mobile data only once the copy in use is STALE_DAYS old. The file itself (6.7 MB) comes only when the
-    // signed manifest's hash, which is its ETag, isn't that of the copy in use or waiting. Blocks, so off the main thread.
-    fun refresh(ctx: Context) {
-        if (!Prefs.timetableUpdates(ctx)) return
-        val s = store(ctx)
-        if (System.currentTimeMillis() - s.checked() < DAY_MS) return
+    // The first week, at setup or at a start without one, in the background, with its progress in state.
+    fun startDownload(ctx: Context) {
+        if (state is State.Downloading || state is State.Ready) return
+        val app = ctx.applicationContext
+        state = State.Downloading(0f)
+        Thread {
+            synchronized(downloadLock) {
+                state = try {
+                    val at = source(app)
+                    if (!download(app, at, null) { state = State.Downloading(it) }) throw java.io.IOException()
+                    if (source(app) == at) State.Ready else State.Missing
+                } catch (e: Exception) {
+                    State.Failed(T("Check the connection and try again.", "בדקו את החיבור ונסו שוב."))
+                }
+            }
+        }.start()
+    }
+
+    // A newer copy at most once a day, from Kav's background check (Checks): with daily updates on, on Wi-Fi or another
+    // unmetered network, and on mobile data only once the copy in use is STALE_DAYS old. Blocks, so off the main thread.
+    fun refresh(ctx: Context): Unit = synchronized(downloadLock) {
+        val at = source(ctx)
+        val s = store(ctx, at)
         val have = s.staged() ?: s.installed()
-        if (metered(ctx) && ChronoUnit.DAYS.between(have?.from ?: shipped(ctx), LocalDate.now(israel)) < STALE_DAYS) return
-        // The rider's own server's key, taken from the server the first time it's wanted, if it wasn't when it was chosen.
-        val at = KavLive.timetableServer
-        if (at != KavLive.KAV_SERVER && Prefs.kavServerBundleKey(ctx).isEmpty()) {
-            val told = (KavLive.check(at, KavLive.keyFor(at)) as? KavLive.Check.Answers)?.bundleKey ?: return
-            Prefs.setKavServerBundleKey(ctx, told)
-            return refresh(ctx)
-        }
-        val manifest = fetch("bundle/manifest.json") ?: return
-        s.markChecked()
-        if (manifest.isEmpty()) return
-        val signature = fetch("bundle/manifest.json.sig")?.toString(Charsets.UTF_8)?.trim()?.takeIf { it.isNotEmpty() } ?: return
-        val m = s.manifest(manifest, signature) ?: return
-        if (m.sha256 == have?.sha256) return
-        val body = fetch("bundle/il.kav.gz", long = true)?.takeIf { it.isNotEmpty() } ?: return
-        s.stage(manifest, signature, body)
+        if (!due(have, Prefs.timetableUpdates(ctx), metered(ctx), s.checked(), System.currentTimeMillis(), LocalDate.now(israel))) return
+        download(ctx, at, have)
+        Unit
     }
 
-    // The shipped week came with the app, so it's as old as the app's install or last update.
-    private fun shipped(ctx: Context): LocalDate = runCatching {
-        Instant.ofEpochMilli(ctx.packageManager.getPackageInfo(ctx.packageName, 0).lastUpdateTime).atZone(israel).toLocalDate()
-    }.getOrDefault(LocalDate.of(2000, 1, 1))
+    internal fun due(have: TimetableStore.Manifest?, daily: Boolean, metered: Boolean, checked: Long, now: Long, today: LocalDate): Boolean =
+        daily && (have == null || (now - checked >= DAY_MS && (!metered || ChronoUnit.DAYS.between(have.from, today) >= STALE_DAYS)))
+
+    // The signed manifest, then the file itself (6 MB) only when its hash, which is its ETag, isn't that of the copy in use
+    // or waiting (have). False when nothing new checked out.
+    private fun download(ctx: Context, at: String?, have: TimetableStore.Manifest?, progress: (Float) -> Unit = {}): Boolean {
+        val key = if (at == null) "" else Prefs.kavServerKey(ctx)
+        // The rider's own server's key, taken from the server the first time it's wanted, if it wasn't when it was chosen.
+        if (at != null && Prefs.kavServerBundleKey(ctx).isEmpty()) {
+            val told = (KavLive.check(at, key) as? KavLive.Check.Answers)?.bundleKey?.takeIf { it.isNotEmpty() } ?: return false
+            if (source(ctx) != at) return false
+            Prefs.setKavServerBundleKey(ctx, told)
+        }
+        val s = store(ctx, at)
+        val manifest = fetch(at, key, TimetableStore.MANIFEST) ?: return false
+        if (manifest.isEmpty()) return false
+        val signature = fetch(at, key, TimetableStore.SIGNATURE)?.toString(Charsets.UTF_8)?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        val m = s.manifest(manifest, signature) ?: return false
+        if (m.sha256 == have?.sha256) { s.markChecked(); return true }
+        val body = fetch(at, key, TimetableStore.BODY, long = true, progress)?.takeIf { it.isNotEmpty() } ?: return false
+        if (!s.stage(manifest, signature, body)) return false
+        s.markChecked()
+        return true
+    }
 
     private fun metered(ctx: Context): Boolean =
         (ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered
 
-    // The timetable's server, asked as KavLive asks it. Null when it didn't answer, empty when it answered without the file.
-    private fun fetch(path: String, long: Boolean = false): ByteArray? {
-        val at = KavLive.timetableServer
-        val c = runCatching { URL("$at/live/v1/$path").openConnection() as HttpURLConnection }.getOrNull() ?: return null
+    // One file of the week: from GitHub's release, or from the rider's own server (at) as KavLive asks it. Null when it
+    // didn't answer, empty when it answered without the file.
+    private fun fetch(at: String?, key: String, name: String, long: Boolean = false, progress: (Float) -> Unit = {}): ByteArray? {
+        val path = "/live/v1/bundle/$name"
+        val c = runCatching { URL(if (at == null) RELEASE + name else at + path).openConnection() as HttpURLConnection }.getOrNull()
+            ?: return null
         return try {
             c.connectTimeout = 10_000
             c.readTimeout = if (long) 120_000 else 15_000
             c.setRequestProperty("User-Agent", "Kav")
-            KavLive.sign(c, "/live/v1/$path", KavLive.keyFor(at))
-            if (c.responseCode == 200) c.inputStream.use { it.readBytes() } else ByteArray(0)
+            if (at != null) KavLive.sign(c, path, key)
+            if (c.responseCode != 200) return ByteArray(0)
+            val size = c.contentLengthLong
+            val out = ByteArrayOutputStream(if (size > 0) size.toInt() else 1 shl 16)
+            c.inputStream.use { input ->
+                val buf = ByteArray(1 shl 16)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    if (size > 0) progress((out.size().toFloat() / size).coerceIn(0f, 1f))
+                }
+            }
+            out.toByteArray()
         } catch (e: Exception) {
             null
         } finally {

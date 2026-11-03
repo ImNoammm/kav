@@ -155,24 +155,43 @@ fun DirectionsOnline(model: KavModel) {
         open = null; saved = null; picking = null; linkTrip = null
         fromPlace = null; toPlace = null; showResults = true
         try {
-            val link = incoming
-            // A geo: link may name a place without a point: Google's place search finds it.
-            val found = if (link.toLat == null && link.toName != null) withContext(Dispatchers.IO) {
-                GoogleMaps.suggest(link.toName, model.here).places.firstOrNull()
-            } else null
-            val toLat = found?.lat ?: link.toLat ?: throw IllegalArgumentException("Missing destination coordinates")
-            val toLon = found?.lon ?: link.toLon ?: throw IllegalArgumentException("Missing destination coordinates")
-            fromPlace = if (link.fromLat != null && link.fromLon != null) sharedPlace(link.fromName, link.fromLat, link.fromLon) else null
-            toPlace = found ?: sharedPlace(link.toName, toLat, toLon)
-            // A link that names its rides plans from a little before its time, so the planner still reaches that very
-            // departure and the trip opens as it was shared.
-            departAt = if (link.rides.isNotEmpty() && link.departMs > 0) link.departMs - 5 * 60_000 else link.departMs
-            timeType = Transit.TIME_DEPARTURE
-            linkTrip = link.rides.takeIf { it.isNotEmpty() && link.autoRun }
-            showResults = link.autoRun
+            // A trip shared from another app by its id: that app's servers have its ends.
+            val link = incoming.shared?.let { withContext(Dispatchers.IO) { TripLink.resolve(it) } } ?: incoming
+            val exact = link.exact
+            if (exact != null) {
+                val trip = exact.plan.itineraries.first()
+                val start = if (link.fromLat != null && link.fromLon != null)
+                    sharedPlace(link.fromName, link.fromLat, link.fromLon)
+                else trip.legs.firstOrNull { it.shape.isNotEmpty() }?.shape?.firstOrNull()
+                    ?.let { sharedPlace(null, it.first, it.second) }
+                val end = if (link.toLat != null && link.toLon != null)
+                    sharedPlace(link.toName, link.toLat, link.toLon)
+                else trip.legs.lastOrNull { it.shape.isNotEmpty() }?.shape?.lastOrNull()
+                    ?.let { sharedPlace(null, it.first, it.second) }
+                fromPlace = start; toPlace = end; showResults = false
+                open = OpenTrip(trip, exact.resolved, start?.name ?: T("Start", "התחלה"),
+                    end?.name ?: T("Destination", "יעד"), backHome = true)
+            } else {
+                // A geo: link may name a place without a point: Google's place search finds it.
+                val found = if (link.toLat == null && link.toName != null) withContext(Dispatchers.IO) {
+                    GoogleMaps.suggest(link.toName, model.here).places.firstOrNull()
+                } else null
+                val toLat = found?.lat ?: link.toLat ?: throw IllegalArgumentException("Missing destination coordinates")
+                val toLon = found?.lon ?: link.toLon ?: throw IllegalArgumentException("Missing destination coordinates")
+                fromPlace = if (link.fromLat != null && link.fromLon != null) sharedPlace(link.fromName, link.fromLat, link.fromLon) else null
+                toPlace = found ?: sharedPlace(link.toName, toLat, toLon)
+                // A link that names its rides plans from a little before its time, so the planner still reaches that very
+                // departure and the trip opens as it was shared.
+                departAt = if (link.rides.isNotEmpty() && link.departMs > 0) link.departMs - 5 * 60_000 else link.departMs
+                timeType = Transit.TIME_DEPARTURE
+                linkTrip = link.rides.takeIf { it.isNotEmpty() && link.autoRun }
+                showResults = link.autoRun
+            }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) {
-            linkError = T("Couldn't open this shared trip. ${e.message.orEmpty()}", "לא ניתן לפתוח את הנסיעה המשותפת. ${e.message.orEmpty()}")
+            linkError = if (e is TripLink.Expired) T("This shared trip is no longer available. Ask for a new link.",
+                "הנסיעה המשותפת כבר לא זמינה. בקשו קישור חדש.")
+                else T("Couldn't open this shared trip. ${e.message.orEmpty()}", "לא ניתן לפתוח את הנסיעה המשותפת. ${e.message.orEmpty()}")
         } finally {
             openingLink = false
             if (model.pendingLink === incoming) model.pendingLink = null
@@ -205,9 +224,9 @@ fun DirectionsOnline(model: KavModel) {
     }
 
     // The inputs the results on screen were planned for: anything else is still being planned, never "no routes".
-    val planKey = listOf(fromLL, toLL, departAt, timeType, filters, stopovers)
+    val planKey = listOf(fromLL, toLL, departAt, timeType, filters, stopovers, KavPlan.source)
     var plannedFor by remember { mutableStateOf<List<Any?>?>(null) }
-    LaunchedEffect(showResults, fromLL, toLL, departAt, timeType, filters, stopovers, openingLink, saved, planAgain) {
+    LaunchedEffect(showResults, fromLL, toLL, departAt, timeType, filters, stopovers, openingLink, saved, planAgain, KavPlan.source) {
         if (!showResults || openingLink) { planning = false; return@LaunchedEffect }
         if (departAt != 0L && departAt < System.currentTimeMillis() && timeType != Transit.TIME_LAST) {
             departAt = 0L; timeType = Transit.TIME_DEPARTURE
@@ -314,6 +333,11 @@ fun DirectionsOnline(model: KavModel) {
                     "Kav's planner has no timetable for that day yet. Try a nearer date.",
                     "לתכנון של Kav עוד אין לוח זמנים ליום הזה. נסו תאריך קרוב יותר.",
                 )
+                e is uk.noammm.kav.data.MoovitWeb.NoStopovers -> T(
+                    "Moovit's planner can't plan through stops on the way. Remove them, or pick another planner in Settings.",
+                    "המתכנן של Moovit לא מתכנן דרך עצירות בדרך. הסירו אותן, או בחרו מתכנן אחר בהגדרות.",
+                )
+                KavPlan.source.provider -> T("The selected trip provider didn't answer.", "ספק תכנון המסלולים שנבחר לא ענה.")
                 KavPlan.server != KavLive.KAV_SERVER -> T("Your server didn't answer.", "השרת שלכם לא ענה.")
                 else -> T("Kav's server didn't answer.", "השרת של Kav לא ענה.")
             }
@@ -324,7 +348,7 @@ fun DirectionsOnline(model: KavModel) {
     }
 
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(showResults, raw, resolved.pollSecs, open?.trip, model.activeJourney?.trip, lifecycle) {
+    LaunchedEffect(showResults, raw, resolved.pollSecs, open?.trip, model.activeJourney?.trip, lifecycle, KavLive.source) {
         val active = model.activeJourney?.trip
         if (!showResults || raw.isEmpty() || (active != null && open?.trip === active)) return@LaunchedEffect
         val otherTrips = raw.filterNot { it === active }
@@ -340,7 +364,7 @@ fun DirectionsOnline(model: KavModel) {
                 if (wait) kotlinx.coroutines.delay(resolved.pollSecs.coerceIn(15, 120) * 1000L)
                 wait = true
                 // From the server live locations come from; any other routes stay as they were kept.
-                if (!otherTrips.all { KavPlan.owns(it) }) break
+                if (!otherTrips.all { KavPlan.timed(it) }) break
                 val refreshed = withContext(Dispatchers.IO) { KavPlan.live(otherTrips, resolved) }
                 resolved = Transit.Resolved(
                     refreshed.lines + resolved.lines, refreshed.stops + resolved.stops,
@@ -615,11 +639,7 @@ fun DirectionsOnline(model: KavModel) {
                     } else shown.first().after?.let { day ->
                         item(key = "shabbat") { NoteCard(afterDayOff(day), Modifier.padding(horizontal = K.gap4, vertical = K.gap2)) }
                     }
-                    // "View schedules": the first route's main line and its next departures (ScheduleCard).
-                    if (sort == Sort.RECOMMENDED) shown.firstOrNull { it.rides.isNotEmpty() }?.let { first ->
-                        item(key = "schedule") { ScheduleCard(model, first, resolved, Modifier.padding(horizontal = K.gap4)) }
-                    }
-                    // Israel Railways' own trains for the first route that takes the train, under the timetable card.
+                    // Israel Railways' own trains for the first route that takes the train.
                     railPair(shown, resolved)?.takeIf { sort == Sort.RECOMMENDED }?.let { rail ->
                         item(key = "rail") {
                             val scope = rememberCoroutineScope()

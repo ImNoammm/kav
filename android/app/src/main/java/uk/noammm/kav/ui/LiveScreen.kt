@@ -79,9 +79,10 @@ private object LiveMemory {
     var area: KavLive.Area? = null
     var areaAt = 0L
     var areaCentre = 0.0 to 0.0
+    var source = ""
 
     fun recentArea(here: Pair<Double, Double>) = area?.takeIf {
-        System.currentTimeMillis() / 1000 - areaAt < 180 && metres(here.first, here.second, areaCentre.first, areaCentre.second) < 500
+        source == KavLive.origin && System.currentTimeMillis() / 1000 - areaAt < 180 && metres(here.first, here.second, areaCentre.first, areaCentre.second) < 500
     }
 }
 
@@ -122,6 +123,11 @@ private class Tracked(
 
 @Composable
 fun LiveScreen(model: KavModel) {
+    androidx.compose.runtime.key(KavLive.source, KavLive.server) { LiveScreenForSource(model) }
+}
+
+@Composable
+private fun LiveScreenForSource(model: KavModel) {
     val ctx = LocalContext.current
     val here = model.here ?: (32.0759 to 34.7745)
     val located = model.here != null
@@ -205,6 +211,7 @@ fun LiveScreen(model: KavModel) {
                     if (look == null) {
                         LiveMemory.area = answer; LiveMemory.areaCentre = stopsAt
                         LiveMemory.areaAt = System.currentTimeMillis() / 1000
+                        LiveMemory.source = KavLive.origin
                     }
                     answer.next - System.currentTimeMillis() / 1000
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -341,13 +348,28 @@ fun LiveScreen(model: KavModel) {
         ) {
         LiveGlyph(K.realtime, 16.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+        // Where they come from: the live locations' choice in Settings.
         Text(
-            T(
-                "Buses and times come straight from the Ministry of Transport through Kav's server, about every 15s. " +
-                    "A vehicle shows here once one of the stops around you has a bus reporting its position.",
-                "האוטובוסים והזמנים מגיעים ישירות ממשרד התחבורה דרך השרת של Kav, בערך כל 15 שניות. " +
-                    "כלי רכב מופיע כאן ברגע שאחת התחנות סביבכם מקבלת דיווח מיקום מאוטובוס.",
-            ),
+            when {
+                KavLive.source.hopOn -> T(
+                    "Buses and times come from ${sourceName(KavLive.source)}'s service (HopOn), about every 20s. " +
+                        "The map shows vehicles serving the stops around you, not every vehicle in the area.",
+                    "האוטובוסים והזמנים מגיעים מהשירות של ${sourceName(KavLive.source)} (הופאון), בערך כל 20 שניות. " +
+                        "המפה מציגה כלי רכב המשרתים את התחנות סביבכם, ולא את כל כלי הרכב באזור.",
+                )
+                KavLive.own -> T(
+                    "Buses and times come straight from the Ministry of Transport through your server, about every 15s. " +
+                        "A vehicle shows here once one of the stops around you has a bus reporting its position.",
+                    "האוטובוסים והזמנים מגיעים ישירות ממשרד התחבורה דרך השרת שלכם, בערך כל 15 שניות. " +
+                        "כלי רכב מופיע כאן ברגע שאחת התחנות סביבכם מקבלת דיווח מיקום מאוטובוס.",
+                )
+                else -> T(
+                    "Buses and times come straight from the Ministry of Transport through Kav's server, about every 15s. " +
+                        "A vehicle shows here once one of the stops around you has a bus reporting its position.",
+                    "האוטובוסים והזמנים מגיעים ישירות ממשרד התחבורה דרך השרת של Kav, בערך כל 15 שניות. " +
+                        "כלי רכב מופיע כאן ברגע שאחת התחנות סביבכם מקבלת דיווח מיקום מאוטובוס.",
+                )
+            },
             style = K.type.subhead,
         )
         FreshnessKey()
@@ -415,6 +437,7 @@ fun LiveScreen(model: KavModel) {
                                 },
                                 label = "liveStatus",
                             ) { (_, text) -> LiveText(text, style = K.type.caption.tabular) }
+                            if (KavLive.source.hopOn) Text(T("Vehicles serving nearby stops", "כלי רכב המשרתים תחנות סמוכות"), style = K.type.caption, color = K.textSecondary)
                         }
                     },
                     controls = {},

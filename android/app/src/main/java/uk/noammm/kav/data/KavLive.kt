@@ -16,9 +16,9 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 import uk.noammm.kav.BuildConfig
 
-// Live buses from Kav's own server (server/live.py), which reads the Ministry of Transport's real-time feed. With it on,
-// every bus, position and live time comes from there, and the server plans trips too (KavPlan). The vehicle id of a
-// tracked arrival is the ministry's own name for the journey, route_firstdeparture_vehicle.
+// Live buses from Kav's ministry-feed server, a self-hosted copy, Bus Nearby or egg. HopOn providers show vehicles
+// serving nearby stops rather than a whole-area snapshot. All use the ministry's route ids; a tracked journey's key
+// is route_firstdeparture_vehicle, so the same arrival model serves every screen.
 object KavLive {
     // Kav's own server, or the rider's: a copy of server/ answering over HTTPS, at the address set in Settings, with the
     // key set beside it when it takes only requests signed with one (its KAV_APP_KEY). The rider's own is set up once,
@@ -29,19 +29,40 @@ object KavLive {
 
     // Where live locations come from, Kav's server until the settings are read. Trip planning has its own choice
     // (KavPlan.source).
-    var source by mutableStateOf(Source.KAV)
+    private var selectedSource by mutableStateOf(Source.KAV)
+    var sourceRevision by mutableStateOf(0)
+        private set
+    var source: Source
+        get() = selectedSource
+        set(value) {
+            if (selectedSource == value) return
+            selectedSource = value
+            sourceRevision++
+            up = true; stopsUp = true
+            recheck.trySend(Unit)
+        }
+    val origin get() = "$sourceRevision:${source.key}:$server"
 
     // The server a choice asks: the rider's own once it's set up, Kav's otherwise.
-    fun serverOf(s: Source): String = if (s == Source.OWN && ownServer.isNotEmpty()) ownServer else KAV_SERVER
+    fun serverOf(s: Source): String = when {
+        s.hopOn -> BusNearby.SERVER
+        s == Source.MOOVIT -> MoovitWeb.SERVER
+        s == Source.OWN && ownServer.isNotEmpty() -> ownServer
+        else -> KAV_SERVER
+    }
     val server get() = serverOf(source)
     val key get() = ownKey
-    val own get() = server != KAV_SERVER
+    val own get() = source == Source.OWN && ownServer.isNotEmpty()
 
-    // The server the daily timetable comes from (Sources.timetableFrom).
-    val timetableServer get() = Sources.timetableFrom(source, KavPlan.source, ownServer)
+    // The server the week's timetable comes from (Sources.timetableFrom), null for GitHub's.
+    val timetableServer get() = Sources.timetableFrom(Schedules.source, ownServer)
 
     // What requests to a server are signed with: the key Kav is built with for Kav's, the rider's for their own.
-    fun keyFor(at: String, own: String = key): String = if (at == KAV_SERVER) BuildConfig.KAV_LIVE_KEY else own
+    fun keyFor(at: String, own: String = key): String = when (at) {
+        KAV_SERVER -> BuildConfig.KAV_LIVE_KEY
+        BusNearby.SERVER, MoovitWeb.SERVER -> ""
+        else -> own
+    }
 
     // The server asks the ministry directly for at most this many routes, or stops, at once.
     const val FOLLOW_MAX = 4
@@ -180,7 +201,10 @@ object KavLive {
         enum class Why { NO_SUCH_HOST, HTTPS, TIMEOUT, NO_ANSWER }
     }
 
-    fun check(at: String, key: String): Check {
+    fun check(at: String, key: String, using: Source = source.takeIf { it.hopOn } ?: KavPlan.source): Check {
+        if (at == BusNearby.SERVER) return BusNearby.check(using)
+        // Moovit's website only plans: whether its planner page answers.
+        if (at == MoovitWeb.SERVER) return MoovitWeb.check(MoovitWebPage.agent())
         val c = try {
             URL("$at/live/v1/status").openConnection() as HttpURLConnection
         } catch (e: java.io.IOException) {
@@ -236,22 +260,36 @@ object KavLive {
     fun planned(path: String, at: String): String = get(path, at = at)
 
     // The buses on up to FOLLOW_MAX routes, straight from the ministry, fresher than the server's snapshot.
-    fun ask(routes: List<Int>): Answer {
-        val asked = routes.distinct().take(FOLLOW_MAX).sorted()
-        return parse(get("follow/" + asked.joinToString(",")))
+    private inline fun <T> fromSource(ask: (Source) -> T): T {
+        val started = origin
+        val answer = ask(source)
+        if (started != origin) throw java.io.IOException("Live source changed")
+        return answer
     }
 
-    // Every bus in a box from the server's snapshot: south, west, north, east as box() makes them.
-    fun area(box: DoubleArray): Area =
-        parseArea(get("area/" + box.joinToString(",") { String.format(java.util.Locale.US, "%.2f", it) }))
+    fun ask(routes: List<Int>): Answer = fromSource { using ->
+        if (using.hopOn) BusNearby.follow(routes, using)
+        else parse(get("follow/" + routes.distinct().take(FOLLOW_MAX).sorted().joinToString(",")))
+    }
+
+    // Vehicles in a box (south, west, north, east): Kav's snapshot, or those serving the provider's nearby stops.
+    fun area(box: DoubleArray): Area = fromSource { using ->
+        if (using.hopOn) BusNearby.area(box, using)
+        else parseArea(get("area/" + box.joinToString(",") { String.format(java.util.Locale.US, "%.2f", it) }))
+    }
 
     // Every bus on the routes with this number, and all those routes, so a page can pick its own.
-    fun line(number: String): Area = parseArea(get("line/" + URLEncoder.encode(number, "UTF-8").replace("+", "%20")))
+    fun line(number: String, codes: List<Int> = emptyList()): Area = fromSource { using ->
+        if (using.hopOn) BusNearby.line(number, using, codes)
+        else parseArea(get("line/" + URLEncoder.encode(number, "UTF-8").replace("+", "%20")))
+    }
 
     // Every bus due at these stops in the next hour and a half, straight from the ministry.
     fun stops(codes: Collection<Int>): Board = try {
-        parseBoard(get("stops/" + codes.filter { it > 0 }.distinct().sorted().take(STOPS_MAX).joinToString(",")))
-            .also { stopsUp = true }
+        fromSource { using ->
+            if (using.hopOn) BusNearby.stops(codes, using)
+            else parseBoard(get("stops/" + codes.filter { it > 0 }.distinct().sorted().take(STOPS_MAX).joinToString(",")))
+        }.also { stopsUp = true }
     } catch (e: Refused) {
         stopsUp = false
         throw e
@@ -263,23 +301,27 @@ object KavLive {
     // The server is up but couldn't get the ministry's answer, or has no fresh one.
     class Refused : java.io.IOException("Kav live HTTP 503")
 
-    private val shapes = object : LinkedHashMap<Int, List<Pair<Double, Double>>>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, List<Pair<Double, Double>>>?) = size > 40
+    private val shapes = object : LinkedHashMap<Pair<String, Int>, List<Pair<Double, Double>>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, Int>, List<Pair<Double, Double>>>?) = size > 40
     }
 
     // The road a route takes, from the ministry's timetable. A route's road doesn't change in a day, so it's kept; an
     // empty answer, as a server gives while it restarts, isn't, so the route is asked about again.
     fun shape(route: Int): List<Pair<Double, Double>> {
-        synchronized(shapes) { shapes[route] }?.let { return it }
+        val using = source
+        if (using.hopOn) return BusNearby.shape(route, using)
+        val cacheKey = server to route
+        synchronized(shapes) { shapes[cacheKey] }?.let { return it }
         val path = decodePolyline(JSONObject(get("shape/$route")).optString("shape"))
-        if (path.size >= 2) synchronized(shapes) { shapes[route] = path }
+        if (path.size >= 2) synchronized(shapes) { shapes[cacheKey] = path }
         return path
     }
 
-    fun shapeNow(route: Int): List<Pair<Double, Double>> = synchronized(shapes) { shapes[route] }.orEmpty()
+    fun shapeNow(route: Int): List<Pair<Double, Double>> = if (source.hopOn) emptyList() else synchronized(shapes) { shapes[server to route] }.orEmpty()
 
-    // A road as the server writes it: Google's encoded polyline, five decimal places.
-    fun decodePolyline(encoded: String?): List<Pair<Double, Double>> {
+    // Google's encoded polyline: Kav uses five decimal places, HopOn's points6 uses six.
+    fun decodePolyline(encoded: String?, precision: Int = 5): List<Pair<Double, Double>> {
+        val scale = if (precision == 6) 1e6 else 1e5
         if (encoded.isNullOrEmpty()) return emptyList()
         val out = ArrayList<Pair<Double, Double>>(encoded.length / 4)
         var i = 0; var lat = 0; var lon = 0
@@ -298,7 +340,7 @@ object KavLive {
                 result = result or ((b and 0x1f) shl shift); shift += 5
             } while (b >= 0x20)
             lon += if (result and 1 != 0) (result shr 1).inv() else result shr 1
-            out.add(lat / 1e5 to lon / 1e5)
+            out.add(lat / scale to lon / scale)
         }
         return out
     }
@@ -368,6 +410,7 @@ object KavLive {
 
     internal fun parseBoard(body: String): Board {
         val o = JSONObject(body)
+        if (!o.has("a") && o.keys().asSequence().any { it.toIntOrNull() != null }) return BusNearby.board(o)
         val rows = o.optJSONArray("a") ?: JSONArray()
         val due = ArrayList<Due>(rows.length())
         for (i in 0 until rows.length()) {

@@ -74,7 +74,7 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-3.3.apk --repo ImNoammm/kav
+gh attestation verify kav-3.3.1.apk --repo ImNoammm/kav
 ```
 
 Setup downloads the map (about 176 MB once) and timetable (about 6 MB) from

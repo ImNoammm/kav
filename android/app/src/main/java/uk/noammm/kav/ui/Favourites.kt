@@ -6,12 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
@@ -28,11 +26,16 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layoutId
+import androidx.compose.ui.unit.Constraints
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -121,7 +124,41 @@ val Favourite.label: String get() = if (id == Favourite.HOME) T("Home", "בית"
 fun Favourite.named(p: Transit.Place): Transit.Place =
     if (label.isBlank() || label == p.name) p else Transit.Place(label, p.name, p.lat, p.lon, p.type, p.mode)
 
+// The narrowest a column may get: a tile and the gap beside it.
 private val SLOT = 72.dp + K.gap2
+
+// Where a tile sits in the grid, counted in cells, so it glides to a new place whatever size the cells are.
+private class GridSpot(val at: Animatable<Offset, AnimationVector2D>)
+
+@Composable
+private fun rememberSpot(index: Int, cols: Int, still: Boolean = false): GridSpot {
+    val target = Offset((index % cols).toFloat(), (index / cols).toFloat())
+    val spot = remember { GridSpot(Animatable(target, Offset.VectorConverter)) }
+    LaunchedEffect(target, still) {
+        if (!still) spot.at.animateTo(target, spring(dampingRatio = .8f, stiffness = Spring.StiffnessMediumLow))
+    }
+    return spot
+}
+
+// Equal columns across the whole width, rows filled from the start, every row as tall as the tallest tile.
+@Composable
+private fun SpotGrid(cols: Int, slots: Int, pitch: FloatArray, modifier: Modifier, content: @Composable () -> Unit) {
+    val gap = with(LocalDensity.current) { K.gap1.roundToPx() }
+    Layout(content, modifier) { measurables, constraints ->
+        val cellW = constraints.maxWidth.toFloat() / cols
+        val tiles = measurables.map { it.measure(Constraints.fixedWidth(cellW.toInt())) }
+        val rowH = tiles.maxOfOrNull { it.height } ?: 0
+        val rows = (slots + cols - 1) / cols
+        pitch[0] = cellW
+        pitch[1] = (rowH + gap).toFloat()
+        layout(constraints.maxWidth, rows * rowH + (rows - 1).coerceAtLeast(0) * gap) {
+            tiles.forEachIndexed { i, t ->
+                val at = (measurables[i].layoutId as GridSpot).at.value
+                t.placeRelative((at.x * cellW).roundToInt(), (at.y * pitch[1]).roundToInt())
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -137,57 +174,75 @@ fun FavouriteStrip(
     val manage = onReorder != null
     var editMode by remember { mutableStateOf(false) }
     val inEdit = manage && editMode
-    val slotPx = with(LocalDensity.current) { SLOT.toPx() }
     val dir = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
     var order by remember(favourites) { mutableStateOf<List<Favourite>?>(null) }
     var held by remember { mutableStateOf<String?>(null) }
-    var dx by remember { mutableFloatStateOf(0f) }
+    var drag by remember { mutableStateOf(Offset.Zero) }
+    val pitch = remember { floatArrayOf(1f, 1f) }
+    val scope = rememberCoroutineScope()
     val shown = order ?: favourites
-    androidx.activity.compose.BackHandler(inEdit) { editMode = false; order = null; held = null; dx = 0f }
+    val travel by animateFloatAsState(
+        if (inEdit) 1f else 0f,
+        spring(dampingRatio = .58f, stiffness = Spring.StiffnessMediumLow), label = "editTravel",
+    )
+    androidx.activity.compose.BackHandler(inEdit) { editMode = false; order = null; held = null; drag = Offset.Zero }
 
-    // A favourite's tile, wherever the strip puts it.
-    val tile: @Composable (Favourite) -> Unit = { f ->
+    // A favourite's tile, in its cell of the grid.
+    @Composable
+    fun Tile(f: Favourite, index: Int, cols: Int) {
         val set = f.place != null
         val lifted = held == f.id
+        val spot = rememberSpot(index, cols, still = lifted)
+        val origin = remember { floatArrayOf(0f, 0f) }
         val lift by animateFloatAsState(
             if (lifted) 1.08f else 1f,
             spring(dampingRatio = .6f, stiffness = Spring.StiffnessMedium), label = "lift",
         )
         val removable = onRemove != null && f.id != Favourite.HOME
+        // Lets go of a tile where the finger left it, so it glides from there into its cell.
+        fun drop(keep: Boolean) {
+            val moved = order
+            if (!keep) order = null
+            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                spot.at.snapTo(Offset(origin[0] + drag.x * dir / pitch[0], origin[1] + drag.y / pitch[1]))
+                held = null
+                drag = Offset.Zero
+            }
+            if (keep && moved != null) onReorder?.invoke(moved)
+        }
         Column(
-            Modifier.width(72.dp)
+            Modifier.layoutId(spot)
                 .zIndex(if (lifted) 1f else 0f)
                 .graphicsLayer {
-                    translationX = if (lifted) dx else 0f
+                    translationX = if (lifted) drag.x else 0f
+                    translationY = if (lifted) drag.y else 0f
                     scaleX = lift
                     scaleY = lift
                 }
                 .clip(RoundedCornerShape(K.rTile))
                 .then(
                     if (!inEdit) Modifier
-                    else Modifier.pointerInput(favourites, dir) {
+                    else Modifier.pointerInput(favourites, dir, cols) {
                         detectDragGestures(
-                            onDragStart = { held = f.id; dx = 0f },
-                            onDragCancel = { held = null; dx = 0f; order = null },
-                            onDragEnd = {
-                                val moved = order
-                                held = null; dx = 0f
-                                if (moved != null) onReorder?.invoke(moved)
+                            onDragStart = {
+                                origin[0] = spot.at.value.x
+                                origin[1] = spot.at.value.y
+                                drag = Offset.Zero
+                                held = f.id
                             },
-                            onDrag = { change, drag ->
+                            onDragCancel = { drop(keep = false) },
+                            onDragEnd = { drop(keep = true) },
+                            onDrag = { change, by ->
                                 change.consume()
-                                dx += drag.x
+                                drag += by
                                 val list = (order ?: favourites).toMutableList()
                                 val at = list.indexOfFirst { it.id == f.id }
                                 if (at < 0) return@detectDragGestures
-                                val travelled = dx * dir
-                                if (travelled > slotPx / 2 && at < list.size - 1) {
-                                    list.add(at + 1, list.removeAt(at))
-                                    dx -= slotPx * dir
-                                    order = list
-                                } else if (travelled < -slotPx / 2 && at > 0) {
-                                    list.add(at - 1, list.removeAt(at))
-                                    dx += slotPx * dir
+                                val col = (origin[0] + drag.x * dir / pitch[0]).roundToInt().coerceIn(0, cols - 1)
+                                val row = (origin[1] + drag.y / pitch[1]).roundToInt().coerceAtLeast(0)
+                                val to = (row * cols + col).coerceIn(0, list.size - 1)
+                                if (to != at) {
+                                    list.add(to, list.removeAt(at))
                                     order = list
                                 }
                             },
@@ -199,7 +254,7 @@ fun FavouriteStrip(
                     onClick = { if (inEdit) onEdit(f) else onPick(f) },
                     onLongClick = if (inEdit) null else ({ onEdit(f) }),
                 )
-                .padding(vertical = K.gap2),
+                .padding(horizontal = K.gap1, vertical = K.gap2),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Box(contentAlignment = Alignment.Center) {
@@ -246,40 +301,51 @@ fun FavouriteStrip(
             )
         }
     }
-    val controls: @Composable () -> Unit = {
-        if (manage) EditControls(
-            editing = inEdit,
-            onToggle = { editMode = !editMode; order = null; held = null; dx = 0f },
-            onAdd = onAdd,
-        ) else StripTile(
-            Icons.Rounded.Add,
-            T("Add", "הוספה"),
-            T("Add a favourite", "הוספת מועדף"),
-            on = false,
-            onClick = onAdd,
-        )
-    }
 
     Column(Modifier.fillMaxWidth()) {
-        BoxWithConstraints(Modifier.fillMaxWidth().animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
-            // More favourites than one screen's width take two rows, the first half above the rest, and scroll together.
-            // Sorting keeps them in one row, as a drag moves a tile a slot at a time along it.
-            val slots = shown.size + 1
-            val twoRows = !inEdit && SLOT * slots - K.gap2 > maxWidth - horizontalPadding * 2
-            val firstRow = if (twoRows) (slots + 1) / 2 else shown.size
-            Column(
-                Modifier.fillMaxWidth()
-                    .horizontalScroll(rememberScrollState(), enabled = held == null)
-                    .padding(horizontal = horizontalPadding, vertical = K.gap2),
-                verticalArrangement = Arrangement.spacedBy(K.gap1),
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = horizontalPadding, vertical = K.gap2)) {
+            val cols = ((maxWidth + K.gap2) / SLOT).toInt().coerceAtLeast(1)
+            // Editing adds the Add tile before Done, so the grid gains a cell.
+            val slots = shown.size + if (inEdit) 2 else 1
+            SpotGrid(
+                cols, slots, pitch,
+                Modifier.fillMaxWidth().animateContentSize(spring(dampingRatio = 1f, stiffness = 500f)),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                    shown.take(firstRow).forEach { tile(it) }
-                    if (!twoRows) controls()
-                }
-                if (twoRows) Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-                    shown.drop(firstRow).forEach { tile(it) }
-                    controls()
+                shown.forEachIndexed { i, f -> key("favourite", f.id) { Tile(f, i, cols) } }
+                if (!manage) key("add") {
+                    StripTile(
+                        Icons.Rounded.Add, T("Add", "הוספה"), T("Add a favourite", "הוספת מועדף"),
+                        on = false, onClick = onAdd, modifier = Modifier.layoutId(rememberSpot(shown.size, cols)),
+                    )
+                } else {
+                    if (inEdit || travel > 0f) key("add") {
+                        StripTile(
+                            Icons.Rounded.Add, T("Add", "הוספה"), T("Add a favourite", "הוספת מועדף"),
+                            on = false, onClick = onAdd, enabled = inEdit,
+                            modifier = Modifier.layoutId(rememberSpot(shown.size, cols)).graphicsLayer {
+                                val grown = .3f + .7f * travel.coerceAtLeast(0f)
+                                alpha = travel.coerceIn(0f, 1f)
+                                scaleX = grown
+                                scaleY = grown
+                            },
+                        )
+                    }
+                    key("edit") {
+                        val flipped = travel > .5f
+                        StripTile(
+                            if (flipped) Icons.Rounded.Check else Icons.Rounded.Edit,
+                            if (flipped) T("Done", "סיום") else T("Edit", "עריכה"),
+                            if (inEdit) T("Finish editing favourites", "סיום עריכת המועדפים")
+                            else T("Sort and remove favourites", "סידור והסרה של מועדפים"),
+                            on = inEdit,
+                            onClick = { editMode = !editMode; order = null; held = null; drag = Offset.Zero },
+                            modifier = Modifier.layoutId(rememberSpot(shown.size + if (inEdit) 1 else 0, cols)),
+                            iconModifier = Modifier.graphicsLayer {
+                                rotationY = travel * 180f - if (flipped) 180f else 0f
+                                cameraDistance = 12f * density
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -294,45 +360,6 @@ fun FavouriteStrip(
                 modifier = Modifier.padding(horizontal = horizontalPadding),
             )
         }
-    }
-}
-
-@Composable
-private fun EditControls(editing: Boolean, onToggle: () -> Unit, onAdd: () -> Unit) {
-    val slotPx = with(LocalDensity.current) { SLOT.toPx() }
-    val travel by animateFloatAsState(
-        if (editing) 1f else 0f,
-        spring(dampingRatio = .58f, stiffness = Spring.StiffnessMediumLow), label = "editTravel",
-    )
-    Box(Modifier.width(72.dp + SLOT * travel.coerceIn(0f, 1f))) {
-        StripTile(
-            Icons.Rounded.Add,
-            T("Add", "הוספה"),
-            T("Add a favourite", "הוספת מועדף"),
-            on = false,
-            onClick = onAdd,
-            enabled = editing,
-            modifier = Modifier.graphicsLayer {
-                val grown = .3f + .7f * travel.coerceAtLeast(0f)
-                alpha = travel.coerceIn(0f, 1f)
-                scaleX = grown
-                scaleY = grown
-            },
-        )
-        val flipped = travel > .5f
-        StripTile(
-            if (flipped) Icons.Rounded.Check else Icons.Rounded.Edit,
-            if (flipped) T("Done", "סיום") else T("Edit", "עריכה"),
-            if (editing) T("Finish editing favourites", "סיום עריכת המועדפים")
-            else T("Sort and remove favourites", "סידור והסרה של מועדפים"),
-            on = editing,
-            onClick = onToggle,
-            modifier = Modifier.offset { IntOffset((slotPx * travel).roundToInt(), 0) },
-            iconModifier = Modifier.graphicsLayer {
-                rotationY = travel * 180f - if (flipped) 180f else 0f
-                cameraDistance = 12f * density
-            },
-        )
     }
 }
 
@@ -379,9 +406,9 @@ private fun StripTile(
     val fill by animateColorAsState(if (on) K.accent else K.fill, tween(220), label = "tileFill")
     val ink by animateColorAsState(if (on) K.onAccent else K.textSecondary, tween(220), label = "tileInk")
     Column(
-        modifier.width(72.dp).clip(RoundedCornerShape(K.rTile))
+        modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(vertical = K.gap2),
+            .padding(horizontal = K.gap1, vertical = K.gap2),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(

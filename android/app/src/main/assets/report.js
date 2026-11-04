@@ -1,5 +1,5 @@
 // Fills the National Public Transport Authority's form (govforms.gov.il, PublicTransportRequest@mot.gov.il) with a
-// report Kav put together. Kav runs it in the form's own page as (function)(report). It never presses Send: the
+// report Kav put together, about a bus or a train. Kav runs it in the form's own page as (function)(report). It never presses Send: the
 // rider does, after checking the form. How far it got is left in window.__kav for Kav to read.
 (function (d) {
   if (window.__kav) return;
@@ -187,6 +187,32 @@
     if (station) k.missed.push('StationEvent');
   }
 
+  // A train's stations, from the form's list for Israel Railways: by the railway's own id for the station, which the
+  // list's entries carry, else by the name.
+  async function pickStation(id, code, name) {
+    var el = await until(function () { var f = field(id); return shown(f) ? f : null; }, 4000);
+    if (!el) { k.missed.push(id); return; }
+    el.focus();
+    key(el, 'ArrowDown', 40);
+    var labels = await until(function () { var l = options(el); return l.length ? l : null; }, 8000);
+    var known = labels ? entries(el) : [];
+    key(el, 'Escape', 27);
+    el.blur();
+    await sleep(150);
+    if (!labels) { k.missed.push(id); return; }
+    var hit = code ? known.filter(function (e) { return String(e.dataCode) === String(code); })[0] : null;
+    var label = hit ? hit.dataText : labels.filter(function (l) { return plain(l) === plain(name); })[0];
+    if (!label || !(await choose(id, same(label)))) k.missed.push(id);
+  }
+  async function pickTrain() {
+    await tick('TrainType', '1');
+    await sleep(600);
+    await pickStation('BoardingStation', d.boarding, d.boardingName);
+    await pickStation('DestinationStation', d.destination, d.destinationName);
+    if (d.stationEvent) await tick('StationEvent2', d.stationEvent);
+    if (d.trainNumber) await type('TrainNumber2', d.trainNumber);
+  }
+
   // The rider's photos: Kav serves each at an address on the form's own site that only this script knows. The form
   // takes up to four, one per row of its attachments, and uploads each as soon as it's given one.
   function attachmentRows() { return document.querySelectorAll('[data-testid^="item-repeatedFields-Attachments-"]'); }
@@ -250,7 +276,7 @@
     if (!start) { k.state = 'error'; return; }
     start.click();
     await sleep(500);
-    var ids = ['TransportMeans', 'RequestSubjectTran', 'RequestComplaintAppealTran'], texts = ['אוטובוס', d.subject, d.second];
+    var ids = ['TransportMeans', 'RequestSubjectTran', 'RequestComplaintAppealTran'], texts = [d.means || 'אוטובוס', d.subject, d.second];
     for (var i = 0; i < ids.length; i++) {
       if (!(await choose(ids[i], same(texts[i])))) { k.missed.push(ids[i]); k.state = 'partial'; return; }
     }
@@ -262,10 +288,10 @@
     if (d.location) await tick('EventLocation', d.location);
     await type('EventDate', d.date);
     await type('EventHour2', d.time);
-    await pickLine();
+    if (d.train) await pickTrain(); else await pickLine();
     if (d.plate && shown(field('BusNumber'))) await type('BusNumber', d.plate);
     if (d.demand) await type('RequisitionNumber', d.demand);
-    if (d.validation) await type('ValidationHour2', d.validation);
+    if (d.validation) await type(d.validationField || 'ValidationHour2', d.validation);
     if (d.paymentMeans) {
       await tick('PaymentMeans', d.paymentMeans);
       await sleep(600);

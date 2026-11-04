@@ -8,12 +8,14 @@ import android.net.ConnectivityManager
 import android.os.Build
 import org.json.JSONObject
 import uk.noammm.kav.InstallStatus
+import uk.noammm.kav.Prefs
 import java.io.File
 import java.security.MessageDigest
 
-// Kav updating itself: the background check (Checks) downloads a newer release on Wi-Fi, kept only when it's signed
-// with exactly the installed Kav's certificates. Only the rider's Install now, asked as Kav next opens (ReadyPrompt),
-// installs it, so any question from Android or Play Protect follows their own tap. Its state is kept in updated.json.
+// Kav updating itself: the background check (Checks) downloads a newer release on Wi-Fi, or on mobile data when the rider
+// allows it, kept only when it's signed with exactly the installed Kav's certificates. Only the rider's Install now, asked
+// as Kav next opens (ReadyPrompt), installs it, so any question from Android or Play Protect follows their own tap. Its
+// state is kept in updated.json.
 internal object AutoUpdate {
     class Notice(val from: String, val to: String, val name: String, val notes: String, val at: Long) {
         fun release() = Updates.Release(to, name, notes, null, -1, Updates.PAGE)
@@ -39,7 +41,7 @@ internal object AutoUpdate {
             return
         }
         if (state(ctx)?.to == release.version && apk(ctx, release.version).exists()) return
-        if (metered(ctx)) return
+        if (metered(ctx) && !Prefs.updatesOnMobile(ctx)) return
         val apk = Updates.download(ctx, release) { _, _ -> }
         if (!sameApp(ctx, apk)) {
             apk.delete()

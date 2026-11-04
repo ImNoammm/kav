@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextOverflow
@@ -30,6 +31,8 @@ import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.KavPlan
 import uk.noammm.kav.data.RailTrip
 import uk.noammm.kav.data.Transit
+import uk.noammm.kav.data.HopOnShare
+import uk.noammm.kav.data.MoovitWeb
 import uk.noammm.kav.data.shownName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -43,9 +46,26 @@ import androidx.compose.ui.text.font.FontWeight
 private suspend fun shareTrip(
     ctx: android.content.Context, trip: Transit.Itinerary, r: Transit.Resolved, fromLabel: String, toLabel: String,
 ) {
-    val text = if (RailTrip.owns(trip)) railShare(trip, r, fromLabel, toLabel) else {
-        // A link that plans the same way at the same time; a trip Kav planned is found again by its rides.
-        val url = checkNotNull(KavPlan.shareLink(trip, fromLabel, toLabel, rides = KavPlan.owns(trip)))
+    val style = uk.noammm.kav.Prefs.linkStyle(ctx).resolved(uk.noammm.kav.Prefs.lang(ctx).code,
+        uk.noammm.kav.Prefs.stopNamesEnglish(ctx), uk.noammm.kav.Prefs.look(ctx).name.lowercase(Locale.US))
+    val text = if (RailTrip.owns(trip)) {
+        val link = withContext(Dispatchers.IO) {
+            uk.noammm.kav.data.TripShare.create(checkNotNull(KavPlan.sharePayload(trip, fromLabel, toLabel, r, rides = false, style = style)), style.expiryDays)
+        }
+        railShare(trip, r, fromLabel, toLabel, link)
+    } else {
+        val moovit = if ("moovit" in style.apps || uk.noammm.kav.Prefs.shareLinks(ctx) == "moovit")
+            withContext(Dispatchers.IO) { MoovitWeb.shareLink(ctx, trip, fromLabel, toLabel) } else null
+        val url = if (uk.noammm.kav.Prefs.shareLinks(ctx) == "moovit" && moovit != null) moovit else {
+            val (egg, busNearby) = if (HopOnShare.has(trip) && style.apps.any { it == "egg" || it == "bnb" })
+                withContext(Dispatchers.IO) { HopOnShare.links(ctx, trip) } else null to null
+            val colors = routeTints(trip.legs.filter { it.shape.size >= 2 && it.kind != Transit.LegKind.WALK }, r)
+                .map { "#%06x".format(Locale.US, it.toArgb() and 0xffffff) }
+            withContext(Dispatchers.IO) {
+                uk.noammm.kav.data.TripShare.create(checkNotNull(KavPlan.sharePayload(trip, fromLabel, toLabel, r, rides = KavPlan.owns(trip),
+                    egg = egg, busNearby = busNearby, moovit = moovit, colors = colors, style = style)), style.expiryDays)
+            }
+        }
         T("$fromLabel → $toLabel\n$url", "$fromLabel ← $toLabel\n$url")
     }
     val send = android.content.Intent(android.content.Intent.ACTION_SEND)
@@ -55,8 +75,9 @@ private suspend fun shareTrip(
 }
 
 // An Israel Railways journey is shared in words: each with its times and platforms,
-// and a link that plans the same way at the same time.
-internal fun railShare(trip: Transit.Itinerary, r: Transit.Resolved, fromLabel: String, toLabel: String): String {
+// and a link preserving the selected trip.
+internal fun railShare(trip: Transit.Itinerary, r: Transit.Resolved, fromLabel: String, toLabel: String,
+    link: String): String {
     fun at(stop: Int, platform: String) = r.stopName(stop).orEmpty() +
         if (platform.isNotBlank()) T(" (platform $platform)", " (רציף $platform)") else ""
     val trains = trip.rides.map { ride ->
@@ -66,8 +87,7 @@ internal fun railShare(trip: Transit.Itinerary, r: Transit.Resolved, fromLabel: 
         T("$leaves train $number, ${at(ride.fromStop, r.platform(ride))} → $reaches ${at(ride.toStop, r.alightPlatform(ride))}",
             "$leaves רכבת $number, ${at(ride.fromStop, r.platform(ride))} ← $reaches ${at(ride.toStop, r.alightPlatform(ride))}")
     }
-    val link = KavPlan.shareLink(trip, fromLabel, toLabel, rides = false)
-    return (listOf(T("$fromLabel → $toLabel", "$fromLabel ← $toLabel")) + trains + listOfNotNull(link)).joinToString("\n")
+    return (listOf(T("$fromLabel → $toLabel", "$fromLabel ← $toLabel")) + trains + link).joinToString("\n")
 }
 
 private val hm get() = clockFormat()
@@ -126,7 +146,10 @@ fun TripDetailScreen(
             openTimetableLine(model, found.first, found.second)
         }
     }
-    CompositionLocalProvider(LocalLineOpener provides openLine) {
+    var notice by remember(trip) { mutableStateOf<uk.noammm.kav.data.MoovitAlerts.Alert?>(null) }
+    FreshAlerts()
+    CompositionLocalProvider(LocalLineOpener provides openLine, LocalServiceAlertOpener provides { notice = it }) {
+    Box(Modifier.fillMaxSize()) {
     androidx.compose.animation.AnimatedContent(
         targetState = Triple(tracking != null, navigating, tracking),
         transitionSpec = {
@@ -153,6 +176,8 @@ fun TripDetailScreen(
                 onReport = { model.report = it },
                 pay = if (Shown.payments) { leg, ride -> TripPay(model, leg, ride, r, trip) } else null)
         }
+    }
+    notice?.let { ServiceAlertSheet(it) { notice = null } }
     }
     }
 }
@@ -230,16 +255,31 @@ private fun Summary(trip: Transit.Itinerary, r: Transit.Resolved) {
         facts.add(T("Arrives ${hm.format(Date(trip.arr * 1000))}", "הגעה ב-${hm.format(Date(trip.arr * 1000))}"))
         if (trip.fare >= 0) facts.add("%s%.2f".format(Locale.US, trip.currency, trip.fare / 100.0))
         if (trip.accessible) facts.add(T("Step-free", "נגיש"))
-        if (Shown.co2 && trip.co2g >= 0) facts.add(co2(trip.co2g))
-        facts.addAll(tagWords(trip))
+        if (Shown.co2) uk.noammm.kav.data.Emissions.grams(trip, r).takeIf { it >= 0 }?.let { facts.add(co2(it)) }
         Text(facts.joinToString(" · "), style = K.type.subhead.tabular)
         Spacer(Modifier.height(K.gap3))
         RouteStrip(trip, r)
+        RouteTags(trip, Modifier.padding(top = K.gap3))
     }
 }
 
 // A route's tags in words, in the language Kav is shown in now.
 internal fun tagWords(trip: Transit.Itinerary): List<String> = trip.tags.mapNotNull(KavPlan::tagWord)
+
+// What a route is best at, as small ovals on its card and its page: a late train's in red.
+@Composable
+internal fun RouteTags(trip: Transit.Itinerary, modifier: Modifier = Modifier) {
+    val tags = trip.tags.mapNotNull { tag -> KavPlan.tagWord(tag)?.let { it to KavPlan.isLate(tag) } }
+    if (tags.isEmpty()) return
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(K.gap1), verticalArrangement = Arrangement.spacedBy(K.gap1)) {
+        tags.forEach { (word, late) ->
+            Text(
+                word, style = K.type.caption, color = if (late) K.critical else K.textSecondary, maxLines = 1,
+                modifier = Modifier.clip(K.capsule).background(K.fill).padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
 
 // train: a late one says by how much, as the railway's own list does.
 private fun depNote(deps: List<Transit.Departure>, train: Boolean = false): String? {
@@ -394,9 +434,7 @@ private fun Timeline(
         Rail(Mark.END, walk, null) {
             // A trip ending on a train arrives when the train does, as the railway expects it in.
             val arrives = trip.legs.lastOrNull()?.takeIf { it.kind == Transit.LegKind.RIDE && r.isTrain(it) }?.let(r::alightAt) ?: trip.arr
-            // The place itself, as the way there reaches it, when the trip ends with a walk: a bus stop at the end has its own.
-            Endpoint(toLabel, hm.format(Date(arrives * 1000)), T("Arrive", "הגעה"),
-                lookAhead(trip.legs.takeLastWhile { it.kind == Transit.LegKind.WALK }.flatMap { it.shape }))
+            Endpoint(toLabel, hm.format(Date(arrives * 1000)), T("Arrive", "הגעה"))
         }
     }
 }
@@ -506,13 +544,9 @@ private fun Rail(
 }
 
 @Composable
-private fun Endpoint(label: String, time: String, when_: String, streetView: StreetLook? = null) {
+private fun Endpoint(label: String, time: String, when_: String) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         Text(label, style = K.type.body, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-        if (streetView != null) {
-            Spacer(Modifier.width(K.gap2))
-            StreetViewButton(streetView, label)
-        }
         Spacer(Modifier.width(K.gap2))
         TimeColumn(time, when_)
     }
@@ -534,6 +568,10 @@ private fun StopRowDetail(
     streetView: StreetLook? = null,
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        if (mode == Mode.BUS && streetView != null) {
+            StopGlyphOrPhoto(stopId, null, photo = StopLook(streetView, name))
+            Spacer(Modifier.width(K.gap3))
+        }
         Column(Modifier.weight(1f)) {
             Text(name, style = K.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (!code.isNullOrBlank()) Text(T("Stop $code", "תחנה $code"), style = K.type.subhead)
@@ -542,10 +580,6 @@ private fun StopRowDetail(
                 Spacer(Modifier.height(K.gap1))
                 PlatformTag(platform)
             }
-        }
-        if (streetView != null) {
-            Spacer(Modifier.width(K.gap2))
-            StreetViewButton(streetView, name)
         }
         Spacer(Modifier.width(K.gap2))
         TimeColumn(time)
@@ -650,7 +684,7 @@ private fun BoardOption(
                 Text(it, fontSize = 14.sp, color = K.dim, modifier = Modifier.padding(top = K.gap1))
             }
         }
-        wait?.let { AlertRow(it.alertCategory, it.alertText) }
+        AlertRow(lineAlert(r, ride, wait))
         // Not boarded yet, so the soonest bus of the line still to come, as on the trip's map.
         val bus = shownArrival(ride, ride to wait, r, now)?.takeIf { it.hasLocation }
         // With no position for any, the soonest timed live: Live location looks for it on Kav's server, or says it has none.

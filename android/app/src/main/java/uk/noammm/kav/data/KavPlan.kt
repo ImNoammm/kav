@@ -39,6 +39,15 @@ object KavPlan {
     // choices use the old preference migration.
     var source by mutableStateOf(Source.MOOVIT)
 
+    // Every planner's routes, a tab each on the results (Settings), in the rider's order; the rider's own server only
+    // once it's set up.
+    var everyPlanner by mutableStateOf(false)
+    var tabOrder by mutableStateOf(Source.PLANNING)
+    fun tabs(): List<Source> = tabOrder.filter { it != Source.OWN || KavLive.ownServer.isNotEmpty() }
+
+    // The server that plans for a tab: the chosen planner's as planner() has it, any other's as it's set.
+    fun plannerOf(s: Source): String? = if (s == source) planner() else KavLive.serverOf(s)
+
     // The server chosen to plan: Kav's, or the rider's own once it's set up (Kav's until then).
     val server: String get() = KavLive.serverOf(source)
 
@@ -68,14 +77,24 @@ object KavPlan {
     // A shared link that names Kav's own rides, which only Kav's planner can find again.
     fun owns(rides: List<TripLink.Ride>): Boolean = rides.isNotEmpty() && rides.all { it.lineId >= BASE }
 
-    // A trip shared as Kav's own link (TripLink.tripLink): Kav opens it as this very trip, planning it again from its
-    // places and departure and finding it by its rides. Nothing is stored anywhere. rides: false for a trip no planner
-    // finds again by its rides, which then plans the same way at the same time.
-    fun shareLink(trip: Transit.Itinerary, fromName: String, toName: String, rides: Boolean = true): String? {
-        val start = trip.legs.firstNotNullOfOrNull { leg -> leg.shape.firstOrNull() } ?: return null
-        val end = trip.legs.lastOrNull { it.shape.isNotEmpty() }?.shape?.lastOrNull() ?: return null
-        return TripLink.tripLink(start, end, fromName, toName, trip.dep,
-            if (rides) trip.rides.map { TripLink.Ride(it.lineId, it.tripId, it.dep) } else emptyList())
+    // The selected trip itself, with its stop and line details and the sender's page choices.
+    fun sharePayload(
+        trip: Transit.Itinerary, fromName: String, toName: String, resolved: Transit.Resolved,
+        rides: Boolean = true, egg: String? = null, busNearby: String? = null, moovit: String? = null, colors: List<String> = emptyList(),
+        style: ShareStyle = ShareStyle(),
+    ): JSONObject? {
+        val start = trip.legs.firstNotNullOfOrNull { leg -> leg.shape.firstOrNull() }
+            ?: trip.legs.firstNotNullOfOrNull { resolved.stop(it.fromStop)?.point } ?: return null
+        val end = trip.legs.lastOrNull { it.shape.isNotEmpty() }?.shape?.lastOrNull()
+            ?: trip.legs.asReversed().firstNotNullOfOrNull { resolved.stop(it.toStop)?.point } ?: return null
+        val inEnglish = when (style.stopLanguage) { "en" -> true; "he" -> false; else -> StopNames.english }
+        val net = uk.noammm.kav.Loaded.net
+        fun point(p: Pair<Double, Double>) = String.format(Locale.US, "%.6f,%.6f", p.first, p.second)
+        return style.page().put("from", point(start)).put("to", point(end))
+            .put("fromName", net?.shown(fromName, inEnglish) ?: fromName).put("toName", net?.shown(toName, inEnglish) ?: toName)
+            .put("at", trip.dep.toString()).put("data", TripShare.encode(trip, resolved, colors, inEnglish))
+            .put("trip", if (rides) trip.rides.joinToString("~") { "${it.lineId}.${it.tripId}.${it.dep}" } else "")
+            .put("egg", egg).put("bnb", busNearby).put("moovit", moovit)
     }
 
     // Whether an id is one given here.
@@ -111,14 +130,14 @@ object KavPlan {
         return String.format(Locale.US, "plan/%.6f,%.6f,%.6f,%.6f/%d%s%s", from.first, from.second, to.first, to.second, at, way, only) + via
     }
 
-    // at: the server that plans (planner, linkPlanner).
+    // at: the server that plans (planner, linkPlanner); by: the planner it is, for HopOn's two apps.
     fun plan(
         from: Pair<Double, Double>, to: Pair<Double, Double>, whenMs: Long, timeType: Int, routeTypes: List<Int>, taxi: Boolean,
-        stopovers: List<Transit.Place> = emptyList(), at: String,
+        stopovers: List<Transit.Place> = emptyList(), at: String, by: Source = source,
     ): Planned {
         val planned = when (at) {
             MoovitWeb.SERVER -> MoovitWeb.plan(from, to, whenMs, timeType, routeTypes, taxi, stopovers)
-            BusNearby.SERVER -> parse(BusNearby.plan(from, to, whenMs, timeType, routeTypes, stopovers.map { it.lat to it.lon }, source))
+            BusNearby.SERVER -> parse(BusNearby.plan(from, to, whenMs, timeType, routeTypes, stopovers.map { it.lat to it.lon }, by))
             else -> parse(asked(path(from, to, whenMs, timeType, routeTypes, taxi, stopovers.map { it.lat to it.lon }), at))
         }
         // The server's timetable runs two weeks ahead. Walking and cycling don't need it.
@@ -211,7 +230,7 @@ object KavPlan {
                 val number = a.optString(0).ifBlank { if (from.isNotBlank() && to.isNotBlank()) "$from - $to" else a.optString(7) }
                 val caption = if (fromCity.isBlank() || fromCity == toCity) toCity else "$fromCity ↔︎ $toCity"
                 val id = lineId(k)
-                lines[id] = Transit.LineInfo(id, number, agency, from, to, caption)
+                lines[id] = Transit.LineInfo(id, number, agency, from, to, caption, a.optString(7))
                 routeNames[id] = a.optString(7)
             }
         }
@@ -257,10 +276,12 @@ object KavPlan {
             }
             if (legs.isEmpty()) continue
             val tags = (it.optJSONArray("tags") ?: JSONArray()).let { t -> (0 until t.length()).map { k -> t.optString(k) } }
+            val guid = "kav-" + Integer.toHexString(legs.joinToString("|") { "${it.kind}${it.lineId}${it.tripId}${it.dep}" }.hashCode())
             routes += Transit.Itinerary(
-                guid = "kav-" + Integer.toHexString(legs.joinToString("|") { "${it.kind}${it.lineId}${it.tripId}${it.dep}" }.hashCode()),
+                guid = guid,
                 group = 2, legs = legs, dep = it.optLong("dep"), arr = it.optLong("arr"), tags = tags,
                 sectionId = it.optInt("sec", SECTION_MAIN),
+                original = it.optJSONObject("hopOn")?.toString().orEmpty(),
             )
         }
         val errors = (o.optJSONArray("errors") ?: JSONArray()).let { e -> (0 until e.length()).map { e.optString(it) } }
@@ -376,6 +397,8 @@ object KavPlan {
     private val LATE_WORDS = Regex("^(\\d+) min late$|^באיחור של (\\d+) דק׳$")
 
     fun lateTag(minutes: Int) = "$LATE$minutes"
+
+    fun isLate(tag: String) = tag.startsWith(LATE)
 
     // A tag's words as Kav is shown now; null for a tag it has no words for.
     fun tagWord(tag: String): String? = TAG_WORDS[tag]?.let { (en, he) -> T(en, he) }

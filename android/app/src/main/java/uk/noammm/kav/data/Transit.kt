@@ -52,6 +52,7 @@ object Transit {
 
     class Stop(val id: Int, val lat: Double, val lon: Double, val name: String)
 
+    // routeName: the ministry's own name for this way of the line, which service alerts are found by (MoovitAlerts).
     class LineInfo(
         val groupId: Int,
         val number: String,
@@ -59,6 +60,7 @@ object Transit {
         val origin: String,
         val destination: String,
         val caption: String,
+        val routeName: String = "",
     )
 
     class StopInfo(
@@ -159,6 +161,8 @@ object Transit {
         val shape: List<Pair<Double, Double>> = emptyList(),
         val alertCategory: Int = 0,
         val alertText: String = "",
+        // The alerts behind alertCategory, for their notices.
+        val alertIds: List<String> = emptyList(),
         val taxiPickup: Pair<Double, Double>? = null,
         val taxiDropoff: Pair<Double, Double>? = null,
         val alternatives: List<Leg> = emptyList(),
@@ -188,6 +192,8 @@ object Transit {
         val tags: List<String> = emptyList(),
         val section: String = "",
         val sectionId: Int = -1,
+        // The provider's original itinerary, kept for its own Share request, including after reopening a saved trip.
+        val original: String = "",
     ) {
         // The day off a route sets out after, when the search falls on one and nothing runs: the planner tags it.
         val after: DayOff? get() = when {
@@ -316,10 +322,29 @@ object Transit {
                 ?: departures(ride, wait).firstOrNull { it.tripId == ride.tripId && it.platform.isNotBlank() }?.platform
                 ?: wait?.options?.firstOrNull { it.lineId == ride.lineId }?.nextDeps
                     ?.firstOrNull { it.tripId == ride.tripId && it.platform.isNotBlank() }?.platform
-                ?: plannedPlatform(ride, ride.fromStop)
+                ?: plannedPlatform(ride, ride.fromStop).ifBlank { null }
+                ?: railPlatforms(ride)?.from.orEmpty()
 
-        // The platform a train stops at where the rider gets off it, once the live times there have it.
-        fun alightPlatform(ride: Leg): String = live[ArrivalKey(ride.toStop, ride.tripId)]?.platform.orEmpty()
+        // The platform a train stops at where the rider gets off it, once the live times there have it, else as the
+        // railway has it.
+        fun alightPlatform(ride: Leg): String =
+            live[ArrivalKey(ride.toStop, ride.tripId)]?.platform?.ifBlank { null } ?: railPlatforms(ride)?.to.orEmpty()
+
+        // The railway's own platforms for a train, once asked (RailPlatforms).
+        private fun railPlatforms(ride: Leg): RailPlatforms.Platforms? {
+            if (!isTrain(ride)) return null
+            val from = stop(ride.fromStop)?.code?.toIntOrNull()?.let(IsraelRail::stationOf) ?: return null
+            val to = stop(ride.toStop)?.code?.toIntOrNull()?.let(IsraelRail::stationOf) ?: return null
+            return RailPlatforms.of(from, to, ride.dep)
+        }
+
+        // A train whose platforms the railway can be asked for, when the plan and live times don't give both.
+        fun railAsk(ride: Leg): RailPlatforms.Ask? {
+            if (!isTrain(ride) || platform(ride).isNotBlank() && alightPlatform(ride).isNotBlank()) return null
+            val from = stop(ride.fromStop)?.code?.toIntOrNull()?.let(IsraelRail::stationOf) ?: return null
+            val to = stop(ride.toStop)?.code?.toIntOrNull()?.let(IsraelRail::stationOf) ?: return null
+            return RailPlatforms.Ask(from, to, ride.dep, ride.shortName.ifBlank { line(ride.lineId)?.number.orEmpty() })
+        }
 
         // A bus station's platform from the timetable, which numbers them. A train's comes only with its live times.
         private fun plannedPlatform(ride: Leg, stopId: Int): String {

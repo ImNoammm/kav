@@ -237,6 +237,7 @@ class TripService : Service() {
         val moved = journeyProgress(
             steps, step, journey.resolved, journey.chosen, System.currentTimeMillis() / 1000,
             listOfNotNull(fix, rough).maxByOrNull { it.at }, canLocate(this), Prefs.beginTripsImmediately(this),
+            journey.fromHere,
         )
         if (moved == step) return
         JourneyFile.save(this, journey, moved)

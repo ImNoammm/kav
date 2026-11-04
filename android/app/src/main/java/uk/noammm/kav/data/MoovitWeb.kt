@@ -119,7 +119,7 @@ internal object MoovitWeb {
                     val id = l.optInt("lineId", -1).takeIf { it > 0 } ?: continue
                     lines[id] = Transit.LineInfo(
                         g.optInt("groupId", -1), g.optString("lineNumber"), g.optInt("agencyId", -1),
-                        l.optString("origin"), l.optString("destination"), caption,
+                        l.optString("origin"), l.optString("destination"), caption, l.optString("routeLongName"),
                     )
                 }
             }
@@ -179,6 +179,7 @@ internal object MoovitWeb {
             },
             section = it.optString("sectionName"),
             sectionId = it.optInt("sectionId", -1),
+            original = it.toString(),
         )
     }
 
@@ -218,7 +219,8 @@ internal object MoovitWeb {
     // stops are the leg's own): its departure first, then the line's next ones, each with the line's service alert.
     private fun wait(l: JSONObject, multi: JSONObject? = null): Transit.Leg {
         val (dep, arr) = times(l)
-        val status = l.optJSONObject("serviceAlert")?.optJSONObject("serviceStatus")
+        val service = l.optJSONObject("serviceAlert")
+        val status = service?.optJSONObject("serviceStatus")
         val alert = status?.optInt("category") ?: 0
         val end = l.optJSONObject("time")?.ms("endTimeUtc") ?: 0L
         val deps = listOfNotNull(if (end > 0) Transit.Departure(0, end / 1000) else null) +
@@ -229,6 +231,7 @@ internal object MoovitWeb {
             fromStop = stops.optInt("waitAtStopId", -1), toStop = stops.optInt("departOnStopId", -1),
             nextDeps = if (alert == 0) deps else deps.map { it.copy(alert = alert) },
             alertCategory = alert, alertText = status?.optString("desc").orEmpty(),
+            alertIds = service?.optJSONArray("alertIds")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty().distinct(),
         )
     }
 
@@ -308,6 +311,17 @@ internal object MoovitWeb {
     // A trip shared from Moovit (TripLink): its itinerary by its id and its two ends, asked in the site's hidden page as
     // the site's own page opens the link (moovit_web_lines.js), which Kav opens as the exact shared trip.
     fun shared(id: String): TripLink.Plan = sharedPlan(MoovitWebPage.lines(JSONObject().put("kind", "shared").put("id", id)))
+
+    // The selected website itinerary through native sharing, with the site's own Share request as fallback.
+    fun shareLink(ctx: android.content.Context, trip: Transit.Itinerary, fromName: String, toName: String): String? {
+        if (!owns(trip) || trip.original.isEmpty()) return null
+        runCatching { MoovitShare.link(ctx, trip, fromName, toName) }.getOrNull()?.let { return it }
+        return runCatching {
+            val answer = MoovitWebPage.lines(JSONObject().put("kind", "share")
+                .put("guid", trip.guid.removePrefix(GUID)).put("original", JSONObject(trip.original)))
+            answer.optString("url").takeIf { TripLink.parse(it)?.shared?.source == Source.MOOVIT }
+        }.getOrNull()
+    }
 
     // Its ends, and when it leaves if that's still to come; else it's planned from now.
     internal fun sharedPlan(o: JSONObject, now: Long = System.currentTimeMillis()): TripLink.Plan {

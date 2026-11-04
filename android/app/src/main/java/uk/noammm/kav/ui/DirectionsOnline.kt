@@ -24,6 +24,7 @@ import uk.noammm.kav.requestLocationOnce
 import uk.noammm.kav.data.GoogleMaps
 import uk.noammm.kav.data.KavLive
 import uk.noammm.kav.data.KavPlan
+import uk.noammm.kav.data.Source
 import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.Transit.Place
 import uk.noammm.kav.data.TripLink
@@ -68,6 +69,14 @@ private fun herePlace(at: Pair<Double, Double>) = Place(hereName(), "", at.first
 private fun isHere(p: Place?) = p != null && p.name in HERE
 
 private fun endpointName(p: Place?) = if (isHere(p)) hereName() else p?.name
+
+// Whether the rider is where the trip starts as they begin it: by a fresh position when there is one, else by the trip
+// being planned from where they are.
+private fun startsHere(trip: Transit.Itinerary, model: KavModel, plannedHere: Boolean): Boolean {
+    val start = trip.legs.firstNotNullOfOrNull { it.shape.firstOrNull() }
+    val here = model.here?.takeIf { model.hereFresh }
+    return if (start != null && here != null) metres(here.first, here.second, start.first, start.second) < 150 else plannedHere
+}
 
 // A shared trip's end by the name it came with. The sender's own location isn't the rider's: it shows as a pinned
 // location. A point shared without a name shows as its coordinates.
@@ -114,6 +123,12 @@ fun DirectionsOnline(model: KavModel) {
     var linkError by remember { mutableStateOf<String?>(null) }
     var lastLink by remember { mutableStateOf<TripLink.Plan?>(null) }
     val filters = model.filters
+    // Whose routes show: the planner chosen in Settings, or the tab picked when every planner's are shown.
+    var tab by remember { mutableStateOf<Source?>(null) }
+    val tabs = if (KavPlan.everyPlanner) KavPlan.tabs() else emptyList()
+    val planner = tab?.takeIf { it in tabs } ?: KavPlan.source
+    val everyScope = rememberCoroutineScope()
+    val every = remember { EveryPlanner(everyScope) }
 
     LaunchedEffect(model.returnHome) {
         if (model.returnHome) {
@@ -224,9 +239,9 @@ fun DirectionsOnline(model: KavModel) {
     }
 
     // The inputs the results on screen were planned for: anything else is still being planned, never "no routes".
-    val planKey = listOf(fromLL, toLL, departAt, timeType, filters, stopovers, KavPlan.source)
+    val planKey = listOf(fromLL, toLL, departAt, timeType, filters, stopovers, planner)
     var plannedFor by remember { mutableStateOf<List<Any?>?>(null) }
-    LaunchedEffect(showResults, fromLL, toLL, departAt, timeType, filters, stopovers, openingLink, saved, planAgain, KavPlan.source) {
+    LaunchedEffect(showResults, fromLL, toLL, departAt, timeType, filters, stopovers, openingLink, saved, planAgain, planner) {
         if (!showResults || openingLink) { planning = false; return@LaunchedEffect }
         if (departAt != 0L && departAt < System.currentTimeMillis() && timeType != Transit.TIME_LAST) {
             departAt = 0L; timeType = Transit.TIME_DEPARTURE
@@ -254,12 +269,20 @@ fun DirectionsOnline(model: KavModel) {
         if (departAt != 0L) delay(250)
         try {
             // The server chosen to plan, Kav's or the rider's own, plans the trip; when it can't, the rider is told and
-            // can try again. A shared trip Kav planned only a Kav planner can find again, whichever plans now.
+            // can try again. A shared trip Kav planned only a Kav planner can find again, whichever plans now. With a
+            // tab for each planner, the tab's planner plans, and the others are asked at the same time.
             val link = linkTrip
-            val planner = (if (link != null) KavPlan.linkPlanner() else KavPlan.planner())
-                ?: throw java.io.IOException("no planner answering")
-            val kav = withContext(Dispatchers.IO) {
-                KavPlan.plan(fromLL, toLL, departAt, timeType, routeTypesFor(filters), taxi = ResultFilter.TAXI in filters, stopovers, planner)
+            val types = routeTypesFor(filters)
+            val taxi = ResultFilter.TAXI in filters
+            val kav = if (link == null && planner in tabs) {
+                every.routes(listOf(fromLL, toLL, departAt, timeType, filters, stopovers, planAgain), planner, tabs) { by ->
+                    val at = KavPlan.plannerOf(by) ?: throw java.io.IOException("no planner answering")
+                    KavPlan.plan(fromLL, toLL, departAt, timeType, types, taxi, stopovers, at, by)
+                }.await().getOrThrow()
+            } else {
+                val at = (if (link != null) KavPlan.linkPlanner() else KavPlan.planner())
+                    ?: throw java.io.IOException("no planner answering")
+                withContext(Dispatchers.IO) { KavPlan.plan(fromLL, toLL, departAt, timeType, types, taxi, stopovers, at) }
             }
             val res = kav.plan
             plan = res
@@ -337,8 +360,8 @@ fun DirectionsOnline(model: KavModel) {
                     "Moovit's planner can't plan through stops on the way. Remove them, or pick another planner in Settings.",
                     "המתכנן של Moovit לא מתכנן דרך עצירות בדרך. הסירו אותן, או בחרו מתכנן אחר בהגדרות.",
                 )
-                KavPlan.source.provider -> T("The selected trip provider didn't answer.", "ספק תכנון המסלולים שנבחר לא ענה.")
-                KavPlan.server != KavLive.KAV_SERVER -> T("Your server didn't answer.", "השרת שלכם לא ענה.")
+                planner.provider -> T("The selected trip provider didn't answer.", "ספק תכנון המסלולים שנבחר לא ענה.")
+                KavLive.serverOf(planner) != KavLive.KAV_SERVER -> T("Your server didn't answer.", "השרת שלכם לא ענה.")
                 else -> T("Kav's server didn't answer.", "השרת של Kav לא ענה.")
             }
             planning = false
@@ -393,7 +416,7 @@ fun DirectionsOnline(model: KavModel) {
                 compareBy({ i -> i.legs.filter { it.kind == Transit.LegKind.WALK }.sumOf { it.minutes } }, { it.durationMin }),
             )
             Sort.CHEAPEST -> kept.sortedWith(compareBy({ if (it.fare < 0) Int.MAX_VALUE else it.fare }, { it.durationMin }))
-            Sort.LOWEST_CO2 -> kept.sortedWith(compareBy({ if (it.co2g < 0) Int.MAX_VALUE else it.co2g }, { it.durationMin }))
+            Sort.LOWEST_CO2 -> kept.sortedWith(compareBy({ uk.noammm.kav.data.Emissions.grams(it, resolved).let { g -> if (g < 0) Int.MAX_VALUE else g } }, { it.durationMin }))
         }
     }
     // The first route's time, and the last one shown, which Earlier and Later keep while new routes load.
@@ -431,6 +454,7 @@ fun DirectionsOnline(model: KavModel) {
                         model.journeyStep = 0
                         model.activeJourney = ActiveJourney(
                             chosen.trip, detailResolved, chosen.fromLabel, chosen.toLabel,
+                            fromHere = startsHere(chosen.trip, model, fromIsHere),
                         )
                     }
                 },
@@ -460,7 +484,7 @@ fun DirectionsOnline(model: KavModel) {
                 hereOrigin = null; stopovers = t.stopovers; linkError = null; fromPlace = t.from; toPlace = t.to
                 departAt = 0L; timeType = Transit.TIME_DEPARTURE
                 saved = SavedTrip(t, listOf(t.from?.let { it.lat to it.lon }, t.to.lat to t.to.lon, 0L,
-                    Transit.TIME_DEPARTURE, filters, t.stopovers))
+                    Transit.TIME_DEPARTURE, filters, t.stopovers, planner))
                 showResults = true
             },
             onResume = {
@@ -491,6 +515,7 @@ fun DirectionsOnline(model: KavModel) {
     }
 
     val resultsState = androidx.compose.foundation.lazy.rememberLazyListState()
+    FreshAlerts()
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -547,7 +572,9 @@ fun DirectionsOnline(model: KavModel) {
             // time rolls to theirs instead of the row going.
             fun androidx.compose.foundation.lazy.LazyListScope.shiftRow(time: String) = item(key = "shift") {
                 Row(
-                    Modifier.animateItem(fadeInSpec = null, fadeOutSpec = androidx.compose.animation.core.tween(150), placementSpec = null)
+                    Modifier.animateItem(fadeInSpec = androidx.compose.animation.core.tween(240),
+                        fadeOutSpec = androidx.compose.animation.core.tween(150),
+                        placementSpec = androidx.compose.animation.core.spring(dampingRatio = 1f, stiffness = 500f))
                         .fillMaxWidth().padding(horizontal = K.gap4),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -571,6 +598,13 @@ fun DirectionsOnline(model: KavModel) {
                         trailing = Icons.AutoMirrored.Rounded.KeyboardArrowRight)
                 }
             }
+            // A tab for each planner under Earlier and Later, when every planner's routes show; over a planner's error
+            // or empty answer too, so another can be picked.
+            fun androidx.compose.foundation.lazy.LazyListScope.tabsRow() {
+                if (tabs.size > 1) item(key = "planners") {
+                    PlannerTabs(tabs, planner, { tab = it }, Modifier.padding(horizontal = K.gap4, vertical = K.gap2))
+                }
+            }
             when {
                 error == TOO_CLOSE -> item {
                     NoteCard(
@@ -581,11 +615,14 @@ fun DirectionsOnline(model: KavModel) {
                         Modifier.padding(K.gap4),
                     )
                 }
-                error != null -> item {
-                    Column(Modifier.padding(K.gap4)) {
-                        Note(error.orEmpty())
-                        Text(T("Try again", "נסו שוב"), color = K.accentInk,
-                            modifier = Modifier.clickable { planAgain++ }.padding(vertical = K.gap3))
+                error != null -> {
+                    tabsRow()
+                    item {
+                        Column(Modifier.padding(K.gap4)) {
+                            Note(error.orEmpty())
+                            Text(T("Try again", "נסו שוב"), color = K.accentInk,
+                                modifier = Modifier.clickable { planAgain++ }.padding(vertical = K.gap3))
+                        }
                     }
                 }
                 toLL == null -> item {
@@ -613,21 +650,26 @@ fun DirectionsOnline(model: KavModel) {
                 }
                 planning || plannedFor != planKey -> {
                     if (timeType != Transit.TIME_LAST && shiftTime.isNotEmpty()) shiftRow(shiftTime)
+                    tabsRow()
                     item(key = "finding") { LoadingBlock(T("Finding routes", "מחפשים מסלולים"), Modifier.animateItem(
                         fadeInSpec = androidx.compose.animation.core.tween(200, delayMillis = 60),
                         fadeOutSpec = androidx.compose.animation.core.tween(120), placementSpec = null,
                     ).fillParentMaxHeight(.6f)) }
                 }
-                shown.isEmpty() -> item {
-                    NoteCard(
-                        if (raw.isEmpty() && nothingOnShabbat) SHABBAT_NOTHING
-                        else if (raw.isEmpty()) T("No routes found for this trip.", "לא נמצאו מסלולים לנסיעה הזו.")
-                        else T("Every route found is switched off in your filters.", "כל המסלולים שנמצאו הוסתרו על ידי המסננים שלכם."),
-                        Modifier.padding(K.gap4),
-                    )
+                shown.isEmpty() -> {
+                    tabsRow()
+                    item {
+                        NoteCard(
+                            if (raw.isEmpty() && nothingOnShabbat) SHABBAT_NOTHING
+                            else if (raw.isEmpty()) T("No routes found for this trip.", "לא נמצאו מסלולים לנסיעה הזו.")
+                            else T("Every route found is switched off in your filters.", "כל המסלולים שנמצאו הוסתרו על ידי המסננים שלכם."),
+                            Modifier.padding(K.gap4),
+                        )
+                    }
                 }
                 else -> {
                     if (timeType != Transit.TIME_LAST) shiftRow(firstTime ?: shiftTime)
+                    tabsRow()
                     // Late at night or on Shabbat there may only be walking and cycling; routes the planner found
                     // after Shabbat or a holiday ends come under a line that says so.
                     if (raw.none { t -> t.legs.any { it.kind == Transit.LegKind.RIDE } }) item(key = "no-transit") {

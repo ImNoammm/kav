@@ -86,7 +86,10 @@ fun LiveLocationScreen(
             val agency = info?.agencyId ?: -1
             val rt = if (info != null) r.routeType(agency) else 3
             val plate = linePlate(rt, agency) { Operators.of(r, agency) }
-            Row(
+            if (K.lineBadgeAppearance == LineBadgeAppearance.STRIP && modeOf(rt) == Mode.BUS) {
+                LinePlateBadge(leg.shortName.ifBlank { null } ?: info?.number?.ifBlank { null } ?: "…", Mode.BUS, plate,
+                    glyph = { ink, size -> AgencyMark(rt, agency, ink, size) })
+            } else Row(
                 Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.surface1)
                     .padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,

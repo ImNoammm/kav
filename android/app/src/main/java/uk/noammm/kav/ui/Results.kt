@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import uk.noammm.kav.data.MoovitAlerts
 import uk.noammm.kav.data.Transit
 import java.util.Date
 import java.util.Locale
@@ -509,7 +510,7 @@ fun ItineraryCard(it: Transit.Itinerary, r: Transit.Resolved, footer: (@Composab
         }
         RouteStrip(it, r)
         DepartureLine(it, r, now)
-        val notes = cardNotes(it)
+        val notes = cardNotes(it, r)
         if (notes.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
             notes.forEach { (kind, label) ->
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap1)) {
@@ -518,6 +519,7 @@ fun ItineraryCard(it: Transit.Itinerary, r: Transit.Resolved, footer: (@Composab
                 }
             }
         }
+        RouteTags(it)
         footer?.invoke()
     }
 }
@@ -575,10 +577,11 @@ internal fun RouteStrip(it: Transit.Itinerary, r: Transit.Resolved) {
                     Modifier.padding(vertical = PIP_OVERHANG, horizontal = PIP_OVERHANG),
                 ) {
                     leg.ride?.let { RouteChoices(it, r) }
-                    if (leg.alert >= 3) Box(
+                    val alert = maxOf(leg.alert, leg.ride?.let { MoovitAlerts.of(r.line(it.lineId))?.category } ?: 0)
+                    if (alert >= 3) Box(
                         Modifier.align(Alignment.TopEnd).offset(x = PIP_OVERHANG, y = -PIP_OVERHANG),
                     ) {
-                        AlertPip(leg.alert)
+                        AlertPip(alert)
                     }
                 }
                 Transit.LegKind.TAXI -> leg.ride?.let { GettPill(it) }
@@ -757,10 +760,11 @@ private fun DepartureLine(it: Transit.Itinerary, r: Transit.Resolved, now: Long)
 
 private const val MARK = "mark"
 
-private fun cardNotes(it: Transit.Itinerary): List<Pair<String, String>> {
+private fun cardNotes(it: Transit.Itinerary, r: Transit.Resolved): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>(2)
     if (it.accessible) out.add("access" to T("Step-free", "נגיש לנכים"))
-    if (Shown.co2 && it.co2g >= 0) out.add("co2" to co2(it.co2g))
+    val g = if (Shown.co2) uk.noammm.kav.data.Emissions.grams(it, r) else -1
+    if (g >= 0) out.add("co2" to co2(g))
     return out
 }
 

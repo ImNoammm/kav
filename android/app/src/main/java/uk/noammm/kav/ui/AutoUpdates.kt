@@ -1,7 +1,10 @@
 package uk.noammm.kav.ui
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.SignalCellularAlt
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -23,6 +26,7 @@ import uk.noammm.kav.data.Updates
 internal fun AutomaticUpdates(explained: Boolean = false) {
     val ctx = LocalContext.current
     var auto by remember { mutableStateOf(Prefs.autoUpdate(ctx)) }
+    var mobile by remember { mutableStateOf(Prefs.updatesOnMobile(ctx)) }
     // Read again whenever Kav is back from Android's settings.
     var mayInstall by remember { mutableStateOf(Updates.canInstall(ctx)) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -30,12 +34,12 @@ internal fun AutomaticUpdates(explained: Boolean = false) {
     val title = T("Automatic updates", "עדכונים אוטומטיים")
     val info = T(
         "Once a day, at a time your phone picks and never because you opened it, Kav asks GitHub whether there's a " +
-            "new version, and on Wi-Fi downloads it and makes sure it's signed with Kav's own key. Nothing " +
+            "new version, and on Wi-Fi (or mobile data, if you allow it) downloads it and makes sure it's signed with Kav's own key. Nothing " +
             "installs by itself: the next time you open Kav it asks, Install now or Later. Install now closes Kav to " +
             "update it, and Android or Google Play Protect may ask you to confirm. Kav sends nothing about you: GitHub " +
             "sees your IP address and the time, as for any download. While this is on, Tell me about new versions doesn't apply.",
         "פעם ביום, בשעה שהטלפון בוחר ואף פעם לא בגלל שפתחתם אותה, Kav שואלת את GitHub אם יש גרסה " +
-            "חדשה, וב-Wi-Fi מורידה אותה ומוודאת שהיא חתומה במפתח של Kav. שום דבר לא מותקן מעצמו: בפעם הבאה " +
+            "חדשה, וב-Wi-Fi (או בנתונים סלולריים, אם תאפשרו) מורידה אותה ומוודאת שהיא חתומה במפתח של Kav. שום דבר לא מותקן מעצמו: בפעם הבאה " +
             "שתפתחו את Kav היא תשאל, להתקין עכשיו או אחר כך. התקנה סוגרת את Kav כדי לעדכן אותה, ו-Android או " +
             "Google Play Protect עשויים לבקש מכם לאשר. Kav לא שולחת שום דבר עליכם: GitHub רואה את כתובת ה-IP " +
             "שלכם ואת השעה, כמו בכל הורדה. כשזה פועל, עדכנו אותי על גרסאות חדשות לא חל.",
@@ -45,7 +49,7 @@ internal fun AutomaticUpdates(explained: Boolean = false) {
             SectionHeader(title)
             NoteCard(info, Modifier.padding(bottom = K.gap2))
         } else InfoHeader(title, info)
-        ListGroup {
+        ListGroup(Modifier.animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
             row {
                 ToggleRow(
                     T("Download updates automatically", "להוריד עדכונים אוטומטית"), auto,
@@ -54,6 +58,16 @@ internal fun AutomaticUpdates(explained: Boolean = false) {
                     auto = on
                     Prefs.setAutoUpdate(ctx, on)
                     Checks.ensure(ctx)
+                }
+            }
+            if (auto) row {
+                ToggleRow(
+                    T("Also on mobile data", "גם בנתונים סלולריים"), mobile,
+                    { Icon(Icons.Rounded.SignalCellularAlt, null, tint = if (mobile) K.text else K.dim, modifier = Modifier.size(22.dp)) },
+                    subtitle = T("About 32 MB a version", "בערך 32MB לגרסה"),
+                ) { on ->
+                    mobile = on
+                    Prefs.setUpdatesOnMobile(ctx, on)
                 }
             }
             if (auto && !mayInstall) row {

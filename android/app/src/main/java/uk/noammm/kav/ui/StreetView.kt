@@ -2,7 +2,12 @@ package uk.noammm.kav.ui
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.Context
 import android.net.Uri
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -10,14 +15,23 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -140,8 +154,8 @@ fun StreetViewHost() {
     if (open != null) last = open
     AnimatedVisibility(
         open != null,
-        enter = fadeIn(tween(200)) + slideInVertically(tween(240)) { it / 10 },
-        exit = fadeOut(tween(200)) + slideOutVertically(tween(220)) { it / 10 },
+        enter = fadeIn(tween(200)),
+        exit = fadeOut(tween(200)),
     ) {
         last?.let { StopLookScreen(it) { StreetViewer.open = null } }
     }
@@ -170,22 +184,24 @@ private fun StopLookScreen(shown: StopLook, onClose: () -> Unit) {
     val found = (state as? PanoState.Found)?.pano
     Column(Modifier.fillMaxSize().background(K.bg)) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = K.gap4, vertical = K.gap3).heightIn(min = 48.dp),
+            Modifier.fillMaxWidth().zIndex(1f).background(K.bg)
+                .padding(horizontal = K.gap4, vertical = K.gap3).heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(K.gap3),
         ) {
             BackButton(onClose)
             Column(Modifier.weight(1f)) {
                 Text(shown.name, style = K.type.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                // Where it is, and when Google photographed it.
+                // Where it is, and when Google photographed it. The line keeps its place while Google is asked, so the name
+                // above it doesn't jump when the date comes; the date fades in.
                 val taken = found?.takeIf { it.year > 0 }?.let { "${monthName(it.month)} ${it.year}".trim() }
-                listOfNotNull(shown.detail?.takeIf { it.isNotBlank() }, taken).joinToString(" · ").takeIf { it.isNotEmpty() }?.let {
-                    Text(it, style = K.type.subhead, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                ChangingText(listOfNotNull(shown.detail?.takeIf { it.isNotBlank() }, taken).joinToString(" · ")) {
+                    Text(it.ifEmpty { " " }, style = K.type.subhead, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
         // Full height: the tab bar steps away while Street View is open, so no glass refracts the moving picture.
-        Box(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding()) {
+        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().navigationBarsPadding()) {
             var ready by remember(shown, attempt) { mutableStateOf(false) }
             when (val now = state) {
                 PanoState.Looking -> Unit
@@ -266,14 +282,38 @@ private fun PaneNote(text: String, actions: @Composable RowScope.() -> Unit) {
 
 // Google's panorama in a frame takes the frame for part of a page that scrolls, and turns only with two fingers. This
 // script, run in Google's frame alone, keeps the panorama the embed makes with Google's public class and turns it with
-// one finger, as a full-screen Street View does. Should Google change, it does nothing and two fingers still work.
+// one finger, as a full-screen Street View does. Android supplies rotation directly: a WebView can report motion
+// tracking enabled while its frame receives no orientation events.
 internal const val ONE_FINGER = """(function () {
   if (window.top === window || location.pathname.indexOf('/maps/embed') !== 0) return;
-  var pano = null, made = null;
+  var pano = null, made = null, rearmed = false, motionTries = 0, tracking = true, orientation = null;
+  function motionState() {
+    if (window.KavHost && KavHost.motionChanged) KavHost.motionChanged(tracking);
+  }
+  function armMotion() {
+    if (rearmed || !pano) return;
+    if (pano.getStatus() !== 'OK') {
+      if (++motionTries < 100) setTimeout(armMotion, 100);
+      return;
+    }
+    rearmed = true;
+    try {
+      document.querySelectorAll('[aria-label="Keyboard shortcuts"],[aria-label="קיצורי מקשים"]').forEach(function (button) { button.style.setProperty('display', 'none', 'important'); });
+      pano.setMotionTracking(false);
+      motionState();
+    } catch (e) {}
+  }
   function wrap(Pano) {
     if (!Pano || Pano.kav) return Pano;
     if (made && made.base === Pano) return made;
-    var Kept = function (div, options) { pano = new Pano(div, options); return pano; };
+    var Kept = function (div, options) {
+      pano = new Pano(div, options); rearmed = false; motionTries = 0; orientation = null;
+      pano.setOptions({disableDefaultUI: true, addressControl: false, fullscreenControl: false,
+        zoomControl: false, panControl: false, motionTrackingControl: false, linksControl: true,
+        imageDateControl: false, showRoadLabels: false, enableCloseButton: false});
+      setTimeout(armMotion, 1000);
+      return pano;
+    };
     Kept.prototype = Pano.prototype;
     Object.setPrototypeOf(Kept, Pano);
     Kept.kav = true; Kept.base = Pano;
@@ -302,6 +342,23 @@ internal const val ONE_FINGER = """(function () {
       get: function () { return google; }, set: function (v) { google = v; trapMaps(v); }});
   } catch (e) {}
   trapMaps(google);
+  addEventListener('message', function (e) {
+    if (e.origin !== 'https://kav.invalid' || !pano || !e.data) return;
+    var action = e.data.kavStreet, pov = pano.getPov();
+    if (action === 'zoomIn') pano.setZoom(Math.min(5, pano.getZoom() + 1));
+    else if (action === 'zoomOut') pano.setZoom(Math.max(0, pano.getZoom() - 1));
+    else if (action === 'north') pano.setPov({heading: 0, pitch: pov.pitch});
+    else if (action === 'motion') { tracking = !tracking; orientation = null; motionState(); }
+    else if (action === 'orientation' && tracking && Number.isFinite(e.data.heading) && Number.isFinite(e.data.pitch)) {
+      var next = [e.data.heading, e.data.pitch];
+      if (orientation) {
+        var turn = ((next[0] - orientation[0]) % 360 + 540) % 360 - 180;
+        pano.setPov({heading: (pov.heading + turn + 360) % 360,
+          pitch: Math.max(-90, Math.min(90, pov.pitch - next[1] + orientation[1]))});
+      }
+      orientation = next;
+    }
+  });
   var last = null;
   addEventListener('touchstart', function (e) {
     last = e.touches.length === 1 ? [e.touches[0].clientX, e.touches[0].clientY] : null;
@@ -324,9 +381,44 @@ internal const val ONE_FINGER = """(function () {
 @Composable
 private fun StreetWebView(page: String, ground: Int, onReady: () -> Unit) {
     val ready by rememberUpdatedState(onReady)
+    var web by remember { mutableStateOf<WebView?>(null) }
+    var tracking by remember { mutableStateOf(true) }
+    var prepared by remember { mutableStateOf(false) }
+    fun command(action: String) {
+        web?.evaluateJavascript("document.querySelector('iframe').contentWindow.postMessage({kavStreet:'$action'},'https://www.google.com')", null)
+    }
+    DisposableEffect(web, tracking, prepared) {
+        val view = web
+        val sensors = view?.context?.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        val sensor = sensors?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            ?: sensors?.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+        if (view == null || sensors == null || sensor == null || !tracking || !prepared) return@DisposableEffect onDispose {}
+        val rotation = FloatArray(9); val camera = FloatArray(9); val angles = FloatArray(3)
+        var heading: Double? = null
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                SensorManager.getRotationMatrixFromVector(rotation, event.values)
+                SensorManager.remapCoordinateSystem(rotation, SensorManager.AXIS_X, SensorManager.AXIS_Z, camera)
+                SensorManager.getOrientation(camera, angles)
+                val pitch = Math.toDegrees(angles[1].toDouble())
+                // Looking straight up or down has no stable compass heading.
+                if (kotlin.math.abs(pitch) < 80) heading = Math.toDegrees(angles[0].toDouble())
+                val azimuth = heading ?: return
+                val js = String.format(Locale.US,
+                    "document.querySelector('iframe').contentWindow.postMessage({kavStreet:'orientation',heading:%.5f,pitch:%.5f},'https://www.google.com')",
+                    azimuth, pitch)
+                view.evaluateJavascript(js, null)
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        sensors.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_GAME)
+        onDispose { sensors.unregisterListener(listener) }
+    }
+    Box(Modifier.fillMaxSize().clipToBounds()) {
     AndroidView(
         factory = { ctx ->
             WebView(ctx).apply {
+                web = this
                 if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
                     androidx.webkit.WebViewCompat.addDocumentStartJavaScript(this, ONE_FINGER, setOf("https://www.google.com"))
                 }
@@ -335,6 +427,8 @@ private fun StreetWebView(page: String, ground: Int, onReady: () -> Unit) {
                 addJavascriptInterface(object {
                     @android.webkit.JavascriptInterface
                     fun loaded() { post { ready() } }
+                    @android.webkit.JavascriptInterface
+                    fun motionChanged(on: Boolean) { post { tracking = on; prepared = true } }
                 }, "KavHost")
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = false
@@ -356,9 +450,25 @@ private fun StreetWebView(page: String, ground: Int, onReady: () -> Unit) {
                 loadDataWithBaseURL("https://kav.invalid/street-view", page, "text/html", "utf-8", null)
             }
         },
-        onRelease = { it.stopLoading(); it.destroy() },
+        onRelease = { web = null; it.stopLoading(); it.destroy() },
         modifier = Modifier.fillMaxSize(),
     )
+    AnimatedVisibility(prepared, Modifier.align(Alignment.BottomEnd).padding(end = K.gap3, bottom = 48.dp),
+        enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
+        Column(Modifier.clip(RoundedCornerShape(22.dp)).background(K.surfaceRaised).padding(4.dp)) {
+            Row {
+                IconButton({ command("zoomOut") }) { Icon(Icons.Rounded.Remove, T("Zoom out", "הקטנה"), tint = K.text) }
+                IconButton({ command("zoomIn") }) { Icon(Icons.Rounded.Add, T("Zoom in", "הגדלה"), tint = K.text) }
+            }
+            Row {
+                IconButton({ command("north") }) { Icon(Icons.Rounded.Explore, T("Face north", "פנייה לצפון"), tint = K.text) }
+                IconButton({ command("motion") }) { Icon(Icons.Rounded.ScreenRotation,
+                    if (tracking) T("Turn phone motion off", "כיבוי תנועת הטלפון") else T("Turn phone motion on", "הפעלת תנועת הטלפון"),
+                    tint = if (tracking) K.accent else K.dim) }
+            }
+        }
+    }
+    }
 }
 
 @Composable

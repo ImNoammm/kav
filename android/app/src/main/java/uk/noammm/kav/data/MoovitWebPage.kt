@@ -31,7 +31,9 @@ internal object MoovitWebPage {
     internal fun allowed(host: String?, path: String): Boolean = when {
         host == "moovitapp.com" -> !path.startsWith("/api/") || path.startsWith("/api/route/") ||
             path == "/api/user" || path == "/api/user/all" || path.startsWith("/api/metro/") || path == "/api/feature-flags" ||
-            path == "/api/lines/agency" || path == "/api/lines/group-trips" || path == "/api/share/itinerary/get"
+            path == "/api/lines/agency" || path == "/api/lines/group-trips" ||
+            path == "/api/share/itinerary/get" || path == "/api/share/itinerary" ||
+            path == "/api/alert/metro" || path == "/api/alert/details"
         host == "appassets.mvtdev.com" -> true
         host?.endsWith(".awswaf.com") == true -> true
         else -> false
@@ -47,6 +49,9 @@ internal object MoovitWebPage {
 
     // The timetable's asks (Schedules): every operator's lines, or one line's day. A long list takes many requests.
     fun lines(query: JSONObject): JSONObject = ask(R.raw.moovit_web_lines, query, search = false, seconds = 90)
+
+    // Service alerts (MoovitAlerts): the metro's whole list, or some alerts' notices.
+    fun alerts(query: JSONObject): JSONObject = ask(R.raw.moovit_web_alerts, query, search = false, seconds = 60)
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun ask(script: Int, query: JSONObject, search: Boolean, seconds: Long): JSONObject {

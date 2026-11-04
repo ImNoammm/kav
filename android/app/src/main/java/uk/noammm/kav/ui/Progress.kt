@@ -226,14 +226,16 @@ private fun onStep(step: Step, r: Transit.Resolved, chosen: Map<Int, Int>, fix: 
 // `seen` is that place, or null once a ride has been assumed since; `waitForFix` holds the
 // timetable back while a first fix is still to come.
 // startNow: the rider wants a trip to move to its first walk at once (Settings), not at its time or once they move off.
+// fromHere: they began the trip where it starts, so moving off it starts the trip; one from elsewhere waits for its time.
 private fun done(
     step: Step, r: Transit.Resolved, chosen: Map<Int, Int>, now: Long, live: Fix?, seen: Fix?, waitForFix: Boolean,
-    walks: List<List<Pair<Double, Double>>>, startNow: Boolean = false,
+    walks: List<List<Pair<Double, Double>>>, startNow: Boolean = false, fromHere: Boolean = true,
 ): Boolean {
     val target = stepTarget(step, r, chosen)
     val slack = live?.slack ?: 0.0
     return when (step) {
-        is Step.Start -> startNow || now >= step.time || (live != null && target != null && live.distanceTo(target) > 60 + 3 * slack)
+        is Step.Start -> startNow || now >= step.time ||
+            (fromHere && live != null && target != null && live.distanceTo(target) > 60 + 3 * slack)
         is Step.Walk -> when {
             target == null -> now >= step.leg.arr
             live != null -> live.distanceTo(target) < 40 + slack
@@ -377,6 +379,7 @@ internal fun journeyProgress(
     fix: Fix?,
     canLocate: Boolean,
     startNow: Boolean = false,
+    fromHere: Boolean = true,
 ): Int {
     if (steps.isEmpty()) return 0
     var i = current.coerceIn(0, steps.lastIndex)
@@ -403,7 +406,7 @@ internal fun journeyProgress(
         val seen = fix?.takeIf { f ->
             (0 until i).none { j -> (steps[j] as? Step.Ride)?.let { f.at < rideOf(it, chosen).arr - 300 } == true }
         }
-        if (!done(steps[i], r, chosen, now, live, seen, waitForFix, walks(i), startNow)) break
+        if (!done(steps[i], r, chosen, now, live, seen, waitForFix, walks(i), startNow, fromHere)) break
         i++
     }
     return i

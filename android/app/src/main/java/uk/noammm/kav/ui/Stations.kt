@@ -304,10 +304,10 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                     lit = saved,
                     onClick = { model.saveStops(ctx, if (saved) model.savedStops - key else model.savedStops + key) },
                 ) { ink, fill -> starGlyph(ink, fill) }
-                ActionDivider()
                 val alerts = model.lineAlerts.count { it.stop == key }
                 // Alerts go by line number, or at a train station by where the trains end; a stop nothing leaves has none.
                 if (alerts > 0 || alertable) {
+                    ActionDivider()
                     ActionTile(
                         if (alerts > 0) T("Alerts", "התראות") else T("Alert", "התראה"),
                         if (alerts > 0) T.count(
@@ -316,12 +316,7 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                         ) else T("Get line alerts at this stop", "התראות על קווים בתחנה הזו"),
                         lit = alerts > 0, badge = alerts, onClick = { alerting = true },
                     ) { ink, fill -> bellGlyph(ink, fill) }
-                    ActionDivider()
                 }
-                ActionTile(T("Street View", "Street View"), T("See this stop in Street View", "צפייה בתחנה ב-Street View"), onClick = {
-                    // Facing the stop from its road, not whichever way Google's panorama happens to face.
-                    StreetViewer.open = StopLook(lookAt(net, stop), net.stopName(stop), net.cityName(stop))
-                }) { ink, _ -> streetGlyph(ink) }
             }
         }
         Spacer(Modifier.height(K.gap3))

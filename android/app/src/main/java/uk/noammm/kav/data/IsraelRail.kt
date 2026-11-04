@@ -120,3 +120,42 @@ object IsraelRail {
         }
     }
 }
+
+// The platforms of a train another planner planned, asked of the railway once a trip with it is opened: the train is
+// found among the railway's direct trains between its two stations by its time, and its number when the plan has it.
+// Kept while Kav runs. The railway learns the two stations and the day, as when its card is opened.
+object RailPlatforms {
+    class Platforms(val from: String, val to: String)
+
+    // A train to ask about: its two stations (the railway's ids), when it leaves and its number, if the plan has one.
+    class Ask(val from: Int, val to: Int, val dep: Long, val number: String)
+
+    private val known = androidx.compose.runtime.mutableStateMapOf<String, Platforms>()
+    private val asked = HashSet<String>()
+
+    private fun key(from: Int, to: Int, dep: Long) = "$from-$to-${dep / 60}"
+
+    fun of(from: Int, to: Int, dep: Long): Platforms? = known[key(from, to, dep)]
+
+    // Blocks, so off the main thread. Asked once a train; again only after the railway couldn't be reached.
+    fun ask(a: Ask) {
+        val k = key(a.from, a.to, a.dep)
+        synchronized(asked) { if (!asked.add(k)) return }
+        val journeys = runCatching { IsraelRail.search(a.from, a.to, (a.dep - 60) * 1000) }.getOrElse {
+            synchronized(asked) { asked.remove(k) }
+            return
+        }
+        keep(a, journeys)
+    }
+
+    // The train's platforms from the railway's answer, when it has the train.
+    internal fun keep(a: Ask, journeys: List<IsraelRail.Journey>) {
+        val train = match(journeys, a.from, a.to, a.dep, a.number) ?: return
+        known[key(a.from, a.to, a.dep)] = Platforms(train.fromPlatform, train.toPlatform)
+    }
+
+    internal fun match(journeys: List<IsraelRail.Journey>, from: Int, to: Int, dep: Long, number: String): IsraelRail.Train? =
+        journeys.mapNotNull { it.trains.singleOrNull() }
+            .filter { it.from == from && it.to == to && kotlin.math.abs(it.dep - dep) <= 120 }
+            .minByOrNull { (if (it.number.toString() == number) 0 else 1_000) + kotlin.math.abs(it.dep - dep) }
+}

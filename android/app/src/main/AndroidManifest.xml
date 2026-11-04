@@ -70,15 +70,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Kav's own links: a trip shared from Kav (/t/), and a line's or a stop's (/l/, /s/). kav.noammm.uk's
-                 assetlinks.json verifies them for this app, so they open here at once; without Kav the server sends
-                 the browser to Kav's releases. singleTask above routes a link into the running copy. -->
+            <!-- The seven-character trip code opens the saved route. App Links verifies Kav's release certificate. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="kav.noammm.uk" />
-                <data android:pathPrefix="/t/" />
+                <data android:pathPattern="/......." />
                 <data android:pathPrefix="/l/" />
                 <data android:pathPrefix="/s/" />
             </intent-filter>

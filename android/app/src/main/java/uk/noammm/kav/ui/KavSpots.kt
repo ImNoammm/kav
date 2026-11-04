@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.data.KavLive
+import uk.noammm.kav.data.RailPlatforms
 import uk.noammm.kav.data.Transit
 
 // The road a route takes, from Kav's server: empty until it comes, or if the route has none.
@@ -114,10 +115,17 @@ internal fun rememberFresher(trip: Transit.Itinerary, r: Transit.Resolved): Tran
     return remember(r, spots) { if (spots.isEmpty()) r else r.withLive(KavLive.fresher(r.live, spots)) }
 }
 
-// A bus station's platforms come from the timetable, so a trip with a bus has it loaded.
+// A bus station's platforms come from the timetable, so a trip with a bus has it loaded. A train's platforms that
+// neither the plan nor live times give are asked of the railway (RailPlatforms).
 @Composable
 internal fun PlannedPlatforms(trip: Transit.Itinerary, r: Transit.Resolved) {
     val app = LocalContext.current.applicationContext
     val buses = remember(trip, r.lines) { trip.rides.flatMap { it.options }.any { !r.isTrain(it) } }
     LaunchedEffect(buses) { if (buses) runCatching { uk.noammm.kav.loadNet(app) } }
+    LaunchedEffect(trip) {
+        val trains = trip.rides.mapNotNull(r::railAsk)
+        if (trains.isNotEmpty()) withContext(Dispatchers.IO) {
+            trains.forEach(RailPlatforms::ask)
+        }
+    }
 }

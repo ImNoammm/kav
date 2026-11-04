@@ -106,10 +106,9 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 
-// Reporting a driver, a bus or an inspector to the National Public Transport Authority, on its own online form, which
-// takes every bus company's lines. Kav walks the rider through it a step at a time from what it knows about the ride,
+// Reporting a driver, a bus or an inspector, or a train and the railway's staff, to the National Public Transport
+// Authority, on its own online form, which takes every bus company's lines and Israel Railways. Kav walks the rider through it a step at a time from what it knows about the ride,
 // then fills in the form in a page inside the app. The rider confirms their phone there with the code the form texts
 // and taps Send: Kav itself sends nothing anywhere.
 
@@ -126,6 +125,8 @@ private const val SIGNS = "תקינות ומידע בשלטים"
 private const val ACCESS = "נגישות"
 private const val FARES = "תעריפים ותשלומים"
 private const val APPEAL = "ערעור על תעריף מוגדל"
+// A train's: the same subjects, with the railway's staff for the driver.
+private const val STAFF_CONDUCT = "התנהגות איש צוות"
 
 // The form's report text holds 400 characters; it takes four attachments of up to 4 MB each, and reports up to two
 // months after the event.
@@ -161,8 +162,8 @@ internal class ReportFor(
     val towns: Pair<String, String>? = null,
     val operatorId: Int? = null,
     val direction: Pair<String, String>? = null,
-    // A train, which goes to the railway's channels: the form Kav fills in knows buses only. line is then its number,
-    // origin and destination the stations ridden between.
+    // An Israel Railways train: line is then its number, origin and destination the stations ridden between, and stops
+    // its stations, by the ministry's codes for them.
     val train: Boolean = false,
 )
 
@@ -181,7 +182,7 @@ internal class Ride(
     val at: Long,
 )
 
-internal enum class ReportAbout { DRIVER, BUS, INSPECTOR }
+internal enum class ReportAbout(val train: Boolean = false) { DRIVER, BUS, INSPECTOR, STAFF(true), TRAIN(true) }
 
 // What a report is about, each on one of the authority's own subjects for buses, with the sentence that opens its text.
 internal enum class ReportIssue(
@@ -236,11 +237,42 @@ internal enum class ReportIssue(
         FARES, APPEAL, "ברצוני לערער על דרישה לתשלום תעריף נסיעה מוגדל."),
     INSPECTOR_OTHER(ReportAbout.INSPECTOR, "Something else", "משהו אחר",
         "Anything else about how an inspector acted.", "כל דבר אחר בהתנהגות הפקח.",
-        SERVICE, CONDUCT, "תלונה על פקח.");
+        SERVICE, CONDUCT, "תלונה על פקח."),
+    STAFF_RUDE(ReportAbout.STAFF, "Was rude or behaved badly", "התנהג בצורה לא נאותה",
+        "A driver, conductor, inspector or anyone else of the railway's staff.", "נהג, כרטיסן, פקח או כל איש צוות אחר של הרכבת.",
+        SERVICE, STAFF_CONDUCT, "איש צוות של הרכבת התנהג בצורה לא נאותה."),
+    STAFF_NO_HELP(ReportAbout.STAFF, "Didn't help with accessibility", "לא סייע בנגישות",
+        "Didn't help someone with a disability on or off the train.", "לא עזר לנוסע עם מוגבלות לעלות לרכבת או לרדת ממנה.",
+        SERVICE, ACCESS, "איש צוות של הרכבת לא סייע לנוסע עם מוגבלות."),
+    TRAIN_NO_SHOW(ReportAbout.TRAIN, "Didn't come", "לא הגיעה",
+        "The train never reached the station.", "הרכבת לא הגיעה לתחנה בכלל.",
+        TIMES, "אי הגעה", "הרכבת לא הגיעה לתחנה."),
+    TRAIN_LATE(ReportAbout.TRAIN, "Late or early", "איחרה או הקדימה",
+        "It came late, or left early, against the timetable.", "הגיעה באיחור או יצאה מוקדם, בניגוד ללוח הזמנים.",
+        TIMES, "הקדמה/ איחור", "הרכבת איחרה או הקדימה, בניגוד ללוח הזמנים."),
+    TRAIN_NOT_STOPPED(ReportAbout.TRAIN, "Didn't stop", "לא עצרה",
+        "Passed the station without stopping.", "עברה את התחנה בלי לעצור.",
+        TIMES, "אי עצירה בתחנה", "הרכבת עברה את התחנה בלי לעצור."),
+    TRAIN_CROWDED(ReportAbout.TRAIN, "Too crowded", "עמוסה מדי",
+        "Packed far beyond normal.", "עמוסה הרבה מעבר לרגיל.",
+        TIMES, "עומס נוסעים", "הרכבת הייתה עמוסה מאוד."),
+    TRAIN_DIRTY(ReportAbout.TRAIN, "Dirty or broken", "מלוכלכת או תקולה",
+        "Something dirty or broken on the train or at the station.", "משהו מלוכלך או שבור ברכבת או בתחנה.",
+        SERVICE, CONDITION, "הרכבת או התחנה היו מלוכלכות או תקולות."),
+    TRAIN_SIGNS(ReportAbout.TRAIN, "Wrong signs", "שלטים שגויים",
+        "Signs, screens or announcements that were wrong or not working.", "שלטים, מסכים או הכרזות שהיו שגויים או לא עבדו.",
+        SERVICE, SIGNS, "השלטים או ההכרזות ברכבת או בתחנה היו שגויים או לא עבדו."),
+    TRAIN_ACCESS(ReportAbout.TRAIN, "Accessibility", "נגישות",
+        "A lift, ramp, seat or other accessibility that didn't work.", "מעלית, רמפה, מושב או אמצעי נגישות אחר שלא עבד.",
+        SERVICE, ACCESS, "יש בעיית נגישות ברכבת או בתחנה."),
+    TRAIN_FARE(ReportAbout.TRAIN, "Charged the wrong fare", "חויבתי בתעריף שגוי",
+        "You paid for this ride and were charged too much, or twice.", "שילמתם על הנסיעה וחויבתם ביותר מדי, או פעמיים.",
+        FARES, "חיוב שגוי", "חויבתי בתעריף שגוי על הנסיעה ברכבת.");
 
     val label get() = T(en, he)
     val detail get() = T(enDetail, heDetail)
-    // The form asks at which stop it happened, from the line's own stops.
+    val train get() = about.train
+    // The form asks at which stop it happened, from the line's own stops; for a train, at the station boarded.
     val atStop get() = subject == TIMES
     // It asks whether it was on the bus or at a stop: on the bus, for these.
     val onBus get() = second == CONDITION || second == SIGNS || second == ACCESS
@@ -349,6 +381,13 @@ internal fun formOperator(agency: String): String = agency.substringBefore(" (")
 // The line's number as the form takes it: digits only, 1 to 998.
 internal fun formLine(line: String): String? = line.filter(Char::isDigit).takeIf { it.toIntOrNull() in 1..998 }
 
+// A train's number, which the form takes as it's written on the train: digits, up to 5.
+internal fun formTrain(number: String): String? = number.filter(Char::isDigit).takeIf { it.length in 1..5 }
+
+// A station as the form's list for Israel Railways has it, by the railway's own id; else by its name.
+internal fun formStation(stop: ReportStop?): String =
+    stop?.code?.toIntOrNull()?.let(uk.noammm.kav.data.IsraelRail::stationOf)?.toString().orEmpty()
+
 // The authority takes testimony in Jerusalem, Tel Aviv or Haifa: the one nearest to where it happened.
 internal fun nearestTestimony(at: Pair<Double, Double>?): String {
     val (lat, lon) = at ?: return "2"
@@ -356,7 +395,12 @@ internal fun nearestTestimony(at: Pair<Double, Double>?): String {
         .minBy { (_, c) -> metres(lat, lon, c.first, c.second) }.first
 }
 
-private fun reportFacts(issue: ReportIssue, r: ReportFor, ride: Ride, inspector: String): String = listOfNotNull(
+private fun reportFacts(issue: ReportIssue, r: ReportFor, ride: Ride, inspector: String): String = if (r.train) listOfNotNull(
+    "רכבת ישראל" + (formTrain(ride.line)?.let { " מספר $it" } ?: "") + ".",
+    ride.from?.name?.let(::formText)?.ifBlank { null }?.let { from ->
+        "עליתי בתחנת $from" + (ride.to?.name?.let(::formText)?.ifBlank { null }?.let { " ונסעתי אל $it" } ?: "") + "."
+    },
+).joinToString("\n") else listOfNotNull(
     "קו ${formText(ride.line)}" +
         (formText(formOperator(r.agency)).ifBlank { null }?.let { " של $it" } ?: "") +
         (formText(r.destination).ifBlank { null }?.let { " לכיוון $it" } ?: "") + ".",
@@ -389,9 +433,14 @@ internal fun reportJson(
     issue: ReportIssue, r: ReportFor, ride: Ride, text: String, me: Reporter, answers: Answers, consent: Boolean,
     photos: List<String> = emptyList(), payment: Payment = Payment(),
 ): String = JSONObject()
-    .put("subject", issue.subject).put("second", issue.second).put("location", if (issue.onBus) "1" else "")
+    .put("means", if (r.train) "רכבת ישראל ורכבת קלה" else "אוטובוס")
+    .put("subject", issue.subject).put("second", issue.second).put("location", if (issue.onBus && !r.train) "1" else "")
     .put("date", israel("dd/MM/yyyy", ride.at)).put("time", israel("HH:mm", ride.at))
-    .put("line", formLine(ride.line).orEmpty()).put("operator", formOperator(r.agency))
+    .put("line", if (r.train) "" else formLine(ride.line).orEmpty()).put("operator", formOperator(r.agency))
+    .put("train", r.train).put("trainNumber", if (r.train) formTrain(ride.line).orEmpty() else "")
+    .put("boarding", if (r.train) formStation(ride.from) else "").put("boardingName", if (r.train) ride.from?.name.orEmpty() else "")
+    .put("destination", if (r.train) formStation(ride.to) else "").put("destinationName", if (r.train) ride.to?.name.orEmpty() else "")
+    .put("stationEvent", if (r.train && issue.atStop) "1" else "")
     .put("from", r.towns?.first?.ifBlank { null } ?: r.origin).put("to", r.towns?.second?.ifBlank { null } ?: r.destination)
     .put("operatorId", r.operatorId?.toString().orEmpty())
     .put("direction", r.direction?.first.orEmpty()).put("alternative", r.direction?.second.orEmpty())
@@ -407,6 +456,7 @@ internal fun reportJson(
     .put("paymentApp", if (issue.payment && payment.means == "2") payment.app else "")
     .put("appPhone", if (issue.payment && payment.means == "2") formPhone(payment.appPhone).orEmpty() else "")
     .put("validation", if (issue.payment && payment.paidAt > 0) israel("HH:mm", payment.paidAt) else "")
+    .put("validationField", if (r.train) "ValidationHour3" else "ValidationHour2")
     .put("details", text)
     .put("photos", JSONArray(photos))
     .put("id", me.id.padStart(9, '0')).put("last", me.last).put("first", me.first).put("gender", me.gender)
@@ -425,15 +475,18 @@ internal fun paidWith(r: ReportFor, tickets: List<RavPass.Ticket>): Long? {
 // A report about the bus of a ride, the one the rider is on when Kav knows it, from where they got on to where they
 // got off.
 internal fun rideReport(ride: Transit.Leg, r: Transit.Resolved, bus: Transit.Arrival?, at: Long): ReportFor? {
+    val line = r.line(ride.lineId)
+    val stops = ride.stops.map { id -> r.stop(id).let { ReportStop(id, it?.name.orEmpty(), it?.code?.ifBlank { null }) } }
     if (legMode(ride, r) == Mode.TRAIN) return ReportFor(
-        line = ride.shortName.ifBlank { r.line(ride.lineId)?.number.orEmpty() }.ifBlank { return null },
-        agency = r.agencyName(r.line(ride.lineId)?.agencyId ?: -1).orEmpty(),
+        line = ride.shortName.ifBlank { line?.number.orEmpty() }.ifBlank { return null },
+        agency = r.agencyName(line?.agencyId ?: -1).orEmpty(),
         origin = r.stopName(ride.fromStop).orEmpty(), destination = r.stopName(ride.toStop).orEmpty(),
+        stops = stops,
+        boarded = stops.indexOfFirst { it.id == ride.fromStop }.takeIf { it >= 0 } ?: if (stops.isEmpty()) -1 else 0,
+        alighted = stops.indexOfLast { it.id == ride.toStop }.takeIf { it >= 0 } ?: stops.lastIndex,
         at = at, train = true,
     )
     if (legMode(ride, r) != Mode.BUS) return null
-    val line = r.line(ride.lineId)
-    val stops = ride.stops.map { id -> r.stop(id).let { ReportStop(id, it?.name.orEmpty(), it?.code?.ifBlank { null }) } }
     val from = r.stop(ride.fromStop)
     return ReportFor(
         line = ride.shortName.ifBlank { line?.number.orEmpty() }.ifBlank { return null },
@@ -472,12 +525,16 @@ private fun aboutLabel(a: ReportAbout) = when (a) {
     ReportAbout.DRIVER -> T("The driver", "הנהג")
     ReportAbout.BUS -> T("The bus", "האוטובוס")
     ReportAbout.INSPECTOR -> T("An inspector", "פקח")
+    ReportAbout.STAFF -> T("The railway's staff", "צוות הרכבת")
+    ReportAbout.TRAIN -> T("The train or station", "הרכבת או התחנה")
 }
 
 private fun aboutDetail(a: ReportAbout) = when (a) {
     ReportAbout.DRIVER -> T("Didn't stop, was rude, drove dangerously…", "לא עצר, התנהג בגסות, נהג בצורה מסוכנת…")
     ReportAbout.BUS -> T("Didn't come, was late, crowded, broken, charged wrongly…", "לא הגיע, איחר, עמוס, תקול, חיוב שגוי…")
     ReportAbout.INSPECTOR -> T("How an inspector behaved, or appealing their fine.", "איך פקח התנהג, או ערעור על קנס שנתן.")
+    ReportAbout.STAFF -> T("A driver, conductor or inspector who behaved badly or didn't help.", "נהג, כרטיסן או פקח שהתנהג לא כראוי או לא עזר.")
+    ReportAbout.TRAIN -> T("Didn't come, was late, crowded, broken, charged wrongly…", "לא הגיעה, איחרה, עמוסה, תקולה, חיוב שגוי…")
 }
 
 private fun genderName(code: String) = when (code) {
@@ -564,7 +621,7 @@ private class Draft(val report: ReportFor, saved: Reporter?, account: RavPass.Ac
     }
 
     fun rideErrors(): Map<String, String> = buildMap {
-        if (formLine(line) == null) put("line", T("Enter the line's number.", "הזינו את מספר הקו."))
+        if (!report.train && formLine(line) == null) put("line", T("Enter the line's number.", "הזינו את מספר הקו."))
         val i = issue ?: return@buildMap
         if (i.appeal && demand.filter(Char::isDigit).isEmpty()) put("demand", T("The number at the top of the demand.", "המספר שבראש הדרישה."))
         if (!i.payment) return@buildMap
@@ -614,7 +671,6 @@ private class Draft(val report: ReportFor, saved: Reporter?, account: RavPass.Ac
 
 @Composable
 internal fun ReportScreen(report: ReportFor, onClose: () -> Unit) {
-    if (report.train) { TrainReportScreen(report, onClose); return }
     val ctx = LocalContext.current
     val d = remember(report) { Draft(report, Reporter.load(ctx), Payer.account) }
     var filling by remember { mutableStateOf<Filling?>(null) }
@@ -655,11 +711,13 @@ internal fun ReportScreen(report: ReportFor, onClose: () -> Unit) {
 @Composable
 private fun AboutStep(d: Draft) = StepPage(
     T("What do you want to report?", "על מה תרצו לדווח?"),
-    T("Kav fills in the National Public Transport Authority's form for you. It takes every bus company's lines.",
+    if (d.report.train) T("Kav fills in the National Public Transport Authority's form for you. It takes Israel Railways' trains.",
+        "Kav ממלאת בשבילכם את הטופס של הרשות הארצית לתחבורה ציבורית. הוא מקבל את הרכבות של רכבת ישראל.")
+    else T("Kav fills in the National Public Transport Authority's form for you. It takes every bus company's lines.",
         "Kav ממלאת בשבילכם את הטופס של הרשות הארצית לתחבורה ציבורית. הוא מקבל את הקווים של כל חברות האוטובוסים."),
 ) {
     BusCard(d.report)
-    ReportAbout.entries.forEach { a ->
+    ReportAbout.entries.filter { it.train == d.report.train }.forEach { a ->
         Choice(aboutLabel(a), aboutDetail(a), d.about == a) {
             if (d.issue?.about != a) d.issue = null
             d.about = a
@@ -691,17 +749,20 @@ private fun RideStep(d: Draft, named: (ReportStop) -> ReportStop) {
         action = T("Next", "הבא"), errors = d.errors,
         onAction = { d.next { d.go(ReportStep.MORE) } },
     ) {
-        Field(T("Line", "קו"), d.line, { d.line = it.take(6) }, error = d.errors["line"])
-        if (issue.atStop) {
+        if (d.report.train) Field(T("Train number", "מספר רכבת"), d.line, { d.line = it.filter(Char::isDigit).take(5) },
+            helper = T("On the ticket or the train's screens, if you know it", "על הכרטיס או על המסכים ברכבת, אם אתם יודעים"),
+            keyboard = KeyboardType.Number)
+        else Field(T("Line", "קו"), d.line, { d.line = it.take(6) }, error = d.errors["line"])
+        if (issue.atStop && !d.report.train) {
             StopField(T("Stop where it happened", "התחנה שבה זה קרה"), d.report.stops, d.boardedAt, d.boardedTyped, named,
                 onPick = { d.boardedAt = it }, onType = { d.boardedTyped = it })
         } else {
-            StopField(T("Where you got on", "איפה עליתם"), d.report.stops, d.boardedAt, d.boardedTyped, named,
+            StopField(if (d.report.train) T("Station you got on at", "תחנת העלייה") else T("Where you got on", "איפה עליתם"), d.report.stops, d.boardedAt, d.boardedTyped, named,
                 onPick = { i -> d.boardedAt = i; if (d.alightedAt in 0..i) d.alightedAt = -1 }, onType = { d.boardedTyped = it })
-            StopField(T("Where you got off", "איפה ירדתם"), d.report.stops, d.alightedAt, d.alightedTyped, named,
+            StopField(if (d.report.train) T("Station you got off at", "תחנת הירידה") else T("Where you got off", "איפה ירדתם"), d.report.stops, d.alightedAt, d.alightedTyped, named,
                 after = d.boardedAt, onPick = { d.alightedAt = it }, onType = { d.alightedTyped = it })
         }
-        Field(T("Number plate", "מספר רישוי"), d.plate, { d.plate = it.filter { c -> c.isDigit() || c == '-' }.take(10) },
+        if (!d.report.train) Field(T("Number plate", "מספר רישוי"), d.plate, { d.plate = it.filter { c -> c.isDigit() || c == '-' }.take(10) },
             placeholder = "12-345-67", helper = T("On the bus's front and back, if you saw it", "בחזית ובגב האוטובוס, אם ראיתם"),
             keyboard = KeyboardType.Phone)
         WhenField(T("When it happened", "מתי זה קרה"), momentLabel(d.at)) { d.choosingTime = true }
@@ -931,7 +992,9 @@ private fun StepBar(step: ReportStep) {
 private fun BusCard(r: ReportFor) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.plateStrong)
         .padding(horizontal = K.gap4, vertical = K.gap3), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(listOf(T("Line ${r.line}", "קו ${r.line}"), formOperator(r.agency)).filter { it.isNotBlank() }.joinToString(" · "),
+        Text(
+            if (r.train) T("Israel Railways, train ${r.line}", "רכבת ישראל, רכבת ${r.line}")
+            else listOf(T("Line ${r.line}", "קו ${r.line}"), formOperator(r.agency)).filter { it.isNotBlank() }.joinToString(" · "),
             fontSize = 16.sp, color = K.text, fontWeight = FontWeight.Medium)
         r.destination.ifBlank { null }?.let { Text(T("to $it", "לכיוון $it"), style = K.type.subhead) }
         r.plate?.let { Text(T("Number plate $it", "מספר רישוי $it"), style = K.type.subhead) }
@@ -1436,58 +1499,6 @@ private fun MinistryForm(filling: Filling, onBack: () -> Unit, onDone: () -> Uni
                     it.destroy()
                 },
             )
-        }
-    }
-}
-
-// A train's report: the ministry's form Kav fills in for buses asks other questions for a train, so this gives the
-// train's details to hand and the ways to the railway and the ministry, which take a train's complaints.
-private const val RAIL_PHONE = "*5770"
-
-private fun complaintPage() =
-    "https://www.gov.il/${if (T.rtl) "he" else "en"}/service/complaint_about_conduct_in_public_transportation"
-
-@Composable
-private fun TrainReportScreen(report: ReportFor, onClose: () -> Unit) {
-    val ctx = LocalContext.current
-    BackHandler(onBack = onClose)
-    val day = SimpleDateFormat("EEE d.M.yyyy HH:mm", T.locale).apply { timeZone = ISRAEL }
-    val details = listOfNotNull(
-        T("Israel Railways, train ${report.line}", "רכבת ישראל, רכבת ${report.line}"),
-        day.format(Date(report.at * 1000)),
-        listOf(report.origin, report.destination).filter { it.isNotBlank() }.takeIf { it.size == 2 }
-            ?.let { (a, b) -> T("$a → $b", "$a ← $b") },
-    )
-    Box(Modifier.fillMaxSize().background(K.bg)) {
-        Column(Modifier.fillMaxSize()) {
-            ScreenHeader(T("Report", "דיווח"), T("a train", "על רכבת"), back = onClose)
-            StepPage(
-                T("Report a problem on this train", "דיווח על בעיה ברכבת הזו"),
-                T("A driver, an inspector, the train itself or the station: the National Public Transport Authority takes " +
-                    "complaints about Israel Railways on its own page, and the railway on its service line. Kav fills in the " +
-                    "form for buses only, so here's what to tell them.",
-                    "נהג, פקח, הרכבת עצמה או התחנה: הרשות הארצית לתחבורה ציבורית מקבלת תלונות על רכבת ישראל בעמוד שלה, " +
-                        "והרכבת במוקד השירות שלה. Kav ממלאת את הטופס רק לאוטובוסים, אז הנה מה לספר להם."),
-            ) {
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rTile)).background(K.plateStrong)
-                    .padding(horizontal = K.gap4, vertical = K.gap3), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    details.forEachIndexed { i, line ->
-                        Text(line, style = if (i == 0) K.type.bodyStrong else K.type.subhead)
-                    }
-                }
-                KavButton(T("Open the complaint page", "לעמוד התלונות"), {
-                    runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(complaintPage()))) }
-                }, Modifier.fillMaxWidth(), icon = Icons.AutoMirrored.Rounded.OpenInNew)
-                KavButton(T("Copy these details", "העתקת הפרטים"), {
-                    val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    clip.setPrimaryClip(android.content.ClipData.newPlainText(T("Train", "רכבת"), details.joinToString("\n")))
-                }, Modifier.fillMaxWidth(), style = ButtonStyle.Secondary)
-                KavButton(T("Call Israel Railways ($RAIL_PHONE)", "התקשרות לרכבת ישראל ($RAIL_PHONE)"), {
-                    runCatching {
-                        ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(RAIL_PHONE))))
-                    }
-                }, Modifier.fillMaxWidth(), style = ButtonStyle.Secondary)
-            }
         }
     }
 }

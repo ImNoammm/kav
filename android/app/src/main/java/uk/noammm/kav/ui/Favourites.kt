@@ -145,124 +145,143 @@ fun FavouriteStrip(
     val shown = order ?: favourites
     androidx.activity.compose.BackHandler(inEdit) { editMode = false; order = null; held = null; dx = 0f }
 
-    Column(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.fillMaxWidth()
-                .horizontalScroll(rememberScrollState(), enabled = held == null)
-                .padding(horizontal = horizontalPadding, vertical = K.gap2),
-            horizontalArrangement = Arrangement.spacedBy(K.gap2),
-        ) {
-            shown.forEach { f ->
-                val set = f.place != null
-                val lifted = held == f.id
-                val lift by animateFloatAsState(
-                    if (lifted) 1.08f else 1f,
-                    spring(dampingRatio = .6f, stiffness = Spring.StiffnessMedium), label = "lift",
-                )
-                val removable = onRemove != null && f.id != Favourite.HOME
-                Column(
-                    Modifier.width(72.dp)
-                        .zIndex(if (lifted) 1f else 0f)
-                        .graphicsLayer {
-                            translationX = if (lifted) dx else 0f
-                            scaleX = lift
-                            scaleY = lift
-                        }
-                        .clip(RoundedCornerShape(K.rTile))
-                        .then(
-                            if (!inEdit) Modifier
-                            else Modifier.pointerInput(favourites, dir) {
-                                detectDragGestures(
-                                    onDragStart = { held = f.id; dx = 0f },
-                                    onDragCancel = { held = null; dx = 0f; order = null },
-                                    onDragEnd = {
-                                        val moved = order
-                                        held = null; dx = 0f
-                                        if (moved != null) onReorder?.invoke(moved)
-                                    },
-                                    onDrag = { change, drag ->
-                                        change.consume()
-                                        dx += drag.x
-                                        val list = (order ?: favourites).toMutableList()
-                                        val at = list.indexOfFirst { it.id == f.id }
-                                        if (at < 0) return@detectDragGestures
-                                        val travelled = dx * dir
-                                        if (travelled > slotPx / 2 && at < list.size - 1) {
-                                            list.add(at + 1, list.removeAt(at))
-                                            dx -= slotPx * dir
-                                            order = list
-                                        } else if (travelled < -slotPx / 2 && at > 0) {
-                                            list.add(at - 1, list.removeAt(at))
-                                            dx += slotPx * dir
-                                            order = list
-                                        }
-                                    },
-                                )
+    // A favourite's tile, wherever the strip puts it.
+    val tile: @Composable (Favourite) -> Unit = { f ->
+        val set = f.place != null
+        val lifted = held == f.id
+        val lift by animateFloatAsState(
+            if (lifted) 1.08f else 1f,
+            spring(dampingRatio = .6f, stiffness = Spring.StiffnessMedium), label = "lift",
+        )
+        val removable = onRemove != null && f.id != Favourite.HOME
+        Column(
+            Modifier.width(72.dp)
+                .zIndex(if (lifted) 1f else 0f)
+                .graphicsLayer {
+                    translationX = if (lifted) dx else 0f
+                    scaleX = lift
+                    scaleY = lift
+                }
+                .clip(RoundedCornerShape(K.rTile))
+                .then(
+                    if (!inEdit) Modifier
+                    else Modifier.pointerInput(favourites, dir) {
+                        detectDragGestures(
+                            onDragStart = { held = f.id; dx = 0f },
+                            onDragCancel = { held = null; dx = 0f; order = null },
+                            onDragEnd = {
+                                val moved = order
+                                held = null; dx = 0f
+                                if (moved != null) onReorder?.invoke(moved)
+                            },
+                            onDrag = { change, drag ->
+                                change.consume()
+                                dx += drag.x
+                                val list = (order ?: favourites).toMutableList()
+                                val at = list.indexOfFirst { it.id == f.id }
+                                if (at < 0) return@detectDragGestures
+                                val travelled = dx * dir
+                                if (travelled > slotPx / 2 && at < list.size - 1) {
+                                    list.add(at + 1, list.removeAt(at))
+                                    dx -= slotPx * dir
+                                    order = list
+                                } else if (travelled < -slotPx / 2 && at > 0) {
+                                    list.add(at - 1, list.removeAt(at))
+                                    dx += slotPx * dir
+                                    order = list
+                                }
                             },
                         )
-                        .combinedClickable(
-                            role = Role.Button,
-                            onClick = { if (inEdit) onEdit(f) else onPick(f) },
-                            onLongClick = if (inEdit) null else ({ onEdit(f) }),
-                        )
-                        .padding(vertical = K.gap2),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                    },
+                )
+                .combinedClickable(
+                    role = Role.Button,
+                    onClick = { if (inEdit) onEdit(f) else onPick(f) },
+                    onLongClick = if (inEdit) null else ({ onEdit(f) }),
+                )
+                .padding(vertical = K.gap2),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.size(48.dp).clip(RoundedCornerShape(K.rTile))
+                        .background(if (set) K.fill else Color.Transparent)
+                        .border(
+                            if (lifted) 1.5.dp else 1.dp,
+                            if (lifted) K.accent else if (set) Color.Transparent else K.separator,
+                            RoundedCornerShape(K.rTile),
+                        ),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Box(
-                            Modifier.size(48.dp).clip(RoundedCornerShape(K.rTile))
-                                .background(if (set) K.fill else Color.Transparent)
-                                .border(
-                                    if (lifted) 1.5.dp else 1.dp,
-                                    if (lifted) K.accent else if (set) Color.Transparent else K.separator,
-                                    RoundedCornerShape(K.rTile),
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(favouriteIcon(f.icon), contentDescription = null, tint = if (set) K.text else K.textTertiary, modifier = Modifier.size(24.dp))
-                        }
-                        androidx.compose.animation.AnimatedVisibility(
-                            visible = inEdit && removable,
-                            modifier = Modifier.align(Alignment.TopEnd).offset(x = 7.dp, y = (-7).dp),
-                            enter = scaleIn(
-                                spring(dampingRatio = .55f, stiffness = Spring.StiffnessMedium), initialScale = .5f,
-                            ) + fadeIn(tween(120)),
-                            exit = scaleOut(tween(140), targetScale = .5f) + fadeOut(tween(120)),
-                        ) {
-                            Box(
-                                Modifier.size(24.dp).clip(K.capsule).background(K.critical)
-                                    .clickable(
-                                        role = Role.Button,
-                                        onClickLabel = T("Remove ${f.label}", "הסרת ${f.label}"),
-                                    ) { onRemove?.invoke(f) },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(Icons.Rounded.Close, contentDescription = null, tint = K.bg, modifier = Modifier.size(14.dp))
-                            }
-                        }
+                    Icon(favouriteIcon(f.icon), contentDescription = null, tint = if (set) K.text else K.textTertiary, modifier = Modifier.size(24.dp))
+                }
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = inEdit && removable,
+                    modifier = Modifier.align(Alignment.TopEnd).offset(x = 7.dp, y = (-7).dp),
+                    enter = scaleIn(
+                        spring(dampingRatio = .55f, stiffness = Spring.StiffnessMedium), initialScale = .5f,
+                    ) + fadeIn(tween(120)),
+                    exit = scaleOut(tween(140), targetScale = .5f) + fadeOut(tween(120)),
+                ) {
+                    Box(
+                        Modifier.size(24.dp).clip(K.capsule).background(K.critical)
+                            .clickable(
+                                role = Role.Button,
+                                onClickLabel = T("Remove ${f.label}", "הסרת ${f.label}"),
+                            ) { onRemove?.invoke(f) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Rounded.Close, contentDescription = null, tint = K.bg, modifier = Modifier.size(14.dp))
                     }
-                    Spacer(Modifier.height(K.gap1))
-                    // The whole name: a long one takes a second line, and one still too long for two lines (or with a word
-                    // wider than the tile) shrinks a little before anything is cut.
-                    var labelSize by remember(f.label) { mutableStateOf(12.sp) }
-                    Text(
-                        f.label, style = K.type.caption, fontSize = labelSize, color = if (set) K.text else K.textSecondary,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                        onTextLayout = { if ((it.hasVisualOverflow || it.didOverflowWidth) && labelSize > 10.sp) labelSize *= 0.92f },
-                    )
                 }
             }
-            if (manage) EditControls(
-                editing = inEdit,
-                onToggle = { editMode = !editMode; order = null; held = null; dx = 0f },
-                onAdd = onAdd,
-            ) else StripTile(
-                Icons.Rounded.Add,
-                T("Add", "הוספה"),
-                T("Add a favourite", "הוספת מועדף"),
-                on = false,
-                onClick = onAdd,
+            Spacer(Modifier.height(K.gap1))
+            // The whole name: a long one takes a second line, and one still too long for two lines (or with a word
+            // wider than the tile) shrinks a little before anything is cut.
+            var labelSize by remember(f.label) { mutableStateOf(12.sp) }
+            Text(
+                f.label, style = K.type.caption, fontSize = labelSize, color = if (set) K.text else K.textSecondary,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                onTextLayout = { if ((it.hasVisualOverflow || it.didOverflowWidth) && labelSize > 10.sp) labelSize *= 0.92f },
             )
+        }
+    }
+    val controls: @Composable () -> Unit = {
+        if (manage) EditControls(
+            editing = inEdit,
+            onToggle = { editMode = !editMode; order = null; held = null; dx = 0f },
+            onAdd = onAdd,
+        ) else StripTile(
+            Icons.Rounded.Add,
+            T("Add", "הוספה"),
+            T("Add a favourite", "הוספת מועדף"),
+            on = false,
+            onClick = onAdd,
+        )
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        BoxWithConstraints(Modifier.fillMaxWidth().animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
+            // More favourites than one screen's width take two rows, the first half above the rest, and scroll together.
+            // Sorting keeps them in one row, as a drag moves a tile a slot at a time along it.
+            val slots = shown.size + 1
+            val twoRows = !inEdit && SLOT * slots - K.gap2 > maxWidth - horizontalPadding * 2
+            val firstRow = if (twoRows) (slots + 1) / 2 else shown.size
+            Column(
+                Modifier.fillMaxWidth()
+                    .horizontalScroll(rememberScrollState(), enabled = held == null)
+                    .padding(horizontal = horizontalPadding, vertical = K.gap2),
+                verticalArrangement = Arrangement.spacedBy(K.gap1),
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+                    shown.take(firstRow).forEach { tile(it) }
+                    if (!twoRows) controls()
+                }
+                if (twoRows) Row(horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+                    shown.drop(firstRow).forEach { tile(it) }
+                    controls()
+                }
+            }
         }
         AnimatedVisibility(
             visible = inEdit,

@@ -12,6 +12,7 @@ dist/
 # Notes and local dev tools
 docs/
 __pycache__/
+shared-trips.sqlite3*
 tools/android_emulator.sh
 tools/emulator_trust_ca.sh
 tools/measure_bundle.py

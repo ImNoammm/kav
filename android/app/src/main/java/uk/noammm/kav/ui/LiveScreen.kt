@@ -689,6 +689,11 @@ enum class LiveShow { STOPS, TRAFFIC, ALL }
 private fun LinePlate(v: Tracked) {
     val agency = v.line?.agencyId ?: -1
     val plate = plateFor(v.routeType, agency) ?: operatorPlate(v.operator())
+    // The strip look for buses, when chosen in Settings.
+    if (K.lineBadgeAppearance == LineBadgeAppearance.STRIP && plateFor(v.routeType, agency) == null) {
+        LinePlateBadge(v.number, Mode.BUS, plate, Modifier.widthIn(max = 120.dp), glyph = { ink, size -> AgencyMark(v.routeType, agency, ink, size) })
+        return
+    }
     Row(
         Modifier.clip(RoundedCornerShape(K.rBadge)).background(plate?.fill ?: K.plate)
             .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(K.rBadge))
@@ -844,13 +849,13 @@ private fun LiveVehicleCard(
         Spacer(Modifier.height(K.gap3))
         KavLive.plateOf(a.vehicleId)?.let { LiveFact(T("Number plate", "מספר רישוי"), it) }
         if (a.platform.isNotBlank()) LiveFact(T("Platform", "רציף"), a.platform)
-        // A train goes to the railway's channels (ReportFor.train).
+        // A train, on the form's own questions for trains (ReportFor.train).
         shown.line?.takeIf { modeOf(shown.routeType) == Mode.TRAIN }?.let { line ->
             Text(T("Report this train", "דיווח על הרכבת הזו"), fontSize = 14.sp, color = K.accentInk,
                 modifier = Modifier.clickable(role = Role.Button) {
                     onReport(ReportFor(
                         line = shown.number, agency = "",
-                        origin = line.origin, destination = line.destination, at = now, train = true,
+                        origin = line.origin, destination = line.destination, stops = reportStops, at = now, train = true,
                     ))
                 }.padding(vertical = K.gap2))
         }

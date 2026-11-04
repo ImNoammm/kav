@@ -191,12 +191,14 @@ internal object Timetable {
     }
 
     // A newer copy at most once a day, from Kav's background check (Checks): with daily updates on, on Wi-Fi or another
-    // unmetered network, and on mobile data only once the copy in use is STALE_DAYS old. Blocks, so off the main thread.
+    // unmetered network, and on mobile data only once the copy in use is STALE_DAYS old, unless the rider allows mobile
+    // data. Blocks, so off the main thread.
     fun refresh(ctx: Context): Unit = synchronized(downloadLock) {
         val at = source(ctx)
         val s = store(ctx, at)
         val have = s.staged() ?: s.installed()
-        if (!due(have, Prefs.timetableUpdates(ctx), metered(ctx), s.checked(), System.currentTimeMillis(), LocalDate.now(israel))) return
+        val metered = metered(ctx) && !Prefs.timetableOnMobile(ctx)
+        if (!due(have, Prefs.timetableUpdates(ctx), metered, s.checked(), System.currentTimeMillis(), LocalDate.now(israel))) return
         download(ctx, at, have)
         Unit
     }

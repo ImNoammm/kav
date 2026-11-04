@@ -8,6 +8,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
@@ -27,9 +28,15 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
@@ -56,8 +63,12 @@ import uk.noammm.kav.data.Sources
 import uk.noammm.kav.data.StopNames
 import uk.noammm.kav.data.Updates
 import androidx.compose.material.icons.rounded.NewReleases
+import androidx.compose.material.icons.rounded.Campaign
+import uk.noammm.kav.data.MoovitAlerts
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Place
+import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.AnimatedVisibility
@@ -68,12 +79,13 @@ import androidx.compose.animation.core.spring
 import androidx.compose.ui.input.pointer.pointerInput
 
 @Composable
-fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
+fun SettingsScreen(model: KavModel, active: Boolean = true, onClose: () -> Unit) {
     val ctx = LocalContext.current
     var choosing by remember { mutableStateOf(false) }
 
     // Each part is a row saying what it's set to, and opens on its own page.
     var page by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(active) { if (!active) { page = null; choosing = false } }
     androidx.activity.compose.BackHandler(page != null) { page = null }
     val parts = ArrayList<SettingsPart>()
     fun part(id: String, title: String, summary: String, content: @Composable ColumnScope.() -> Unit) {
@@ -89,6 +101,8 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
             LiveSource()
             PlanningSource()
+            EveryPlannerChoice()
+            MoovitAlertsChoice()
             TimetableSource()
             TimetableUpdates()
         }
@@ -158,6 +172,7 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) {
             PrivacyRows(model) { choosing = true }
+            StopPhotoChoice()
         }
     }
 
@@ -182,6 +197,11 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
             Sub(T("Time format", "תבנית שעה"))
             ClockChoice(ctx)
         }
+    }
+
+    part("links", T("Link customization", "התאמה אישית של קישורים"),
+        T("Language, colours and app buttons", "שפה, צבעים וכפתורי אפליקציות")) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LinkCustomization() }
     }
 
     part(
@@ -334,7 +354,7 @@ private class SettingsPart(val id: String, val title: String, val summary: Strin
 // Trips first, then how Kav looks and behaves, then Kav itself.
 private val SETTINGS_GROUPS = listOf(
     listOf("live", "plans", "trip", "pay"),
-    listOf("lang", "look", "privacy"),
+    listOf("lang", "look", "links", "privacy"),
     listOf("updates", "absent"),
 )
 
@@ -498,9 +518,10 @@ internal fun UpdatePrompts(checkAbove: Boolean = true) {
     }
 }
 
-// Kav's own map, or satellite photos, which load online.
+// Kav's own map, or satellite photos, which load online. After setup, a map that isn't on the phone has its download
+// right under the choice; setup downloads it as its last step.
 @Composable
-internal fun MapChoices() {
+internal fun MapChoices(setup: Boolean = false) {
     val ctx = LocalContext.current
     val types = listOf(MapFile.Type.STANDARD, MapFile.Type.SATELLITE)
     InfoHeader(
@@ -512,6 +533,28 @@ internal fun MapChoices() {
         listOf(T("Standard", "רגילה"), T("Satellite", "לוויין")), selected = types.indexOf(MapFile.type).coerceAtLeast(0),
         onSelect = { i -> MapFile.type = types[i]; Prefs.setMapType(ctx, types[i]) },
     )
+    val state = MapFile.state
+    if (!setup) AnimatedVisibility(state !is MapFile.State.Ready, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+        Column(Modifier.padding(top = K.gap3), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+            when (state) {
+                is MapFile.State.Downloading -> DownloadBar(state.progress, T("Downloading the map…", "מורידים את המפה…"))
+                is MapFile.State.Failed -> Text(T("Couldn't download the map. ${state.why}", "ההורדה של המפה לא הצליחה. ${state.why}"),
+                    style = K.type.subhead, color = K.critical)
+                else -> Text(
+                    if (MapFile.type == MapFile.Type.SATELLITE) T(
+                        "Satellite's names come from the map on your phone, which isn't here yet: about ${MapFile.BYTES shr 20} MB, once.",
+                        "השמות במפת הלוויין מגיעים מהמפה שבטלפון, שעוד לא כאן: בערך ${MapFile.BYTES shr 20} MB, פעם אחת.")
+                    else T("This map isn't on your phone yet: about ${MapFile.BYTES shr 20} MB, once.",
+                        "המפה הזו עוד לא בטלפון: בערך ${MapFile.BYTES shr 20} MB, פעם אחת."),
+                    style = K.type.subhead, color = K.textSecondary,
+                )
+            }
+            if (state !is MapFile.State.Downloading) KavButton(
+                if (state is MapFile.State.Failed) T("Try again", "נסו שוב") else T("Download", "הורדה"),
+                { MapFile.startDownload(ctx) }, Modifier.fillMaxWidth(), icon = Icons.Rounded.Download,
+            )
+        }
+    }
     // The map as it looks with the choice above, around Dizengoff Center; it only shows, so the page scrolls over it.
     // Before the map is downloaded (setup), it's read from GitHub for this spot alone.
     Box(Modifier.padding(top = K.gap3).fillMaxWidth().height(160.dp).panel(K.rCard)) {
@@ -535,6 +578,53 @@ internal fun PlanChoices(model: KavModel) {
                     val on = f in model.filters
                     ToggleRow(f.label, on, { FilterGlyph(f, on) }) { model.setFilter(ctx, f, it) }
                 }
+            }
+        }
+        InfoHeader(T("What a card shows", "מה מוצג בכרטיס"), T(
+            "The CO2e of every plan and trip, from every planner: Kav works it out from each ride's distance, by bus, train, light rail or taxi, with the UK government's figures per passenger.",
+            "ה-CO2e של כל מסלול ונסיעה, מכל מתכנן: Kav מחשבת אותו לפי המרחק של כל נסיעה, באוטובוס, ברכבת, ברכבת קלה או במונית, לפי הנתונים של ממשלת בריטניה לכל נוסע.",
+        ))
+        ListGroup {
+            row {
+                ToggleRow(T("Emissions", "פליטות"), Shown.co2, { GlobeGlyph(if (Shown.co2) K.text else K.dim, K.surface1, 18.dp) }) { on ->
+                    Shown.co2 = on; Prefs.setShowCo2(ctx, on)
+                }
+            }
+        }
+    }
+}
+
+// Detours and other service alerts from Moovit's website, whichever planner plans: its whole list comes at once, so
+// it learns nothing of the trip.
+@Composable
+internal fun MoovitAlertsChoice() {
+    val ctx = LocalContext.current
+    InfoHeader(T("Detours and alerts", "עיקופים והתראות"), T(
+        "Detours, delays and moved stops on your lines, from Moovit, whichever planner you use: on results, trips and navigation. While results or a trip are open, Kav fetches Moovit's whole list every ten minutes, so Moovit sees your IP address but not your trip. Opening an alert fetches its notice.",
+        "עיקופים, עיכובים ותחנות שהוזזו בקווים שלכם, מ-Moovit, בכל מתכנן: בתוצאות, בנסיעות ובניווט. כשתוצאות או נסיעה פתוחות, Kav מביאה את כל הרשימה של Moovit כל עשר דקות, כך ש-Moovit רואה את כתובת ה-IP שלכם אבל לא את הנסיעה. פתיחת התראה מביאה את ההודעה שלה.",
+    ))
+    ListGroup {
+        row {
+            ToggleRow(
+                T("Alerts from Moovit", "התראות מ-Moovit"), MoovitAlerts.enabled,
+                { Icon(Icons.Rounded.Campaign, null, tint = if (MoovitAlerts.enabled) K.text else K.dim, modifier = Modifier.size(22.dp)) },
+            ) { on -> MoovitAlerts.enabled = on; Prefs.setMoovitAlerts(ctx, on) }
+        }
+    }
+}
+
+// Each stop's photo, from Street View facing it.
+@Composable
+internal fun StopPhotoChoice() {
+    val ctx = LocalContext.current
+    InfoHeader(T("Stops", "תחנות"), T(
+        "A stop's photo is Google's Street View facing it, fetched when the stop is shown: Google then sees that stop and your IP address. Off, Google is asked only when you open Street View.",
+        "התמונה של תחנה היא Street View של Google שפונה אליה, ונטענת כשהתחנה מוצגת: Google רואה אז את התחנה ואת כתובת ה-IP שלכם. כשכבוי, Google נשאלת רק כשפותחים Street View.",
+    ))
+    ListGroup {
+        row {
+            ToggleRow(T("Stop photos", "תמונות תחנות"), StopPhotos.enabled, { PhotoGlyph(if (StopPhotos.enabled) K.text else K.dim) }) { on ->
+                StopPhotos.enabled = on; Prefs.setStopPhotos(ctx, on)
             }
         }
     }
@@ -879,24 +969,154 @@ private fun CheckLines(c: KavLive.Check) {
     }
 }
 
+// The link a shared trip carries: Kav's, or Moovit's website for friends without Kav, which takes them to the same
+// destination from where they are.
+@Composable
+private fun ShareLinks(moovit: Boolean, onSelect: (Boolean) -> Unit) {
+    InfoHeader(
+        T("Trips you share", "נסיעות שאתם משתפים"),
+        T("Kav links keep the selected trip, with its lines, stops, times and map. Sharing a Bus Nearby or EGG trip also sends it to HopOn to make their app links, with a random ID Kav keeps for this. Sharing a Moovit trip sends the selected itinerary to Moovit's sharing service using a temporary anonymous registration. Prefer Moovit link to share that link directly when available; otherwise Kav keeps the exact trip in a Kav link.",
+            "קישורי Kav שומרים את הנסיעה שנבחרה, עם הקווים, התחנות, השעות והמפה. שיתוף נסיעה של אוטובוס קרוב או EGG שולח אותה גם ל-HopOn ליצירת קישורי האפליקציות שלהם, עם מזהה אקראי ש-Kav שומרת לזה. שיתוף נסיעת Moovit שולח את המסלול שנבחר לשירות השיתוף של Moovit, באמצעות הרשמה אנונימית זמנית. בחרו בקישור Moovit כדי לשתף אותו ישירות כשהוא זמין; אחרת הנסיעה המדויקת נשמרת בקישור Kav."),
+    )
+    KavSegmented(
+        listOf(T("Kav link", "קישור Kav"), T("Moovit link", "קישור Moovit")), if (moovit) 1 else 0,
+        { onSelect(it == 1) },
+    )
+}
+
+@Composable
+private fun LinkCustomization() {
+    val ctx = LocalContext.current
+    var moovit by remember { mutableStateOf(Prefs.shareLinks(ctx) == "moovit") }
+    var style by remember { mutableStateOf(Prefs.linkStyle(ctx)) }
+    fun save(next: uk.noammm.kav.data.ShareStyle) { style = next; Prefs.setLinkStyle(ctx, next) }
+    ShareLinks(moovit) { moovit = it; Prefs.setShareLinks(ctx, if (it) "moovit" else "kav") }
+    AnimatedVisibility(!moovit, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+    Column {
+    Sub(T("Link expires after", "תוקף הקישור"))
+    val expiryDays = listOf(3, 7, 30)
+    KavSegmented(expiryDays.map { T("$it days", "$it ימים") }, expiryDays.indexOf(style.expiryDays),
+        { save(style.copy(expiryDays = expiryDays[it])) })
+    InfoHeader(T("Page language", "שפת העמוד"), T("Automatic follows your Kav settings when you share: page language, stop names and colours. Changes apply to new links.",
+        "אוטומטי משתמש בהגדרות Kav שלכם בזמן השיתוף: שפת העמוד, שמות התחנות והצבעים. שינויים חלים על קישורים חדשים."))
+    val languages = listOf("auto", "en", "he")
+    KavSegmented(listOf(T("Automatic", "אוטומטי"), "English", "עברית"), languages.indexOf(style.language),
+        { save(style.copy(language = languages[it])) })
+    Sub(T("Stop names language", "שפת שמות התחנות"))
+    KavSegmented(listOf(T("Automatic", "אוטומטי"), "English", "עברית"), languages.indexOf(style.stopLanguage),
+        { save(style.copy(stopLanguage = languages[it])) })
+    Sub(T("Page colours", "צבעי העמוד"))
+    val themes = listOf("auto", "oled", "light", "dark")
+    KavSegmented(listOf(T("Automatic", "אוטומטי"), "OLED", T("Light", "בהיר"), T("Dark", "כהה")), themes.indexOf(style.theme),
+        { save(style.copy(theme = themes[it])) })
+    Sub(T("App buttons", "כפתורי אפליקציות"))
+    var held by remember { mutableStateOf<String?>(null) }
+    var dragY by remember { mutableFloatStateOf(0f) }
+    val heights = remember { mutableMapOf<String, Int>() }
+    fun move(id: String, by: Int) {
+        val i = style.order.indexOf(id)
+        val other = i + by
+        if (i < 0 || other !in style.order.indices) return
+        val next = style.order.toMutableList()
+        next.add(other, next.removeAt(i))
+        save(style.copy(order = next))
+    }
+    Column(Modifier.fillMaxWidth().panel(K.rCard)) {
+        style.order.forEachIndexed { i, id -> key(id) {
+            val label = when (id) { "moovit" -> "Moovit"; "egg" -> "EGG"; "bnb" -> T("Bus Nearby", "אוטובוס קרוב"); else -> "Kav" }
+            val lifted = held == id
+            val lift by androidx.compose.animation.core.animateFloatAsState(
+                if (lifted) 1f else 0f, spring(dampingRatio = 1f, stiffness = 600f), label = "lift",
+            )
+            Column(Modifier.fillMaxWidth()
+                .onSizeChanged { heights[id] = it.height }
+                .zIndex(if (lifted) 1f else lift)
+                .glide(enabled = !lifted)
+                .graphicsLayer {
+                    translationY = if (lifted) dragY else 0f
+                    scaleX = 1f + .04f * lift; scaleY = 1f + .04f * lift
+                    shadowElevation = 8f * lift
+                }
+                .background(K.surfaceRaised.copy(alpha = lift))) {
+            if (i > 0) Box(Modifier.padding(start = K.gap3).fillMaxWidth().height(.5.dp).background(K.border))
+            Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                .padding(start = K.gap3, end = K.gap1), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).heightIn(min = 56.dp)
+                    .clickable(role = Role.Switch) { save(style.copy(apps = if (id in style.apps) style.apps - id else style.apps + id)) }
+                    .semantics { toggleableState = if (id in style.apps) ToggleableState.On else ToggleableState.Off },
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(label, Modifier.weight(1f), style = K.type.body)
+                    KavSwitch(id in style.apps)
+                }
+                Box(Modifier.size(48.dp).semantics {
+                    contentDescription = T("Reorder $label", "שינוי הסדר של $label")
+                    customActions = buildList {
+                        if (i > 0) add(CustomAccessibilityAction(T("Move up", "הזזה למעלה")) { move(id, -1); true })
+                        if (i < style.order.lastIndex) add(CustomAccessibilityAction(T("Move down", "הזזה למטה")) { move(id, 1); true })
+                    }
+                }.pointerInput(id) {
+                    try { detectVerticalDragGestures(
+                        onDragStart = { held = id; dragY = 0f },
+                        onDragEnd = { held = null; dragY = 0f },
+                        onDragCancel = { held = null; dragY = 0f },
+                        onVerticalDrag = { change, distance ->
+                            change.consume(); dragY += distance
+                            val next = style.order.toMutableList()
+                            var at = next.indexOf(id)
+                            while (at < next.lastIndex && dragY > (heights[next[at + 1]] ?: 1) / 2f) {
+                                dragY -= (heights[next[at + 1]] ?: 1)
+                                next.add(at + 1, next.removeAt(at)); at++
+                            }
+                            while (at > 0 && dragY < -(heights[next[at - 1]] ?: 1) / 2f) {
+                                dragY += (heights[next[at - 1]] ?: 1)
+                                next.add(at - 1, next.removeAt(at)); at--
+                            }
+                            if (next != style.order) save(style.copy(order = next))
+                        },
+                    ) } finally { if (held == id) { held = null; dragY = 0f } }
+                }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Menu, null, tint = K.dim, modifier = Modifier.size(22.dp)) }
+            }
+            }
+        } }
+    }
+    Sub(T("Map", "מפה"))
+    ListGroup {
+        row {
+            ToggleRow(T("Map preview", "תצוגה מקדימה של המפה"), style.map,
+                { Icon(Icons.Rounded.Place, null, tint = K.textSecondary) }) { save(style.copy(map = it)) }
+        }
+    }
+    }
+    }
+}
+
 // The week of scheduled departures kept on the phone: updated daily from GitHub's nightly build, or the rider's own server
 // when a choice uses it (Sources.timetableFrom). The last copy stays when updates are off.
 @Composable
 internal fun TimetableUpdates() {
     val ctx = LocalContext.current
     var on by remember { mutableStateOf(Prefs.timetableUpdates(ctx)) }
+    var mobile by remember { mutableStateOf(Prefs.timetableOnMobile(ctx)) }
     InfoHeader(T("Timetable on your phone", "לוח הזמנים בטלפון"), T(
-        "The week of scheduled departures Kav keeps on your phone, for stop boards and planning without signal, built each night on GitHub from the Ministry of Transport's timetable. Off, Kav keeps the last copy, which can go out of date. On mobile data, it updates only once the copy is three days old.",
-        "שבוע היציאות המתוכננות ש-Kav שומרת בטלפון, ללוחות התחנות ולתכנון בלי קליטה, שנבנה כל לילה ב-GitHub מלוח הזמנים של משרד התחבורה. כשכבוי, Kav שומרת את העותק האחרון, שעלול להתיישן. בנתונים סלולריים הוא מתעדכן רק כשהעותק בן שלושה ימים.",
+        "The week of scheduled departures Kav keeps on your phone, for stop boards and planning without signal, built each night on GitHub from the Ministry of Transport's timetable. Off, Kav keeps the last copy, which can go out of date. On mobile data, it updates only once the copy is three days old, unless you turn on Also on mobile data.",
+        "שבוע היציאות המתוכננות ש-Kav שומרת בטלפון, ללוחות התחנות ולתכנון בלי קליטה, שנבנה כל לילה ב-GitHub מלוח הזמנים של משרד התחבורה. כשכבוי, Kav שומרת את העותק האחרון, שעלול להתיישן. בנתונים סלולריים הוא מתעדכן רק כשהעותק בן שלושה ימים, אלא אם תפעילו את גם בנתונים סלולריים.",
     ))
-    ListGroup {
+    ListGroup(Modifier.animateContentSize(spring(dampingRatio = 1f, stiffness = 500f))) {
         row {
+            val from = if (KavLive.timetableServer != null) T("From your server", "מהשרת שלכם") else T("From GitHub", "מ-GitHub")
             ListRow(
                 T("Update it every day", "לעדכן אותו כל יום"),
                 Modifier.semantics { toggleableState = if (on) ToggleableState.On else ToggleableState.Off },
-                subtitle = if (KavLive.timetableServer != null) T("From your server, on Wi-Fi", "מהשרת שלכם, ב-Wi-Fi")
-                    else T("From GitHub, on Wi-Fi", "מ-GitHub, ב-Wi-Fi"),
+                subtitle = if (mobile) from else from + T(", on Wi-Fi", ", ב-Wi-Fi"),
                 trailing = { KavSwitch(on) }, onClick = { on = !on; Prefs.setTimetableUpdates(ctx, on) }, chevron = false,
+            )
+        }
+        if (on) row {
+            ListRow(
+                T("Also on mobile data", "גם בנתונים סלולריים"),
+                Modifier.semantics { toggleableState = if (mobile) ToggleableState.On else ToggleableState.Off },
+                subtitle = T("Up to 6 MB a day", "עד 6MB ביום"),
+                trailing = { KavSwitch(mobile) }, onClick = { mobile = !mobile; Prefs.setTimetableOnMobile(ctx, mobile) }, chevron = false,
             )
         }
     }
@@ -925,8 +1145,8 @@ internal fun PrivacyRows(model: KavModel, onChoose: () -> Unit) {
     val ctx = LocalContext.current
     var priv by remember(model.prefsVersion) { mutableStateOf(Prefs.privateSearch(ctx)) }
     InfoHeader(T("Search", "חיפוש"), T(
-            "Your exact location stays off search. A trip still sends its two points. Street View loads from Google only when you open it: Google then sees that spot and your IP address.",
-            "המיקום המדויק שלכם לא נשלח בחיפוש. מסלול עדיין שולח את שתי הנקודות שלו. Street View נטען מ-Google רק כשפותחים אותו: Google רואה אז את המקום הזה ואת כתובת ה-IP שלכם.",
+            "Your exact location stays off search. A trip still sends its two points.",
+            "המיקום המדויק שלכם לא נשלח בחיפוש. מסלול עדיין שולח את שתי הנקודות שלו.",
         ))
     ListGroup {
         row {
@@ -1167,6 +1387,21 @@ private fun PipGlyph(tint: Color, size: Dp = 18.dp) {
             androidx.compose.ui.geometry.CornerRadius(w * .1f), style = Stroke(sw))
         drawRoundRect(tint, Offset(w * .48f, h * .48f), androidx.compose.ui.geometry.Size(w * .32f, h * .24f),
             androidx.compose.ui.geometry.CornerRadius(w * .05f))
+    }
+}
+
+@Composable
+private fun PhotoGlyph(tint: Color, size: Dp = 18.dp) {
+    Canvas(Modifier.size(size)) {
+        val w = this.size.width; val h = this.size.height; val sw = w * .09f
+        drawRoundRect(tint, Offset(w * .08f, h * .16f), androidx.compose.ui.geometry.Size(w * .84f, h * .68f),
+            androidx.compose.ui.geometry.CornerRadius(w * .1f), style = Stroke(sw))
+        drawCircle(tint, w * .08f, Offset(w * .34f, h * .38f))
+        val hill = Path().apply {
+            moveTo(w * .14f, h * .78f); lineTo(w * .42f, h * .52f); lineTo(w * .58f, h * .66f); lineTo(w * .68f, h * .56f)
+            lineTo(w * .86f, h * .78f)
+        }
+        drawPath(hill, tint, style = Stroke(sw, cap = StrokeCap.Round))
     }
 }
 

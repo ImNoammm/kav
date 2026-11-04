@@ -79,9 +79,9 @@ class Net private constructor() {
 
     // Any name the timetable has, a stop's, a town's or a line's end, as shown: the ministry's Hebrew (Kav's server, a
     // stop Kav kept) in English, or an English one, when Kav is in English, back in Hebrew. Others stay as they are.
-    fun shown(name: String): String = when {
+    fun shown(name: String, inEnglish: Boolean = StopNames.english): String = when {
         name.isEmpty() -> name
-        StopNames.english -> english[name.trim()] ?: name
+        inEnglish -> english[name.trim()] ?: name
         else -> hebrew[name.trim()] ?: name
     }
 

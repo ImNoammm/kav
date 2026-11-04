@@ -159,6 +159,9 @@ class MainActivity : ComponentActivity() {
         K.applyTheme(Prefs.look(this))
         K.liquid = Prefs.liquidGlass(this)
         K.lineBadgeAppearance = Prefs.lineBadges(this)
+        Shown.co2 = Prefs.showCo2(this)
+        uk.noammm.kav.data.MoovitAlerts.enabled = Prefs.moovitAlerts(this)
+        uk.noammm.kav.ui.StopPhotos.enabled = Prefs.stopPhotos(this)
         Shown.payments = Prefs.showPayments(this)
         Shown.updatePrompts = Prefs.updatePrompts(this)
         Pip.allowed = Prefs.pipNavigation(this)
@@ -172,6 +175,7 @@ class MainActivity : ComponentActivity() {
         uk.noammm.kav.data.Schedules.init(this)
         KavPlan.init(this)
         MoovitWebPage.init(this)
+        uk.noammm.kav.ui.StopPhotos.init(this)
         Payer.init(this)
         // The trip notification's QUICK PAY button follows the ride kept with Asshole mode.
         lifecycleScope.launch {
@@ -256,6 +260,8 @@ data class ActiveJourney(
     val chosen: Map<Int, Int> = emptyMap(),
     // Per ride leg, the key of the ticket bought for it from its card.
     val paid: Map<Int, String> = emptyMap(),
+    // The rider began the trip where it starts: leaving that spot early starts it. A trip from elsewhere waits for its time.
+    val fromHere: Boolean = true,
 ) {
     val paymentKey get() = trip.paymentKey
 }
@@ -393,6 +399,9 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         K.applyTheme(Prefs.look(ctx))
         K.liquid = Prefs.liquidGlass(ctx)
         K.lineBadgeAppearance = Prefs.lineBadges(ctx)
+        Shown.co2 = Prefs.showCo2(ctx)
+        uk.noammm.kav.data.MoovitAlerts.enabled = Prefs.moovitAlerts(ctx)
+        uk.noammm.kav.ui.StopPhotos.enabled = Prefs.stopPhotos(ctx)
         Shown.payments = Prefs.showPayments(ctx)
         Shown.updatePrompts = Prefs.updatePrompts(ctx)
         Checks.ensure(ctx)
@@ -776,6 +785,7 @@ private fun Shell(model: KavModel) {
             val next = journeyProgress(
                 steps, model.journeyStep, current.resolved, current.chosen,
                 System.currentTimeMillis() / 1000, model.stepFix, canLocate(ctx), Prefs.beginTripsImmediately(ctx),
+                current.fromHere,
             )
             if (next != model.journeyStep) model.journeyStep = next
             delay(2000)
@@ -868,11 +878,10 @@ private fun Shell(model: KavModel) {
             Spacer(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.safeDrawing).background(K.bg))
         },
         bottomBar = {
-            // The tab bar slides away while navigating, and under the screens that cover everything (Settings, Pay,
-            // Payment history, a report) where its tabs couldn't do anything; it slides back up after.
-            val covered = model.settingsOpen || model.payOpen || model.payHistoryOpen || model.report != null
+            // Settings covers the bar in the overlay above this scaffold; its opening doesn't resize the tabs.
+            val covered = model.payOpen || model.payHistoryOpen || model.report != null
             val shown = !model.navigating && !covered
-            Box {
+            Box(Modifier.graphicsLayer { alpha = if (model.settingsOpen) 0f else 1f }) {
                 if (!shown) Spacer(Modifier.fillMaxWidth().windowInsetsBottomHeight(WindowInsets.safeDrawing))
                 androidx.compose.animation.AnimatedVisibility(
                     shown,
@@ -889,23 +898,46 @@ private fun Shell(model: KavModel) {
         Box(Modifier.padding(
             start = pad.calculateStartPadding(direction), top = pad.calculateTopPadding(),
             end = pad.calculateEndPadding(direction),
-        ).fillMaxSize().clipToBounds()
-            // Not while Street View is open: the bar is away, and glass must never record Google's moving frame.
-            .then(if (K.liquid && liquid != null && StreetViewer.open == null) Modifier.liquidSource(liquid) else Modifier)) {
+        ).fillMaxSize().clipToBounds()) {
         CompositionLocalProvider(LocalLiquidBackdrop provides null) {
-            TabStack(model.tab) { tab ->
-                when (tab) {
-                    Tab.Directions -> DirectionsOnline(model)
-                    Tab.Stations -> StationsScreen(model)
-                    Tab.Lines -> LinesScreen(model)
-                    Tab.Live -> LiveScreen(model)
+            // Only the tabs feed the bar's glass.
+            Box(Modifier.fillMaxSize()
+                .then(if (K.liquid && liquid != null && StreetViewer.open == null) Modifier.liquidSource(liquid) else Modifier)) {
+                TabStack(model.tab) { tab ->
+                    when (tab) {
+                        Tab.Directions -> DirectionsOnline(model)
+                        Tab.Stations -> StationsScreen(model)
+                        Tab.Lines -> LinesScreen(model)
+                        Tab.Live -> LiveScreen(model)
+                    }
                 }
             }
-            androidx.compose.animation.AnimatedVisibility(
-                model.settingsOpen,
-                enter = uk.noammm.kav.ui.modalIn(), exit = uk.noammm.kav.ui.modalOut(),
-            ) {
-                SettingsScreen(model) { model.settingsOpen = false }
+        }
+        }
+        }
+    }
+    val safe = WindowInsets.safeDrawing.asPaddingValues()
+    val direction = LocalLayoutDirection.current
+    CompositionLocalProvider(LocalLiquidBackdrop provides null, LocalBottomBarInset provides safe.calculateBottomPadding()) {
+        Box(Modifier.padding(
+            start = safe.calculateStartPadding(direction), top = safe.calculateTopPadding(),
+            end = safe.calculateEndPadding(direction),
+        ).fillMaxSize().clipToBounds()) {
+            // Prepare Settings after the first screen is drawn, before its first slide.
+            var settingsReady by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) { delay(500); settingsReady = true }
+            val settingsSlide = remember { androidx.compose.animation.core.Animatable(1f) }
+            LaunchedEffect(model.settingsOpen) {
+                settingsSlide.animateTo(if (model.settingsOpen) 0f else 1f, tween(300))
+            }
+            if (settingsReady || model.settingsOpen) {
+                TabLifecycle(model.settingsOpen) {
+                    Box(Modifier.fillMaxSize().graphicsLayer {
+                        translationY = size.height * settingsSlide.value
+                    }) {
+                        SettingsScreen(model, active = model.settingsOpen || settingsSlide.isRunning) { model.settingsOpen = false }
+                    }
+                }
             }
             androidx.compose.animation.AnimatedVisibility(
                 model.payOpen,
@@ -933,8 +965,6 @@ private fun Shell(model: KavModel) {
             }
             // A stop in Street View or on the map, over whatever screen opened it.
             StreetViewHost()
-        }
-        }
         }
     }
     // Asshole mode: the kept purchase floats over every screen until it is paid or dropped.
@@ -1574,6 +1604,15 @@ object Prefs {
     fun setStopNamesEnglish(ctx: Context, on: Boolean) = store(ctx).edit().putString("stopNames", if (on) "en" else "he").apply()
 
     fun showCo2(ctx: Context): Boolean = store(ctx).getBoolean("showCo2", false)
+    fun setShowCo2(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showCo2", on).apply()
+
+    // Service alerts from Moovit's website for every planner's trips (MoovitAlerts): off until the rider asks for them.
+    fun moovitAlerts(ctx: Context): Boolean = store(ctx).getBoolean("moovitAlerts", false)
+    fun setMoovitAlerts(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("moovitAlerts", on).apply()
+
+    // Stops' photos from Street View (StopPhotos): on until the rider turns them off.
+    fun stopPhotos(ctx: Context): Boolean = store(ctx).getBoolean("stopPhotos", true)
+    fun setStopPhotos(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("stopPhotos", on).apply()
 
     // Navigation in a small window when Kav is left, and paying for rides shown.
     fun pipNavigation(ctx: Context): Boolean = store(ctx).getBoolean("pipNavigation", true)
@@ -1652,12 +1691,45 @@ object Prefs {
         KavLive.ownKey = kavServerKey(ctx)
         KavLive.source = liveSource(ctx)
         KavPlan.source = planSource(ctx)
+        KavPlan.everyPlanner = everyPlanner(ctx)
+        KavPlan.tabOrder = plannerTabs(ctx)
         uk.noammm.kav.data.Schedules.source = timetableSource(ctx)
     }
+
+    // The random device id HopOn is given when a trip it planned is shared (HopOnShare), made the first time.
+    fun hopOnDevice(ctx: Context): String = store(ctx).getString("hopOnDevice", null) ?: java.security.SecureRandom().let { r ->
+        ByteArray(8).also(r::nextBytes).joinToString("") { "%02x".format(it) }
+    }.also { store(ctx).edit().putString("hopOnDevice", it).apply() }
+
+    // The link a shared trip carries: Kav's ("kav") or Moovit's website ("moovit"), for friends without Kav.
+    fun shareLinks(ctx: Context): String = store(ctx).getString("shareLinks", null).takeIf { it == "moovit" } ?: "kav"
+    fun setShareLinks(ctx: Context, to: String) = store(ctx).edit().putString("shareLinks", to).apply()
+
+    internal fun linkStyle(ctx: Context): uk.noammm.kav.data.ShareStyle = runCatching {
+        uk.noammm.kav.data.ShareStyle.read(org.json.JSONObject(store(ctx).getString("linkStyle", "{}")!!))
+    }.getOrDefault(uk.noammm.kav.data.ShareStyle())
+    internal fun setLinkStyle(ctx: Context, style: uk.noammm.kav.data.ShareStyle) =
+        store(ctx).edit().putString("linkStyle", style.json().toString()).apply()
+
+    fun everyPlanner(ctx: Context): Boolean = store(ctx).getBoolean("everyPlanner", false)
+    fun setEveryPlanner(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("everyPlanner", on).apply()
+    // The tabs' order: the planners the rider moved first, then any they haven't placed, in Settings' order.
+    fun plannerTabs(ctx: Context): List<Source> {
+        val kept = store(ctx).getString("plannerTabs", null).orEmpty().split(',').mapNotNull(Source::of)
+            .filter { it in Source.PLANNING }.distinct()
+        return kept + Source.PLANNING.filter { it !in kept }
+    }
+    fun setPlannerTabs(ctx: Context, order: List<Source>) =
+        store(ctx).edit().putString("plannerTabs", order.joinToString(",") { it.key }).apply()
 
     // Keep the downloaded week fresh in the background, unless the rider has switched it off.
     fun timetableUpdates(ctx: Context): Boolean = store(ctx).getBoolean("timetableUpdates", true)
     fun setTimetableUpdates(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("timetableUpdates", on).apply()
+    // The daily timetable and new versions on mobile data too, not only on Wi-Fi.
+    fun timetableOnMobile(ctx: Context): Boolean = store(ctx).getBoolean("timetableOnMobile", false)
+    fun setTimetableOnMobile(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("timetableOnMobile", on).apply()
+    fun updatesOnMobile(ctx: Context): Boolean = store(ctx).getBoolean("updatesOnMobile", false)
+    fun setUpdatesOnMobile(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("updatesOnMobile", on).apply()
 
     // The rider's own copy of Kav's server, empty while none is set up; the key it takes requests signed with (its
     // KAV_APP_KEY), and the public half of the key its timetable is signed with, as it gave it. Kept under the names
@@ -1763,10 +1835,15 @@ object Prefs {
             .put("liveSource", liveSource(ctx).key)
             .put("planSource", planSource(ctx).key)
             .put("timetableSource", timetableSource(ctx).key)
+            .put("everyPlanner", everyPlanner(ctx))
+            .put("shareLinks", shareLinks(ctx))
+            .put("linkStyle", linkStyle(ctx).json())
+            .put("plannerTabs", plannerTabs(ctx).joinToString(",") { it.key })
             .put("liveFromKav", true)
             .put("planWithKav", true)
             .put("beginTripsImmediately", beginTripsImmediately(ctx))
             .put("timetableUpdates", timetableUpdates(ctx))
+            .put("timetableOnMobile", timetableOnMobile(ctx))
             .put("kavServer", ownServer(ctx).ifEmpty { KavLive.KAV_SERVER })
             .put("kavServerKey", kavServerKey(ctx))
             .put("mapType", mapType(ctx).name.lowercase())
@@ -1775,10 +1852,13 @@ object Prefs {
             .put("filters", org.json.JSONObject().apply { ResultFilter.entries.forEach { put(it.name, it in on) } })
             .put("filtersOff", org.json.JSONArray(off))
             .put("showCo2", showCo2(ctx))
+            .put("moovitAlerts", moovitAlerts(ctx))
+            .put("stopPhotos", stopPhotos(ctx))
             .put("pipNavigation", pipNavigation(ctx))
             .put("showPayments", showPayments(ctx))
             .put("updatePrompts", updatePrompts(ctx))
             .put("autoUpdate", autoUpdate(ctx))
+            .put("updatesOnMobile", updatesOnMobile(ctx))
             .put("spokenAlerts", spokenAlerts(ctx))
             .put("twelveHour", twelveHour(ctx))
     }
@@ -1816,7 +1896,12 @@ object Prefs {
         o.optString("seen").takeIf { n -> Seen.entries.any { it.name == n } }?.let { e.putString("seen", it) }
         o.optJSONObject("seenPlace")?.let { place(it) }?.takeIf(::inIsrael)?.let { e.putString("seenPlace", json(it).toString()) }
         if (o.has("showCo2")) e.putBoolean("showCo2", o.optBoolean("showCo2"))
-        for (key in listOf("pipNavigation", "showPayments", "updatePrompts", "autoUpdate")) if (o.has(key)) e.putBoolean(key, o.optBoolean(key))
+        o.optString("plannerTabs").takeIf { it.isNotEmpty() }?.let { e.putString("plannerTabs", it) }
+        o.optString("shareLinks").takeIf { it == "kav" || it == "moovit" }?.let { e.putString("shareLinks", it) }
+        o.optJSONObject("linkStyle")?.let { e.putString("linkStyle", uk.noammm.kav.data.ShareStyle.read(it).json().toString()) }
+        for (key in listOf("pipNavigation", "showPayments", "updatePrompts", "autoUpdate", "updatesOnMobile", "timetableOnMobile", "everyPlanner", "moovitAlerts", "stopPhotos")) {
+            if (o.has(key)) e.putBoolean(key, o.optBoolean(key))
+        }
         if (o.has("spokenAlerts")) e.putBoolean("spokenAlerts", o.optBoolean("spokenAlerts"))
         if (o.has("twelveHour")) e.putBoolean("twelveHour", o.optBoolean("twelveHour"))
         val chosen = o.optJSONObject("filters")

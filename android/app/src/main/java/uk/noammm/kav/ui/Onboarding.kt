@@ -95,7 +95,7 @@ fun OnboardingScreen(model: KavModel, onDone: () -> Unit) {
                 Spacer(Modifier.height(K.gap6))
                 AccentPicker { Prefs.setAccent(ctx, it.toArgb()) }
                 Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { LineBadgeChoice() }
-                Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { MapChoices() }
+                Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3)) { MapChoices(setup = true) }
                 Spacer(Modifier.height(K.gap8))
                 OnboardingButton(T("Next", "הבא")) { page = 3 }
             } else if (p == 3) {
@@ -210,7 +210,7 @@ private fun OnboardingButton(label: String, onClick: () -> Unit) = KavButton(lab
 private const val WEEK_BYTES = 6_500_000f
 
 @Composable
-private fun DownloadBar(progress: Float, what: String = T("Downloading…", "מורידים…")) = Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
+internal fun DownloadBar(progress: Float, what: String = T("Downloading…", "מורידים…")) = Column(verticalArrangement = Arrangement.spacedBy(K.gap1)) {
     Box(Modifier.fillMaxWidth().height(6.dp).clip(K.capsule).background(K.surface4)) {
         Box(Modifier.fillMaxWidth(progress.coerceIn(0.02f, 1f)).fillMaxHeight().background(K.accent))
     }

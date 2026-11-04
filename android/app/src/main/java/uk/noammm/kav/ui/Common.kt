@@ -26,12 +26,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Canvas
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import uk.noammm.kav.data.MoovitAlerts
 import uk.noammm.kav.data.Transit
 import uk.noammm.kav.data.Net
 
@@ -40,7 +43,7 @@ import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.*
 
-val LocalBottomBarInset = staticCompositionLocalOf { 0.dp }
+val LocalBottomBarInset = compositionLocalOf { 0.dp }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -49,6 +52,31 @@ internal fun bottomCover(): androidx.compose.ui.unit.Dp =
 
 // Opens a ride's line in the Lines tab at the stop it is boarded from, for all its departures there.
 val LocalLineOpener = staticCompositionLocalOf<((Transit.Leg, Transit.Resolved) -> Unit)?> { null }
+
+// Opens a service alert's notices, on a screen that hosts ServiceAlertSheet.
+val LocalServiceAlertOpener = staticCompositionLocalOf<(MoovitAlerts.Alert) -> Unit> { {} }
+
+// A ride's service alert: the one its planner gave (Moovit's plans carry them), else the line's in Moovit's list, where
+// that's switched on.
+internal fun lineAlert(r: Transit.Resolved, ride: Transit.Leg?, wait: Transit.Leg?): MoovitAlerts.Alert? {
+    val own = wait?.options?.firstOrNull { it.lineId == ride?.lineId && it.alertCategory > 0 } ?: wait
+    if (own != null && own.alertCategory >= 3 && own.alertText.isNotBlank()) {
+        return MoovitAlerts.Alert(own.alertCategory, own.alertText, own.alertIds)
+    }
+    return ride?.let { MoovitAlerts.of(r.line(it.lineId)) }?.takeIf { it.category >= 3 }
+}
+
+// Keeps Moovit's alerts fresh while a screen with rides is open.
+@Composable
+internal fun FreshAlerts() {
+    if (!MoovitAlerts.enabled) return
+    LaunchedEffect(T.rtl) {
+        while (true) {
+            MoovitAlerts.refresh()
+            kotlinx.coroutines.delay(60_000)
+        }
+    }
+}
 
 // Timetables and departures are in Israel's time, whatever zone the phone is set to.
 val ISRAEL: TimeZone = TimeZone.getTimeZone("Asia/Jerusalem")
@@ -374,20 +402,91 @@ fun AlertPip(category: Int, size: androidx.compose.ui.unit.Dp = 13.dp) {
 }
 
 @Composable
-fun AlertRow(category: Int, text: String) {
-    if (category < 3 || text.isBlank()) return
-    // A quiet tile; the alert's colour comes with its warning glyph.
+fun AlertRow(alert: MoovitAlerts.Alert?) {
+    if (alert == null || alert.category < 3 || alert.label.isBlank()) return
+    val open = LocalServiceAlertOpener.current
+    val opens = alert.ids.isNotEmpty()
+    // A quiet tile; the alert's colour comes with its warning glyph, and a chevron where it opens the notice.
     Row(
         Modifier.fillMaxWidth().padding(top = K.gap2)
             .clip(RoundedCornerShape(K.rTile))
             .background(K.fill)
+            .then(if (opens) Modifier.clickable(role = Role.Button) { open(alert) } else Modifier)
             .padding(horizontal = K.gap3, vertical = K.gap2),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(K.gap2),
     ) {
-        AlertPip(category, 18.dp)
-        Text(text, style = K.type.subhead, color = K.text, modifier = Modifier.weight(1f))
+        AlertPip(alert.category, 18.dp)
+        Text(alert.label, style = K.type.subhead, color = K.text, modifier = Modifier.weight(1f))
+        if (opens) androidx.compose.material3.Icon(
+            androidx.compose.material.icons.Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null,
+            tint = K.textTertiary, modifier = Modifier.size(20.dp),
+        )
     }
+}
+
+// An alert's notices in full, as the operator published them.
+@Composable
+fun ServiceAlertSheet(alert: MoovitAlerts.Alert, onDismiss: () -> Unit) {
+    var notices by remember(alert) { mutableStateOf<List<MoovitAlerts.Notice>?>(null) }
+    var failed by remember(alert) { mutableStateOf(false) }
+    LaunchedEffect(alert) {
+        runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { MoovitAlerts.notices(alert.ids) } }
+            .onSuccess { notices = it }
+            .onFailure { failed = true }
+    }
+    BottomSheet(onDismiss) { close ->
+        SheetHeader(alert.label.ifBlank { T("Service alert", "הודעת שירות") }, { close(onDismiss) })
+        Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+            val list = notices
+            when {
+                list == null && !failed ->
+                    LoadingPulse(T("Fetching the notice", "מביאים את ההודעה"), Modifier.fillMaxWidth().padding(top = K.gap4, bottom = K.gap2))
+                failed -> NoteCard(
+                    T("The notice couldn't be fetched. Try again in a moment.", "לא הצלחנו להביא את ההודעה. נסו שוב בעוד רגע."),
+                    Modifier.padding(top = K.gap3),
+                )
+                list.isNullOrEmpty() -> NoteCard(
+                    T("The operator published no further detail for this alert.", "המפעיל לא פרסם פרטים נוספים על הודעה זו."),
+                    Modifier.padding(top = K.gap3),
+                )
+                else -> list.forEachIndexed { i, a ->
+                    if (i > 0) {
+                        Spacer(Modifier.height(K.gap3))
+                        Separator(0.dp)
+                    }
+                    Spacer(Modifier.height(K.gap3))
+                    a.title.takeIf { it.isNotBlank() }?.let {
+                        Text(it, style = K.type.headline)
+                        Spacer(Modifier.height(K.gap2))
+                    }
+                    alertWindow(a)?.let {
+                        Text(it, style = K.type.caption)
+                        Spacer(Modifier.height(K.gap2))
+                    }
+                    alertText(a)?.let { Text(it, style = K.type.body, color = K.textSecondary) }
+                }
+            }
+        }
+    }
+}
+
+private fun alertWindow(a: MoovitAlerts.Notice): String? {
+    val day = java.text.SimpleDateFormat("d MMM, $CLOCK", T.locale).apply { timeZone = ISRAEL }
+    fun at(t: Long) = day.format(java.util.Date(t * 1000))
+    return when {
+        a.activeFrom > 0 && a.activeTo > 0 -> T("${at(a.activeFrom)} to ${at(a.activeTo)}", "${at(a.activeFrom)} עד ${at(a.activeTo)}")
+        a.activeFrom > 0 -> T("From ${at(a.activeFrom)}", "מ-${at(a.activeFrom)}")
+        a.activeTo > 0 -> T("Until ${at(a.activeTo)}", "עד ${at(a.activeTo)}")
+        else -> null
+    }
+}
+
+private fun alertText(a: MoovitAlerts.Notice): String? {
+    val raw = a.body.takeIf { it.isNotBlank() } ?: return null
+    if (!a.html && !raw.contains('<')) return raw.trim().replace(Regex("\n{3,}"), "\n\n")
+    return androidx.core.text.HtmlCompat.fromHtml(raw, androidx.core.text.HtmlCompat.FROM_HTML_MODE_COMPACT)
+        .toString().replace(Regex("\n{3,}"), "\n\n").trim().ifBlank { null }
 }
 
 @Composable
@@ -462,24 +561,85 @@ fun BottomSheet(
     }
 }
 
-// A stop of Kav's timetable (net, stop), for screens that know the stop by the timetable, or by Kav's own ids.
+// A stop of Kav's timetable (net, stop), for screens that know the stop by the timetable, or by Kav's own ids. Its
+// photo faces it from the road its buses take (lookAt).
 @Composable
 internal fun StopGlyphOrPhoto(
     net: Net, stop: Int, mode: Mode?, thumb: Dp = 40.dp, mark: Dp = 17.dp, look: StopLook? = null,
     kind: Mode = mode ?: Mode.BUS, opened: Boolean = false,
-) = StopGlyphOrPhoto(-1, mode, thumb, mark, look = look, kind = kind, opened = opened)
+) {
+    val seen = look ?: remember(net, stop) { StopLook(lookAt(net, stop), net.stopName(stop)) }
+    StopGlyphOrPhoto(-1, mode, thumb, mark, look = look, kind = kind, opened = opened, photo = seen)
+}
 
-// A station by its mode's mark; a stop by a tile that opens Street View where there's a place to look at (look), else
-// by its mode (kind).
+// A station by its mode's mark; a stop by its photo from Street View (photo, where there's a place to look at), else
+// a tile that opens Street View (look), else by its mode (kind).
 @Composable
 internal fun StopGlyphOrPhoto(
     stopId: Int, mode: Mode?, thumb: Dp = 40.dp, mark: Dp = 17.dp, resolving: Boolean = false, look: StopLook? = null,
-    kind: Mode = mode ?: Mode.BUS, opened: Boolean = false,
+    kind: Mode = mode ?: Mode.BUS, opened: Boolean = false, photo: StopLook? = look,
 ) {
+    val asked = photo?.takeIf { mode == null && StopPhotos.enabled }
+    if (asked != null) {
+        val key = remember(asked) { StopPhotos.key(asked.look) }
+        var shot by remember(key) { mutableStateOf(StopPhotos.thumbNow(asked.look)) }
+        var none by remember(key) { mutableStateOf(false) }
+        // On a weak connection the photo is asked again, less and less often, for as long as the stop is on screen.
+        LaunchedEffect(key) {
+            var wait = 2_000L
+            while (shot == null && !none) {
+                try {
+                    val got = StopPhotos.thumb(asked.look)
+                    if (got == null) none = true else shot = got
+                } catch (e: java.io.IOException) {
+                    kotlinx.coroutines.delay(wait)
+                    wait = (wait * 2).coerceAtMost(60_000L)
+                }
+            }
+        }
+        if (!none) {
+            androidx.compose.animation.Crossfade(shot, animationSpec = tween(220), label = "stopPhoto") { p ->
+                if (p == null) StopTile(thumb, kind) else StopPhotoTile(asked, p, thumb)
+            }
+            return
+        }
+    }
     when {
         mode != null -> StationMark(mode, mark)
         look != null -> NoPhoto(thumb, look)
         else -> StopMark(thumb, kind)
+    }
+}
+
+// Where a stop's photo goes while it comes: the stop's mode on a quiet tile of the photo's size and shape.
+@Composable
+private fun StopTile(size: Dp, mode: Mode) {
+    Box(
+        Modifier.size(size).clip(RoundedCornerShape(K.rTile)).background(K.fill),
+        contentAlignment = Alignment.Center,
+    ) { ModeGlyph(mode, K.muted, size * .44f) }
+}
+
+// The stop's photo; tapped, the photo large, with Street View a tap further.
+@Composable
+private fun StopPhotoTile(stop: StopLook, shot: StopPhotos.Photo, thumb: Dp) {
+    var open by remember { mutableStateOf(false) }
+    androidx.compose.foundation.Image(
+        shot.bitmap.asImageBitmap(), T("A photo of the stop", "תמונה של התחנה"),
+        Modifier.size(thumb).clip(RoundedCornerShape(K.rTile)).clickable(role = Role.Button) { open = true },
+        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+    )
+    if (!open) return
+    var full by remember { mutableStateOf<StopPhotos.Photo?>(null) }
+    LaunchedEffect(stop) { full = runCatching { StopPhotos.full(stop.look) }.getOrNull() }
+    androidx.compose.ui.window.Dialog(onDismissRequest = { open = false }) {
+        val shown = full ?: shot
+        androidx.compose.foundation.Image(
+            shown.bitmap.asImageBitmap(), T("Open Street View", "פתיחת Street View"),
+            Modifier.fillMaxWidth().aspectRatio(1.6f).clip(RoundedCornerShape(K.rSheet))
+                .clickable(role = Role.Button) { open = false; StreetViewer.open = stop },
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+        )
     }
 }
 

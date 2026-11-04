@@ -54,6 +54,10 @@
     if (user.gtfsLanguage) headers.moovit_gtfs_language = user.gtfsLanguage;
     const metro = (await call('/api/metro/' + metroId + '/combined?langId=' + langId)).metroAreaData || {};
     const agencies = (metro.agencies || []).map(a => [a.agencyId, a.agencyName, a.routeType]);
+    if (ask.kind === 'share') {
+        const shared = await call('/api/share/itinerary', {itineraryGuid: ask.guid, originalItinerary: ask.original});
+        return {url: (shared.entityLink || {}).url || ''};
+    }
     // A trip shared from Moovit, by its id, as the site's page opens such a link: its itinerary, and its two ends where
     // the site finds them, the first and last legs that say (a walk's journey, else a ride's first or last stop), and
     // when it leaves.

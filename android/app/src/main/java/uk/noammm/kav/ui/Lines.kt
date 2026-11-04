@@ -1,6 +1,8 @@
 package uk.noammm.kav.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.clickable
@@ -10,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.runtime.*
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -22,6 +25,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -408,23 +412,38 @@ private fun LineSpan(net: Net, row: LineRow, modifier: Modifier = Modifier) {
 @Composable
 // operator: a bus line's operator colour, as a short stroke under its number.
 private fun LineIdentity(rt: Int, number: String, operator: Color? = null) {
+    val measurer = rememberTextMeasurer()
+    val numberStyle = LocalTextStyle.current.copy(fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
+    val badgeWidth = with(LocalDensity.current) { measurer.measure("888", numberStyle).size.width.toDp() } + 14.dp
     val marked = rt == 711 || isRail(rt, -1) || modeOf(rt) == Mode.FUNICULAR ||
         modeOf(rt) == Mode.CABLE || modeOf(rt) == Mode.GONDOLA
     val logoOnly = modeOf(rt) == Mode.FUNICULAR || modeOf(rt) == Mode.CABLE ||
         modeOf(rt) == Mode.GONDOLA
-    Column(Modifier.widthIn(min = 54.dp, max = 88.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.widthIn(min = 54.dp, max = maxOf(88.dp, badgeWidth)).padding(top = K.gap4), horizontalAlignment = Alignment.CenterHorizontally) {
         if (marked) {
             AgencyMark(rt, -1, K.muted, if (number.isBlank() || logoOnly) 26.dp else 17.dp)
             Spacer(Modifier.height(2.dp))
         }
         if ((number.isNotBlank() && !logoOnly) || !marked) {
             val plate = if (marked) null else operatorPlate(operator)
-            Text(number.ifBlank { "-" }, fontSize = 23.sp, color = plate?.ink ?: K.text,
-                fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = if (plate == null) Modifier
-                    else Modifier.padding(bottom = 2.dp).clip(RoundedCornerShape(K.rBadge)).background(plate.fill).padding(horizontal = 7.dp))
+            val strip = plate != null && K.lineBadgeAppearance == LineBadgeAppearance.STRIP
+            if (strip) {
+                val shape = RoundedCornerShape(K.rBadge)
+                Column(
+                    Modifier.padding(bottom = 2.dp).widthIn(min = badgeWidth).width(IntrinsicSize.Max).clip(shape).background(plate!!.fill)
+                        .border(1.dp, K.borderStrong, shape),
+                ) {
+                    Text(number.ifBlank { "-" }, fontSize = 23.sp, color = K.text, textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().background(K.badgePlate).padding(horizontal = 7.dp))
+                    Spacer(Modifier.height(4.dp))
+                }
+            } else Text(number.ifBlank { "-" }, fontSize = 23.sp, color = plate?.ink ?: K.text,
+                fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                modifier = if (plate == null) Modifier.widthIn(min = badgeWidth)
+                    else Modifier.padding(bottom = 2.dp).widthIn(min = badgeWidth).clip(RoundedCornerShape(K.rBadge)).background(plate.fill).padding(horizontal = 7.dp))
         }
-        Text(typeName(rt), style = K.type.caption)
+        Text(typeName(rt), style = K.type.caption, textAlign = TextAlign.Center)
     }
 }
 

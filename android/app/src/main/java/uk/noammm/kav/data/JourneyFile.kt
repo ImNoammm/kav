@@ -61,6 +61,7 @@ object JourneyFile {
         .put("to", journey.toLabel)
         .put("chosen", JSONObject().apply { journey.chosen.forEach { (leg, opt) -> put(leg.toString(), opt) } })
         .put("paid", JSONObject().apply { journey.paid.forEach { (leg, key) -> put(leg.toString(), key) } })
+        .put("fromHere", journey.fromHere)
         .put("trip", json(journey.trip))
         .put("lines", JSONObject().apply { journey.resolved.lines.forEach { (id, l) -> put(id.toString(), json(l)) } })
         .put("stops", JSONObject().apply { journey.resolved.stops.forEach { (id, s) -> put(id.toString(), json(s)) } })
@@ -81,6 +82,7 @@ object JourneyFile {
             chosen = counts(o.optJSONObject("chosen")),
             paid = o.optJSONObject("paid")?.let { p -> p.keys().asSequence().associate { it.toInt() to p.getString(it) } }
                 ?: emptyMap(),
+            fromHere = o.optBoolean("fromHere", true),
         )
         journey to o.optInt("step")
     } catch (e: Exception) { null }
@@ -121,6 +123,7 @@ object JourneyFile {
         .put("fare", t.fare).put("cur", t.currency).put("co2", t.co2g)
         .put("acc", t.accessible).put("tags", JSONArray(t.tags))
         .put("sec", t.section).put("secId", t.sectionId)
+        .put("original", t.original)
 
     private fun itinerary(o: JSONObject) = Transit.Itinerary(
         guid = o.optString("guid"), group = o.optInt("group"),
@@ -130,6 +133,7 @@ object JourneyFile {
         co2g = o.optInt("co2", -1), accessible = o.optBoolean("acc"),
         tags = strings(o.optJSONArray("tags")).mapNotNull(KavPlan::tagOf),
         section = o.optString("sec"), sectionId = o.optInt("secId", -1),
+        original = o.optString("original"),
     )
 
     private fun json(l: Transit.Leg): JSONObject {
@@ -144,9 +148,10 @@ object JourneyFile {
             .put("name", l.shortName).put("pathway", l.pathway)
             .put("fare", l.fare).put("cur", l.currency)
             .put("shape", coords(l.shape))
-            .put("alertCat", l.alertCategory).put("alertText", l.alertText)
+            .put("alertCat", l.alertCategory).put("alertText", l.alertText).put("alertIds", JSONArray(l.alertIds))
             .put("alts", JSONArray().apply { l.alternatives.forEach { put(json(it)) } })
             .put("altLines", JSONArray(l.alternativeLineIds))
+            .put("shared", l.shared).put("sharedBy", l.sharedBy)
         l.taxiPickup?.let { o.put("pickup", coords(listOf(it))) }
         l.taxiDropoff?.let { o.put("dropoff", coords(listOf(it))) }
         return o
@@ -164,10 +169,12 @@ object JourneyFile {
         fare = o.optInt("fare", -1), currency = o.optString("cur"),
         shape = points(o.optJSONArray("shape")),
         alertCategory = o.optInt("alertCat"), alertText = o.optString("alertText"),
+        alertIds = o.optJSONArray("alertIds")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty(),
         taxiPickup = o.optJSONArray("pickup")?.let { points(it).firstOrNull() },
         taxiDropoff = o.optJSONArray("dropoff")?.let { points(it).firstOrNull() },
         alternatives = objects(o.optJSONArray("alts")).map { leg(it) },
         alternativeLineIds = ints(o.optJSONArray("altLines")),
+        shared = o.optInt("shared"), sharedBy = o.optString("sharedBy"),
     )
 
     private fun json(d: Transit.Departure): JSONObject = JSONObject()
@@ -189,11 +196,11 @@ object JourneyFile {
 
     private fun json(l: Transit.LineInfo): JSONObject = JSONObject()
         .put("group", l.groupId).put("number", l.number).put("agency", l.agencyId)
-        .put("origin", l.origin).put("dest", l.destination).put("caption", l.caption)
+        .put("origin", l.origin).put("dest", l.destination).put("caption", l.caption).put("route", l.routeName)
 
     private fun line(o: JSONObject) = Transit.LineInfo(
         o.optInt("group", -1), o.optString("number"), o.optInt("agency", -1),
-        o.optString("origin"), o.optString("dest"), o.optString("caption"),
+        o.optString("origin"), o.optString("dest"), o.optString("caption"), o.optString("route"),
     )
 
     private fun json(s: Transit.StopInfo): JSONObject {

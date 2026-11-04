@@ -60,8 +60,8 @@ you're on the way.
   Rav-Pass account you sign up or sign in to right in Kav. Only payments use
   it, and Rav-Pass gets your location only at the moment you scan or pay, as in
   its own app, never in the background. Everything else stays anonymous.
-- Reports a driver, a bus or an inspector to the Ministry of Transport on its
-  own form. Kav fills it in from your ride, and you check it and send it
+- Reports a driver, a bus, an inspector or a train to the Ministry of Transport
+  on its own form. Kav fills it in from your ride, and you check it and send it
   yourself. Your details stay on the phone and only go into that form.
 
 ## Getting it
@@ -74,7 +74,7 @@ GitHub builds every APK there from the code in this repo, and you can check the
 one you downloaded with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify kav-3.2-nightly.apk --repo ImNoammm/kav
+gh attestation verify kav-3.3.apk --repo ImNoammm/kav
 ```
 
 Setup downloads the map (about 176 MB once) and timetable (about 6 MB) from
@@ -128,11 +128,28 @@ Coming soon: everything Kav's server does, on a machine of your own.
   Google, is ignored.
 - Addresses Google doesn't have from GovMap, the Survey of Israel's map, sent
   just the typed text.
-- Street View from Google, shown inside Kav only when you open it on a stop.
-  Google then sees that spot and your IP address, and its viewer keeps no
-  cookies.
+- Street View from Google: each stop's photo is its panorama facing the stop,
+  fetched when the stop is shown unless stop photos are off in Settings, and
+  the viewer opens when you tap it. Google then sees that stop and your IP
+  address, and its viewer keeps no cookies.
+- Detours and other service alerts from the website provider, only when
+  they're switched on in Settings. Kav takes its whole list every ten minutes
+  while results or a trip are open and finds your lines in it on the phone, so
+  the provider sees your IP address but not your trip.
+- Emissions are Kav's estimate from each ride's distance and mode, with the UK
+  government's 2026 conversion factors per passenger.
 - Train times between two stations from Israel Railways' own timetable, asked
-  only when you open that card. It learns the two stations and the day.
+  only when you open that card, and the platforms of a train another planner
+  planned, asked when you open that trip. It learns the two stations and the day.
+- Sharing a trip Bus Nearby or EGG planned also makes their own short links to
+  it, the way their apps' Share does: HopOn, which runs both, gets that trip and
+  a random ID Kav keeps for this.
+- Kav trip links save the selected itinerary and page choices on Kav's server
+  behind a random seven-character code. Links expire after 7 days by default;
+  Link customization also offers 3 or 30 days. Expired trips are deleted
+  automatically. The preview loads Leaflet from unpkg and map tiles from Esri.
+  Both receive the viewer's IP, and Esri sees the map area. Sharing a trip from
+  the website provider also asks its sharing service for an itinerary link.
 - The operator colours come from [@szaionz](https://github.com/szaionz)'s
   route_colors branch.
 - Thanks to the amazing team at [HTTP Toolkit](https://httptoolkit.com), who

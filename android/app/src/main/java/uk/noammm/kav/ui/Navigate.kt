@@ -486,7 +486,6 @@ internal fun StepCard(
                     Text(step.label, style = K.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     LiveText(hm.format(Date(step.time * 1000)), style = K.type.subhead.tabular)
                 }
-                lookAhead(step.walk)?.let { StreetViewButton(it, step.label) }
             }
         }
 
@@ -565,9 +564,7 @@ internal fun StepCard(
                         if (r.isTrain(ride)) r.departures(ride, wait).firstOrNull { it.tripId == ride.tripId }?.let(::lateBy)?.let {
                             Text(lateLabel(it), fontSize = 14.sp, color = K.critical, modifier = Modifier.padding(top = K.gap1))
                         }
-                        wait?.let {
-                            AlertRow(it.alertCategory, it.alertText)
-                        }
+                        AlertRow(lineAlert(r, ride, wait))
                     }
                 }
             }
@@ -638,7 +635,9 @@ private fun StopLine(
                 if (!code.isNullOrBlank()) Text(T("Stop ", "תחנה ") + code, fontSize = 12.sp, color = K.dim)
             }
         }
-        if (mode != null || stopId > 0) MarkedLines(stopId, mode, lines, Modifier.weight(1f)) {
+        if (mode != null || stopId > 0) MarkedLines(
+            stopId, mode, lines, Modifier.weight(1f), photo = streetView?.let { StopLook(it, name) },
+        ) {
             if (platform.isNotBlank()) PlatformTag(platform)
         } else Column(Modifier.weight(1f)) {
             lines()
@@ -646,10 +645,6 @@ private fun StopLine(
                 Spacer(Modifier.height(K.gap1))
                 PlatformTag(platform)
             }
-        }
-        if (streetView != null) {
-            Spacer(Modifier.width(K.gap2))
-            StreetViewButton(streetView, name)
         }
     }
 }
@@ -659,6 +654,7 @@ private fun StopLine(
 @Composable
 private fun MarkedLines(
     stopId: Int, mode: Mode?, lines: @Composable () -> Unit, modifier: Modifier = Modifier,
+    photo: StopLook? = null,
     below: @Composable () -> Unit,
 ) {
     SubcomposeLayout(modifier) { c ->
@@ -672,7 +668,8 @@ private fun MarkedLines(
         val size = minOf(text.height, most)
         val mark = subcompose("mark") {
             StopGlyphOrPhoto(
-                stopId, mode, thumb = size.toDp(), mark = size.toDp(), opened = !uk.noammm.kav.data.KavPlan.isKav(stopId),
+                stopId, mode?.takeUnless { it == Mode.BUS }, thumb = size.toDp(), mark = size.toDp(),
+                opened = !uk.noammm.kav.data.KavPlan.isKav(stopId), photo = photo,
             )
         }.map { it.measure(Constraints.fixed(size, size)) }
         val under = subcompose("below", below).map { it.measure(Constraints(maxWidth = (c.maxWidth - size - gap).coerceAtLeast(0))) }
@@ -1091,17 +1088,6 @@ private fun VehicleCard(
     }
 }
 
-// Street View of a stop or place: a small round button at the end of its name, with Street View's own figure.
-@Composable
-internal fun StreetViewButton(look: StreetLook, name: String) {
-    Box(
-        Modifier.size(36.dp).clip(CircleShape).background(K.fill)
-            .semantics { contentDescription = T("See $name in Street View", "צפייה ב-$name ב-Street View") }
-            .clickable(role = Role.Button) { StreetViewer.open = StopLook(look, name) },
-        contentAlignment = Alignment.Center,
-    ) { Canvas(Modifier.size(18.dp)) { streetGlyph(K.textSecondary) } }
-}
-
 // Reporting a problem on a ride to the ministry: a flag at the end of the ride's line.
 @Composable
 internal fun ReportButton(onClick: () -> Unit) =
@@ -1171,15 +1157,6 @@ internal fun lookAt(stop: Pair<Double, Double>, ride: Transit.Leg, r: Transit.Re
     lookAt(stop, if (legMode(ride, r) in OFF_ROAD) emptyList() else ride.shape)
 
 private val OFF_ROAD = setOf(Mode.SUBWAY, Mode.TRAIN, Mode.FERRY, Mode.CABLE, Mode.GONDOLA, Mode.FUNICULAR)
-
-// A place at the end of a walk, seen from the walk a little before it, facing it.
-internal fun lookAhead(walk: List<Pair<Double, Double>>): StreetLook? {
-    val to = walk.lastOrNull() ?: return null
-    if (walk.size < 2) return StreetLook(to)
-    val stand = pointAlong(walk, pathLength(walk) - 20) ?: return StreetLook(to)
-    if (metres(stand.first, stand.second, to.first, to.second) < 3) return StreetLook(to)
-    return StreetLook(stand, Math.floorMod(bearing(stand.first, stand.second, to.first, to.second).roundToInt(), 360), to)
-}
 
 internal fun rideStopPoints(legs: List<Transit.Leg>, stops: Map<Int, Transit.StopInfo>): List<Pair<Int, Pair<Double, Double>>> =
     legs.indices.flatMap { i ->

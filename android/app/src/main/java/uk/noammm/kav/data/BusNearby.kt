@@ -64,6 +64,7 @@ internal object BusNearby {
             from.optString("name").ifBlank { null }, from.getDouble("lat"), from.getDouble("lon"),
             to.optString("name").ifBlank { null }, to.getDouble("lat"), to.getDouble("lon"),
             departMs = leaves.takeIf { it > now } ?: 0L, autoRun = true,
+            exact = KavPlan.parse(planBody(JSONObject().put("plan", JSONObject().put("itineraries", JSONArray().put(o)))).toString()),
         )
     }
 
@@ -180,7 +181,7 @@ internal object BusNearby {
                 legs.put(leg)
             }
             if (supported) trips.put(JSONObject().put("dep", it.getLong("startTime") / 1000)
-                .put("arr", it.getLong("endTime") / 1000).put("legs", legs))
+                .put("arr", it.getLong("endTime") / 1000).put("legs", legs).put("hopOn", it))
         }
         return JSONObject().put("stops", stops).put("lines", lines).put("agencies", agencies).put("it", trips)
     }
@@ -493,4 +494,38 @@ internal object BusNearby {
         val a = JSONArray(Schedules.cached(source, "agencies/1") { fetch("$INDEX/agencies/1", source) })
         (0 until a.length()).associate { a.getJSONObject(it).let { o -> o.optString("id") to o.optString("name") } }
     }
+}
+
+// Links that open a trip HopOn planned in egg and Bus Nearby, made as their apps' own Share makes them: HopOn keeps the
+// trip under a short id until a little after it ends. Asked only when the rider shares such a trip, with a random device
+// id Kav keeps for it (X-BNB), as the apps send theirs; the trip itself is HopOn's original answer.
+internal object HopOnShare {
+    fun has(trip: Transit.Itinerary): Boolean = trip.original.isNotEmpty() && !MoovitWeb.owns(trip)
+
+    // Blocks, so off the main thread. egg's short id and Bus Nearby's, each null when HopOn gave none.
+    fun links(ctx: android.content.Context, trip: Transit.Itinerary): Pair<String?, String?> {
+        val itinerary = trip.original.takeIf { has(trip) } ?: return null to null
+        val body = JSONObject().put("itinerary", JSONObject(itinerary)).toString().toByteArray()
+        val device = uk.noammm.kav.Prefs.hopOnDevice(ctx)
+        fun ask(source: Source): String? = runCatching {
+            val c = URL("${BusNearby.SERVER}/itinerary/share").openConnection() as HttpURLConnection
+            try {
+                c.connectTimeout = 5_000; c.readTimeout = 10_000
+                c.requestMethod = "POST"; c.doOutput = true
+                c.setRequestProperty("Accept", "application/json")
+                c.setRequestProperty("Content-Type", "application/json")
+                c.setRequestProperty("Accept-Language", "he")
+                c.setRequestProperty("X-BNB-VARIANT", BusNearby.variant(source))
+                c.setRequestProperty("X-BNB", device)
+                c.setRequestProperty("X-BNB-KEY", "")
+                c.outputStream.use { it.write(body) }
+                if (c.responseCode != 200) return@runCatching null
+                shortId(c.inputStream.bufferedReader().use { it.readText() })
+            } finally { c.disconnect() }
+        }.getOrNull()
+        return ask(Source.EGG) to ask(Source.BUS_NEARBY)
+    }
+
+    internal fun shortId(answer: String): String? =
+        runCatching { JSONObject(answer).optString("shortId") }.getOrNull()?.takeIf { it.matches(Regex("[A-Za-z0-9]{4,32}")) }
 }
